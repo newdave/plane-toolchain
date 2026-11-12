@@ -153,3 +153,48 @@ def test_script_no_fallback_outside_git(tmp_path, bridge):
     result = run(plain)
     assert result.returncode == 1
     assert "mcp-remote missing" in result.stderr
+
+
+def test_session_merges_main_and_worktree_keys(tmp_path):
+    main = make_repo(tmp_path / "main")
+    write(
+        main,
+        "config/local.env",
+        "PLANE_WORKSPACE=shared\nPLANE_MCP_URL=https://mcp.example.org/m\n",
+    )
+    wt = worktree(main)
+    write(wt, "config/local.env", "PLANE_WORKSPACE=mine\n")
+    assert plane_session.connection(wt, {}) == {
+        "PLANE_WORKSPACE": "mine",
+        "PLANE_MCP_URL": "https://mcp.example.org/m",
+    }
+
+
+def test_session_worktree_legacy_file_ignores_main_local(tmp_path):
+    main = make_repo(tmp_path / "main")
+    write(main, "config/local.env", "PLANE_MCP_URL=https://mcp.example.org/m\n")
+    wt = worktree(main)
+    write(wt, ".deploy/env", "PLANE_WORKSPACE=legacy\n")
+    assert plane_session.connection(wt, {}) == {"PLANE_WORKSPACE": "legacy"}
+
+
+def test_session_nested_copy_in_unrelated_repo_has_no_fallback(tmp_path):
+    outer = make_repo(tmp_path / "outer")
+    write(outer, "config/local.env", "PLANE_WORKSPACE=outer\n")
+    nested = outer / "copy"
+    nested.mkdir()
+    assert plane_session.connection(nested, {}) == {}
+
+
+def test_script_nested_copy_in_unrelated_repo_has_no_fallback(tmp_path, bridge):
+    install, run, stub = bridge
+    outer = make_repo(tmp_path / "outer")
+    write(outer, "config/plane.enc.env", "x")
+    stub(outer, "outer-bin")
+    nested = outer / "copy"
+    install(nested)
+    result = run(nested)
+    assert result.returncode == 1
+    assert "SOPS_FILE" not in result.stderr
+    assert "outer-bin" not in result.stdout
+    assert "mcp-remote missing" in result.stderr

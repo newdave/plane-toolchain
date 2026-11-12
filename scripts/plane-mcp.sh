@@ -3,10 +3,13 @@
 set +x
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-# Linked worktrees lack git-ignored files; fall back to the main checkout's copy. No git, no fallback.
+# Linked worktrees lack git-ignored files; fall back to the main checkout's copy.
+# No fallback without git, in a main checkout, or in a copy nested in an unrelated repo.
 main=""
-if common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
-  main="$(dirname "$common")"
+if dirs="$(git rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)"; then
+  gitdir="${dirs%%$'\n'*}"
+  common="${dirs#*$'\n'}"
+  [[ "$gitdir" == "$common" ]] || main="$(dirname "$common")"
 fi
 # Print the local path if present, else the main checkout's if present, else the local path.
 pick() {
