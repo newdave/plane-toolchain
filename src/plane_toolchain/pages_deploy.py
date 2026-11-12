@@ -114,18 +114,37 @@ def check(current, payload, health):
     return "Pages image and API health verified"
 
 
-def revert(current, payload, docker, health, now):
+def revert(current, payload, docker, probe, health, now):
     name = payload["container"]
     backup = backup_name(name)
-    docker("inspect", backup)  # Fail before any change when no rollback container exists.
+    if not probe("inspect", backup):
+        if source_label(current) is None:
+            return "Original API container already restored"
+        docker("inspect", backup)  # Fail before any change when no rollback container exists.
     if source_label(current) != payload["digest"]:
         raise ValueError("API changed; refusing rollback")
-    # PTC-5: no recovery when a step after stop fails.
-    docker("stop", name)
-    docker("rename", name, name + "-pages-reverted-" + str(int(now())))
-    docker("rename", backup, name)
-    docker("start", name)
-    health(name)
+    reverted = name + "-pages-reverted-" + str(int(now()))
+    done = []  # Completed swap steps, so recovery undoes only what happened.
+    try:
+        done.append("stop")
+        docker("stop", name)
+        docker("rename", name, reverted)
+        done.append("derived")
+        docker("rename", backup, name)
+        done.append("original")
+        docker("start", name)
+        health(name)
+    except BaseException as error:
+        try:
+            if "original" in done:
+                probe("stop", name)
+                docker("rename", name, backup)
+            if "derived" in done:
+                docker("rename", reverted, name)
+            docker("start", name)
+        except Exception as recovery:
+            raise error from recovery
+        raise
     return "Original API container restored; derived container retained stopped"
 
 
@@ -181,7 +200,7 @@ def deploy(payload, docker, probe, create, health, now):
     if operation == "check":
         return check(current, payload, health)
     if operation == "revert":
-        return revert(current, payload, docker, health, now)
+        return revert(current, payload, docker, probe, health, now)
     if operation != "apply":
         raise ValueError("Unknown operation")
     return apply(current, payload, docker, probe, create, health, now)
