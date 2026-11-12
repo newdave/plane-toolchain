@@ -1,0 +1,26 @@
+tests/fake_docker.py
+  s_ce066174a8d2c7::t_4a9f7d2acb359e 34-36,51-52,55-66,133-135
+tests/test_mcp_deploy.py
+  s_ce066174a8d2c7::t_4a9f7d2acb359e 17,88-91,216-218,232-337,339-356
+  s_ce066174a8d2c7::t_a91d29aee1d412 57,119,338
+src/plane_toolchain/mcp_deploy.py
+  s_ce066174a8d2c7::t_fe30b4977789b6 3,10,30-91,95,109,118,120-121,123-128,139,148-162,165,167,169-171,178-188
+docs/extensions.md
+  s_ce066174a8d2c7::t_75022b195a3d9f 41-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "a25fda939d3ed4bb730f07ec64c2e24708fd46f4",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
