@@ -5,7 +5,18 @@ never print runtime configuration.
 """
 
 import inspect
+import os
+import shlex
 import subprocess
+import sys
+
+# A dropped SSH session sends SIGHUP and closes the output channel. Ignore both so the remote
+# operation and its rollback run to the end; `say` drops writes to a closed channel. Not
+# daemonised: a surviving session still sees the final message. SIGKILL or a reboot cannot be
+# caught; a later apply reconciles Pages containers, and MCP keeps a pending receipt.
+PREAMBLE = (
+    "signal.signal(signal.SIGHUP, signal.SIG_IGN)\nsignal.signal(signal.SIGPIPE, signal.SIG_IGN)\n"
+)
 
 
 def docker(*args, **kw):
@@ -29,8 +40,40 @@ def docker_ok(*args):
     return result.returncode == 0
 
 
+def say(text, stream=None):
+    """Write one line; a closed SSH channel must not abort the operation."""
+    try:
+        stream = stream or sys.stdout
+        stream.write(text + "\n")
+        stream.flush()
+    except OSError:
+        pass
+
+
 def program(imports, functions, entry):
     """Assemble a self-contained remote program from function source and an entry stub."""
-    parts = ["import " + ",".join(imports)]
-    parts += [inspect.getsource(function) for function in functions]
+    parts = ["import " + ",".join(sorted({*imports, "signal", "sys"})), PREAMBLE]
+    parts += [inspect.getsource(function) for function in [say, *functions]]
     return "\n".join(parts + [entry])
+
+
+def ssh_argv(host, source):
+    """SSH argv that never prompts, fails fast on a dead link and keeps the host an operand."""
+    options = [
+        "BatchMode=yes",
+        "ConnectTimeout=15",
+        "ServerAliveInterval=15",
+        "ServerAliveCountMax=4",
+    ]
+    argv = ["ssh"]
+    for option in options:
+        argv += ["-o", option]
+    return argv + ["--", host, "python3 -c " + shlex.quote(source)]
+
+
+def require_env(*names):
+    """Return the named variables; exit naming the first missing one, never printing values."""
+    for name in names:
+        if not os.environ.get(name):
+            sys.exit("Missing environment variable: " + name)
+    return [os.environ[name] for name in names]

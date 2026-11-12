@@ -177,12 +177,71 @@ def test_main_ships_fixed_program_and_entry_point_over_ssh(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *args, **kw: calls.append((args, kw)))
     mcp_deploy.main()
     [((argv,), kw)] = calls
-    assert argv == ["ssh", "owner@host", "python3 -c " + shlex.quote(mcp_deploy.REMOTE)]
+    assert argv == [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=4",
+        "--",
+        "owner@host",
+        "python3 -c " + shlex.quote(mcp_deploy.REMOTE),
+    ]
     assert kw["text"] and kw["check"]
     source = mcp_deploy.Path(mcp_deploy.__file__).with_name("ce_tools.py").read_text()
     assert json.loads(kw["input"]) == dict(
         operation="apply", directory="/srv/mcp", container="plane-mcp", source=source
     )
+
+
+@pytest.mark.parametrize("missing", ["PLANE_MCP_SSH", "PLANE_MCP_DIRECTORY"])
+def test_main_names_missing_environment_variable_only(monkeypatch, capsys, missing):
+    monkeypatch.setattr(sys, "argv", ["mcp_deploy", "check"])
+    monkeypatch.setenv("PLANE_MCP_SSH", "secret-owner@secret-host")
+    monkeypatch.setenv("PLANE_MCP_DIRECTORY", "/srv/secret")
+    monkeypatch.delenv(missing)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kw: pytest.fail("Must not connect"))
+    with pytest.raises(SystemExit) as caught:
+        mcp_deploy.main()
+    assert caught.value.code == "Missing environment variable: " + missing
+    assert "secret" not in capsys.readouterr().err
+
+
+def test_remote_ignores_hup_and_pipe_before_any_docker_call(root, monkeypatch, capsys):
+    import signal
+
+    fake = mcp_host()
+    monkeypatch.setattr(signal, "signal", lambda number, handler: fake.calls.append(number))
+    remote("apply", root, fake, monkeypatch)
+    assert fake.calls[:3] == [signal.SIGHUP, signal.SIGPIPE, git_call(root)]
+
+
+def test_closed_stderr_does_not_mask_interrupt(root, monkeypatch):
+    class Closed:
+        def write(self, text):
+            raise BrokenPipeError
+
+        def flush(self):
+            raise BrokenPipeError
+
+    fake = mcp_host()
+    fake.containers["plane-mcp"]["health"] = "starting"
+    naps = []
+
+    def sleep(seconds):
+        naps.append(seconds)
+        if len(naps) == 1:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(sys, "stderr", Closed())
+    data = dict(operation="apply", directory=str(root), container="plane-mcp", source=DESIRED)
+    with pytest.raises(KeyboardInterrupt):
+        mcp_deploy.deploy(data, fake.docker, lambda path: False, sleep=sleep)
+    assert (root / "server.py").read_bytes() == ORIGINAL
 
 
 @pytest.mark.parametrize(
