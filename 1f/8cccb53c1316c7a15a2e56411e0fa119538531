@@ -1,0 +1,23 @@
+src/plane_toolchain/pages_backend.py
+  s_ce066174a8d2c7::t_64b5978413a8fd 24-27,31,36,38,46,141,143-144
+tests/test_pages_backend.py
+  s_ce066174a8d2c7::t_ea09d1d2263c32 75,173,238-260
+tests/test_legacy_payloads.py
+  s_ce066174a8d2c7::t_b062becaef3a23 15-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "1f8cccb53c1316c7a15a2e56411e0fa119538531",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
