@@ -61,7 +61,7 @@ WRITE_FILES = ["plane-complete.yml", "plane-comment.yml"]
 
 def load(name):
     path = Path(__file__).parents[1] / "examples/github" / name
-    return path.read_text(), yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+    return path.read_text(), yaml.load(path.read_text(), Loader=yaml.BaseLoader)  # noqa: S506 - BaseLoader builds strings only
 
 
 @pytest.mark.parametrize("name", WRITE_FILES)
