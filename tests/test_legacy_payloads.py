@@ -12,7 +12,8 @@ def test_server_payloads_match_existing_deployment_receipts():
     expected = {
         # PTC-13: digest changed (canonical UUIDs, SDK guard, FASTMCP_HOST); see docs/extensions.md.
         "ce_tools.py": "1f37e0237fd6dabf9b141697d8220f533cb96067ccd6820b27a619167d905777",
-        "pages_backend.py": "3e5eb125438c4a2c14aa9ab2cca8d9692047bb1898ebfa2385a43882c355c31e",
+        # PTC-19: digest changed (generic message for non-input ValueErrors; CodeQL stack-trace alert).
+        "pages_backend.py": "a67e6cd17f283027c00b1c201859b4df45b468b9a11a85f97ba58725966d29b4",
     }
     for name, digest in expected.items():
         assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
