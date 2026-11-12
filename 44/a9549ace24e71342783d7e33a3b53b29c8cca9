@@ -1,0 +1,36 @@
+tests/test_worktree_bridge.py
+  s_2913fb743b94c4::t_f2331cbdcbc18f 16,91-92
+  s_2913fb743b94c4::t_c48d076bfd0605 1-15,17-90,93-115,117-128,131-144,146-155
+  s_2913fb743b94c4::t_6200b1b89079b9 116,129-130,145
+docs/configuration.md
+  s_2913fb743b94c4::t_be41aea874a71e 21-22
+CHANGELOG.md
+  s_2913fb743b94c4::t_fd89c4de59025b 15
+src/plane_toolchain/session.py
+  s_2913fb743b94c4::t_3ea864e3be7466 6
+  s_2913fb743b94c4::t_9fdb8b0b284134 58
+  s_2913fb743b94c4::t_f2331cbdcbc18f 30-31
+  s_2913fb743b94c4::t_bf3f3e0d6fba9f 27-29,32-51
+scripts/plane-mcp.sh
+  s_2913fb743b94c4::t_b89643a025c20b 6-14
+  s_2913fb743b94c4::t_8c7d1b6d12e417 41
+  s_2913fb743b94c4::t_47d99055f77116 27
+.worktreeinclude
+  s_2913fb743b94c4::t_6e70bbb270dadf 1-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "44a9549ace24e71342783d7e33a3b53b29c8cca9",
+  "prompts": {},
+  "sessions": {
+    "s_2913fb743b94c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b7b5da91-6cd3-4516-b410-f2bad19bef49",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
