@@ -1,0 +1,19 @@
+AGENTS.md
+  s_2913fb743b94c4::t_4c7cfc61bf7346 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "3c95663534832c94468b9d7ec97a534568592a79",
+  "prompts": {},
+  "sessions": {
+    "s_2913fb743b94c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b7b5da91-6cd3-4516-b410-f2bad19bef49",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
