@@ -6,12 +6,18 @@ an intermediate file. Retain the stopped original container as the rollback unit
 
 import copy
 import hashlib
+import http.client
+import io
 import json
 import os
 import shlex
+import socket
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
+
+from plane_toolchain.remote import docker, docker_ok, program
 
 
 def replacement(original, image, live_url, digest):
@@ -35,102 +41,159 @@ def replacement(original, image, live_url, digest):
     return body
 
 
-REMOTE = r"""
-import hashlib,http.client,io,json,pathlib,socket,subprocess,sys,tarfile,time
-payload=json.load(sys.stdin)
-name=payload['container']
-operation=payload['operation']
-digest=payload['digest']
-backup=name+'-before-terrainlink-pages'
-def docker(*args):
-    return subprocess.run(['docker',*args],check=True,capture_output=True).stdout
-def inspect(target):
-    return json.loads(docker('inspect',target))[0]
-def healthy():
-    for attempt in range(45):
-        result=subprocess.run(['docker','exec',name,'python','-c',
+def backup_name(name):
+    """Legacy rollback container name; deployed receipts depend on it."""
+    return name + "-before-terrainlink-pages"
+
+
+def source_label(container):
+    return container["Config"].get("Labels", {}).get("terrainlink.pages.source")
+
+
+def healthy(name, probe, sleep, attempts=45):
+    """Wait for the API inside the container to answer; raise when it never does."""
+    for _ in range(attempts):
+        if probe(
+            "exec",
+            name,
+            "python",
+            "-c",
             "import urllib.request; "
-            "urllib.request.urlopen('http://127.0.0.1:8000/api/instances/',timeout=3)"],
-            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        if result.returncode==0:return
-        time.sleep(1)
-    raise ValueError('API health check failed')
-current=inspect(name)
-if operation=='check':
-    if current['Config'].get('Labels',{}).get('terrainlink.pages.source')!=digest:
-        raise ValueError('Pages image does not match source')
-    healthy()
-    print('Pages image and API health verified')
-    sys.exit(0)
-if operation=='revert':
-    old=inspect(backup)
-    if current['Config'].get('Labels',{}).get('terrainlink.pages.source')!=digest:
-        raise ValueError('API changed; refusing rollback')
-    docker('stop',name)
-    docker('rename',name,name+'-pages-reverted-'+str(int(time.time())))
-    docker('rename',backup,name)
-    docker('start',name)
-    healthy()
-    print('Original API container restored; derived container retained stopped')
-    sys.exit(0)
-if operation!='apply':raise ValueError('Unknown operation')
-if current['Config'].get('Labels',{}).get('terrainlink.pages.source')==digest:
-    healthy()
-    print('Pages image already applied; API healthy')
-    sys.exit(0)
-if subprocess.run(['docker','inspect',backup],
-        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:
-    raise ValueError('Existing rollback container; reconcile before a new deployment')
-source=payload['source'].encode()
-base=json.loads(docker('image','inspect',current['Image']))[0]
-if not base.get('RepoDigests'):raise ValueError('Running image has no immutable registry digest')
-base_image=base['RepoDigests'][0]
-image='terrainlink-plane-pages:'+digest[:16]
-# Build from the exact running image; no credentials or runtime environment in context.
-dockerfile=('FROM '+base_image+'\nCOPY plane_pages.py /code/plane/api/terrainlink_pages.py\n'
- 'RUN python -c "from pathlib import Path; p=Path(\'/code/plane/api/urls/__init__.py\'); '
- 'p.write_text(p.read_text()+'
- '\'\\nfrom plane.api.terrainlink_pages import routes\\nurlpatterns += routes()\\n\')"\n'
- 'RUN python -m py_compile /code/plane/api/terrainlink_pages.py\n').encode()
-stream=io.BytesIO()
-with tarfile.open(fileobj=stream,mode='w') as archive:
-    for filename,content in [('Dockerfile',dockerfile),('plane_pages.py',source)]:
-        info=tarfile.TarInfo(filename)
-        info.size=len(content)
-        archive.addfile(info,io.BytesIO(content))
-subprocess.run(['docker','build','-t',image,'-'],input=stream.getvalue(),check=True,
-               stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-namespace={}
-exec(payload['replacement'],namespace)
-body=namespace['replacement'](current,image,payload['live_url'],digest)
-class DockerHTTP(http.client.HTTPConnection):
-    def connect(self):
-        self.sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
-        self.sock.connect('/var/run/docker.sock')
-def create():
-    connection=DockerHTTP('localhost')
-    connection.request('POST','/containers/create?name='+name,body=json.dumps(body),
-                       headers={'Content-Type':'application/json'})
-    response=connection.getresponse()
+            "urllib.request.urlopen('http://127.0.0.1:8000/api/instances/',timeout=3)",
+        ):
+            return
+        sleep(1)
+    raise ValueError("API health check failed")
+
+
+def build_context(base_image, source):
+    """Return a tar build context deriving the exact running image."""
+    # No credentials or runtime environment in context.
+    dockerfile = (
+        "FROM " + base_image + "\nCOPY plane_pages.py /code/plane/api/terrainlink_pages.py\n"
+        "RUN python -c \"from pathlib import Path; p=Path('/code/plane/api/urls/__init__.py'); "
+        "p.write_text(p.read_text()+"
+        "'\\nfrom plane.api.terrainlink_pages import routes\\nurlpatterns += routes()\\n')\"\n"
+        "RUN python -m py_compile /code/plane/api/terrainlink_pages.py\n"
+    ).encode()
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w") as archive:
+        for filename, content in [("Dockerfile", dockerfile), ("plane_pages.py", source)]:
+            info = tarfile.TarInfo(filename)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    return stream.getvalue()
+
+
+def docker_create(name, body):
+    """Create a container through the Docker API socket; the body stays in this process."""
+
+    class DockerHTTP(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.connect("/var/run/docker.sock")
+
+    connection = DockerHTTP("localhost")
+    connection.request(
+        "POST",
+        "/containers/create?name=" + name,
+        body=json.dumps(body),
+        headers={"Content-Type": "application/json"},
+    )
+    response = connection.getresponse()
     response.read()
-    if response.status!=201:raise ValueError('Derived API container creation failed')
+    if response.status != 201:
+        raise ValueError("Derived API container creation failed")
     connection.close()
-docker('stop',name)
-docker('rename',name,backup)
-try:
-    create()
-    docker('start',name)
-    healthy()
-except BaseException:
-    if subprocess.run(['docker','inspect',name],
-        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:
-        subprocess.run(['docker','stop',name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        docker('rename',name,name+'-pages-failed-'+str(int(time.time())))
-    docker('rename',backup,name)
-    docker('start',name)
-    raise
-print('Pages derived image applied; API healthy; original container retained for rollback')
-"""
+
+
+def check(current, payload, health):
+    if source_label(current) != payload["digest"]:
+        raise ValueError("Pages image does not match source")
+    health(payload["container"])
+    return "Pages image and API health verified"
+
+
+def revert(current, payload, docker, health, now):
+    name = payload["container"]
+    backup = backup_name(name)
+    docker("inspect", backup)  # Fail before any change when no rollback container exists.
+    if source_label(current) != payload["digest"]:
+        raise ValueError("API changed; refusing rollback")
+    # PTC-5: no recovery when a step after stop fails.
+    docker("stop", name)
+    docker("rename", name, name + "-pages-reverted-" + str(int(now())))
+    docker("rename", backup, name)
+    docker("start", name)
+    health(name)
+    return "Original API container restored; derived container retained stopped"
+
+
+def apply(current, payload, docker, probe, create, health, now):
+    name, digest = payload["container"], payload["digest"]
+    backup = backup_name(name)
+    if source_label(current) == digest:
+        health(name)
+        return "Pages image already applied; API healthy"
+    if probe("inspect", backup):
+        raise ValueError("Existing rollback container; reconcile before a new deployment")
+    source = payload["source"].encode()
+    base = json.loads(docker("image", "inspect", current["Image"]))[0]
+    if not base.get("RepoDigests"):
+        raise ValueError("Running image has no immutable registry digest")
+    image = "terrainlink-plane-pages:" + digest[:16]
+    docker(
+        "build",
+        "-t",
+        image,
+        "-",
+        input=build_context(base["RepoDigests"][0], source),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    namespace = {}
+    exec(payload["replacement"], namespace)  # noqa: S102 - source shipped by main()
+    body = namespace["replacement"](current, image, payload["live_url"], digest)
+    docker("stop", name)
+    docker("rename", name, backup)
+    try:
+        create(name, body)
+        docker("start", name)
+        health(name)
+    except BaseException:
+        if probe("inspect", name):
+            probe("stop", name)
+            docker("rename", name, name + "-pages-failed-" + str(int(now())))
+        docker("rename", backup, name)
+        docker("start", name)
+        raise
+    return "Pages derived image applied; API healthy; original container retained for rollback"
+
+
+def deploy(payload, docker, probe, create, health, now):
+    """Run one operation against the Docker host; return the operator message.
+
+    docker(*args, **kw) -> bytes raises on failure; probe(*args) -> bool never raises;
+    create(name, body) raises unless created; health(name) raises unless healthy.
+    """
+    current = json.loads(docker("inspect", payload["container"]))[0]
+    operation = payload["operation"]
+    if operation == "check":
+        return check(current, payload, health)
+    if operation == "revert":
+        return revert(current, payload, docker, health, now)
+    if operation != "apply":
+        raise ValueError("Unknown operation")
+    return apply(current, payload, docker, probe, create, health, now)
+
+
+REMOTE = program(
+    ["http.client", "io", "json", "socket", "subprocess", "sys", "tarfile", "time"],
+    [docker, docker_ok, backup_name, source_label, healthy, build_context, docker_create]
+    + [check, revert, apply, deploy],
+    "print(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
+    "    lambda name: healthy(name, docker_ok, time.sleep), time.time))\n",
+)
 
 
 def main():
