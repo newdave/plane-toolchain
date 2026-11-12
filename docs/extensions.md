@@ -73,6 +73,20 @@ The MCP helper rewrites `server.py` in place (truncate, write, flush, fsync) so 
 
 A check fails when the installed source differs. The MCP helper refuses tracked or unexpected host entry points, preserves a backup and checks receipts before overwriting. The Pages helper builds a derived image from the running immutable image, preserves opaque Docker configuration and keeps the original container for rollback. It rejects auto-removal and static IP configurations requiring a specific migration. It checks backend HTTP health; verify authenticated MCP operations separately after applying.
 
+### Saltbox route
+
+A Saltbox role owns the API container and pins its image, labels and environment in the inventory, so the direct `apply` route (which swaps the container) does not fit. It also refuses a local running image. Use the build-only task instead. Obtain deployment authority first.
+
+1. Run `mise run owner:plane-pages:build` (needs `PLANE_MCP_SSH`; optional `PLANE_WORKER_CONTAINER`, default `plane-worker`, and `PLANE_BACKEND_IMAGE`). It derives `makeplane/plane-backend:<tag>` from the worker image unless `PLANE_BACKEND_IMAGE` is set, builds from that image's registry digest and prints `<image tag> <source digest>`. It refuses when the upstream image is missing or has no registry digest. It never creates, stops, renames or removes a container.
+2. Back up `/srv/git/saltbox/inventories/host_vars/localhost.yml`, then set:
+   - `plane_role_api_docker_image`: the printed image tag.
+   - `plane_role_api_docker_labels_custom`: `{terrainlink.pages.source: <printed digest>}`.
+   - `plane_role_api_docker_envs_custom`: `CE_PLANE_LIVE_URL` set to the internal Live URL.
+3. Run `sb install mod-plane`.
+4. Run `mise run owner:plane-pages:check`.
+
+The direct `apply` route is for non-Saltbox hosts.
+
 The extracted server payloads retain their original bytes, including comments, so existing deployment digests still match, except as noted below.
 
 **PTC-13 migration note.** `ce_tools.py` changed (canonical UUIDs, SDK private-call guard, `FASTMCP_HOST`), so its payload digest changed. `pages_backend.py` is unchanged. A host with a pre-PTC-13 `ce_tools.py` receipt will report a source difference on `owner:plane-mcp-compat:check`; review, then re-apply. Receipt and backup names are unchanged, so revert still works.

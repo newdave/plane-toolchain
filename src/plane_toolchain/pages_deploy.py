@@ -9,6 +9,7 @@ import hashlib
 import http.client
 import io
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -355,6 +356,34 @@ def apply(current, payload, docker, probe, create, health, now):
     return "Pages derived image applied; API healthy; original container retained for rollback"
 
 
+def build(payload, docker):
+    """Build the derived image from the upstream backend image; never touch a container."""
+    base = payload.get("backend_image")
+    if not base:
+        worker = json.loads(docker("inspect", payload["worker"]))[0]["Config"]["Image"]
+        tag = worker.rsplit("/", 1)[-1].partition("@")[0].partition(":")[2]
+        if not tag:
+            raise ValueError("Worker image has no tag; set PLANE_BACKEND_IMAGE")
+        base = "makeplane/plane-backend:" + tag
+    try:
+        digests = json.loads(docker("image", "inspect", base))[0].get("RepoDigests")
+    except subprocess.CalledProcessError:
+        digests = None
+    if not digests:
+        raise ValueError("Upstream image missing or has no registry digest")
+    image = PAGES_IMAGE_PREFIX + payload["digest"][:16]
+    docker(
+        "build",
+        "-t",
+        image,
+        "-",
+        input=build_context(digests[0], payload["source"].encode()),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return image + " " + payload["digest"]
+
+
 def deploy(payload, docker, probe, create, health, now):
     """Run one operation against the Docker host; return the operator message.
 
@@ -363,6 +392,8 @@ def deploy(payload, docker, probe, create, health, now):
     (pages=False when the upstream original, which has no Pages route, is promoted).
     """
     operation = payload["operation"]
+    if operation == "build":
+        return build(payload, docker)
     try:
         current = json.loads(docker("inspect", payload["container"]))[0]
     except subprocess.CalledProcessError:
@@ -402,6 +433,7 @@ REMOTE = program(
         failed_name,
         reconcile,
         apply,
+        build,
         deploy,
     ],
     "say(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
@@ -429,6 +461,22 @@ def main():
     import inspect
 
     operation = sys.argv[1]
+    source = Path(__file__).with_name("pages_backend.py").read_text()
+    digest = hashlib.sha256(source.encode()).hexdigest()
+    if operation == "build":
+        (host,) = require_env("PLANE_MCP_SSH")
+        worker = os.environ.get("PLANE_WORKER_CONTAINER") or "plane-worker"
+        image = os.environ.get("PLANE_BACKEND_IMAGE") or None
+        if host.startswith("-") or not worker.replace("-", "").replace("_", "").isalnum():
+            raise ValueError("Invalid deployment destination")
+        if image and (image.startswith("-") or any(c.isspace() for c in image)):
+            raise ValueError("Invalid PLANE_BACKEND_IMAGE")
+        payload = dict(operation=operation, worker=worker, backend_image=image, source=source)
+        payload["digest"] = digest
+        subprocess.run(  # noqa: S603 - validated owner host; fixed remote program
+            ssh_argv(host, REMOTE), input=json.dumps(payload), text=True, check=True
+        )
+        return
     host, container, live_url = require_env(
         "PLANE_MCP_SSH", "PLANE_API_CONTAINER", "PLANE_LIVE_URL"
     )
@@ -436,13 +484,12 @@ def main():
         sys.exit("Invalid PLANE_LIVE_URL")
     if host.startswith("-") or not container.replace("-", "").replace("_", "").isalnum():
         raise ValueError("Invalid deployment destination")
-    source = Path(__file__).with_name("pages_backend.py").read_text()
     payload = dict(
         operation=operation,
         container=container,
         live_url=live_url,
         source=source,
-        digest=hashlib.sha256(source.encode()).hexdigest(),
+        digest=digest,
         replacement="import copy\n" + inspect.getsource(replacement),
     )
     subprocess.run(  # noqa: S603 - validated owner host; fixed remote program
