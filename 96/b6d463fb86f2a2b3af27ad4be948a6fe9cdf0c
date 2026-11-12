@@ -1,0 +1,23 @@
+scripts/check-commit-msg.py
+  s_ce066174a8d2c7::t_aa287500d1175c 6-13,15-23,28
+tests/test_check_commit_msg.py
+  s_ce066174a8d2c7::t_aa287500d1175c 18-21,42-44
+CONTRIBUTING.md
+  s_ce066174a8d2c7::t_94bd52b0b42222 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "96b6d463fb86f2a2b3af27ad4be948a6fe9cdf0c",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
