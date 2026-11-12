@@ -137,7 +137,7 @@ def restore_any(name, backup, reverted, probe, docker):
                 home = reverted if source_label(json.loads(docker("inspect", aside))[0]) else backup
                 if not probe("inspect", home):
                     probe("rename", aside, home)
-            except Exception:
+            except Exception:  # noqa: S110 - best effort; the original error is re-raised
                 pass
 
 
