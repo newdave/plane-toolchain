@@ -15,6 +15,10 @@ spec.loader.exec_module(check)
     "line",
     [
         "Co-authored-by: Claude <noreply@anthropic.com>",
+        "Co-authored-by: Claude Opus 4 <a@b.c>",
+        "Co-authored-by: GitHub Copilot <a@b.c>",
+        "Co-authored-by: Someone <123+copilot@users.noreply.github.com>",
+        "Generated with [Claude Code](https://claude.com/claude-code)",
         "co-authored-by: CODEX <x@y.z>",
         "Co-Authored-By: Someone <bot@openai.com>",
         "Co-authored-by: Copilot <copilot@github.com>",
@@ -35,6 +39,9 @@ def test_rejects_ai_attribution(line):
     "msg",
     [
         "feat: x\n\nCo-authored-by: Jane Doe <jane@example.com>\n",
+        "feat: x\n\nCo-authored-by: Devin Smith <devin@example.com>\n",
+        "feat: x\n\nCo-authored-by: Gemini X <x@example.com>\n",
+        "feat: configure Claude plugins\n\nGenerated code is checked; Claude plugins documented.\n",
         "docs: mention generated with care in prose\n",
         "fix: claude is a name in a body line\n",
     ],
