@@ -15,13 +15,23 @@ All notable changes to this project are documented here. The format follows
 - Pinned lint of workflows and shell scripts with actionlint, zizmor and shellcheck (#6).
 - Renovate configuration for pinned dependency updates (#11).
 - Pre-commit config matching `mise run check` (#15).
+- Default-branch ruleset recorded with maintenance commands (#5).
+- Tag-triggered release workflow and this changelog (#19).
+- Pages deploy health check probes a Pages route (#22).
+- Remote deploys survive SSH disconnects; Pages apply reconciles a half-finished run (#24).
+- Pages revert finishes an interrupted revert (#25).
 
 ### Changed
 
 - Deploy remote programs are built from testable functions (#12).
 - Declare `httpx2`, enable ruff `S` rules and use mise Python in CI (#14).
+- MCP bridge runs a locked `mcp-remote` tree; Node pinned to 26.13.1 (#20).
 
 ### Fixed
+
+- Pages revert recovers from failures and a repeat revert is idempotent (#17).
+- MCP compat deploy waits for health, rolls back, and keeps receipts kill-safe (#18).
+- Retained rollback containers no longer auto-start (#23).
 
 - Bridge loads checkout connection settings and the encrypted key.
 - Default SOPS age key path when the bridge runs outside mise.
@@ -32,3 +42,4 @@ All notable changes to this project are documented here. The format follows
 ### Security
 
 - Example write workflows allow-list trusted events and fail closed (#13).
+- Pages API responses never include internal error text (#16, #21).
