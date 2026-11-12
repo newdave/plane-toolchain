@@ -1,0 +1,27 @@
+tests/fake_docker.py
+  s_ce066174a8d2c7::t_1dada2f01747de 97-100
+  s_ce066174a8d2c7::t_776349bcc0acce 19,53,76
+  s_ce066174a8d2c7::t_496f627037a634 1-18,20-52,54-75,77-96,101-167
+tests/test_mcp_deploy.py
+  s_ce066174a8d2c7::t_37ba603d5b4388 18-23,45,60,67,78,90,95,107,120,131,141,149,152,157,159
+  s_ce066174a8d2c7::t_8e4c16081de80d 1-17,24-44,46-59,61-66,68-77,79-89,91-94,96-106,108-119,121-130,132-140,142-148,150-151,153-156,158,160-191
+tests/test_pages_deploy.py
+  s_ce066174a8d2c7::t_cd9a848ffc3f5b 1-126,128-267
+  s_ce066174a8d2c7::t_67b42d2c3ea8e9 127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "5d2eb59291e0ef2bde767708f677ae2b0210d17d",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
