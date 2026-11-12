@@ -12,30 +12,48 @@ ROOT = Path(__file__).resolve().parents[2]
 CONNECTION = ("PLANE_MCP_URL", "PLANE_WORKSPACE", "PLANE_PROJECT")
 
 
+def assignments(text: str, names: tuple[str, ...]) -> list[tuple[str, str]]:
+    """Return (name, value) for each literal KEY=value line, in file order."""
+    pattern = re.compile(r"\s*(?:export\s+)?(" + "|".join(names) + r")=(.*?)\s*")
+    found = []
+    for line in text.splitlines():
+        match = pattern.fullmatch(line)
+        if match:
+            found.append((match[1], match[2].split(" #", 1)[0].strip().strip("\"'")))
+    return found
+
+
 def literal(root: Path, names: tuple[str, ...]) -> dict[str, str]:
-    """Read KEY=value lines from checkout config files; later files win."""
+    """Read KEY=value lines from checkout config files; later files win.
+
+    Raises OSError or UnicodeDecodeError when a present file cannot be read.
+    """
     values = {}
     local = root / "config/local.env"
     legacy = root / ".deploy/env"
-    pattern = re.compile(r"\s*(?:export\s+)?(" + "|".join(names) + r")=(.*?)\s*")
     for path in (root / "config/defaults.env", root / ".env", local if local.exists() else legacy):
         if path.is_file():
-            for line in path.read_text().splitlines():
-                match = pattern.fullmatch(line)
-                if match:
-                    values[match[1]] = match[2].split(" #", 1)[0].strip().strip("\"'")
+            values.update(assignments(path.read_text(), names))
     return values
 
 
 def connection(root: Path, env: Mapping[str, str]) -> dict[str, str]:
     """Return file-provided connection values that the environment does not override."""
-    return {k: v for k, v in literal(root, CONNECTION).items() if k not in env and v}
+    try:
+        values = literal(root, CONNECTION)
+    except (OSError, UnicodeDecodeError):
+        return {}
+    return {k: v for k, v in values.items() if k not in env and v}
 
 
 def switch(root: Path, env: Mapping[str, str]) -> str:
-    value = literal(root, ("PLANE_ENABLED",)).get("PLANE_ENABLED", "false")
     if "PLANE_ENABLED" in env:
         value = env["PLANE_ENABLED"]
+    else:
+        try:
+            value = literal(root, ("PLANE_ENABLED",)).get("PLANE_ENABLED", "false")
+        except (OSError, UnicodeDecodeError):
+            return "invalid"
     return {"true": "enabled", "false": "disabled"}.get(value, "invalid")
 
 
