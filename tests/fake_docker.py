@@ -31,6 +31,9 @@ class FakeDocker:
             "labels": dict(labels or {}),
             "running": running,
             "healthy": healthy,
+            "health": None,  # None: no healthcheck; else a status such as "starting"
+            "restart_counts": [0],  # one value consumed per inspect; last one repeats
+            "restarting": False,
             "host_config": {"RestartPolicy": {"Name": "unless-stopped"}, **host_config},
         }
 
@@ -45,8 +48,21 @@ class FakeDocker:
             },
             "HostConfig": json.loads(json.dumps(container["host_config"])),
             "NetworkSettings": {"Networks": {"shared": {"Aliases": ["api"], "IPAMConfig": None}}},
-            "State": {"Running": container["running"]},
+            "State": self.state(container),
+            "RestartCount": self.restart_count(container),
         }
+
+    @staticmethod
+    def restart_count(container):
+        counts = container["restart_counts"]
+        return counts.pop(0) if len(counts) > 1 else counts[0]
+
+    @staticmethod
+    def state(container):
+        state = {"Running": container["running"], "Restarting": container["restarting"]}
+        if container["health"]:
+            state["Health"] = {"Status": container["health"]}
+        return state
 
     def execute(self, *args, input=None):
         """Return (returncode, stdout) for one docker CLI invocation."""
@@ -114,6 +130,9 @@ class FakeDocker:
             "labels": dict(body["Labels"]),
             "running": False,
             "healthy": self.created_healthy,
+            "health": None,
+            "restart_counts": [0],
+            "restarting": False,
             "host_config": body["HostConfig"],
         }
 
