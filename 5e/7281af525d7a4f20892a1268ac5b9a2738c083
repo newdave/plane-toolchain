@@ -1,0 +1,25 @@
+tests/test_remote.py
+  s_ce066174a8d2c7::t_4d901868c1f3d6 1-49
+src/plane_toolchain/remote.py
+  s_ce066174a8d2c7::t_24960e769383c3 12-15,17
+tests/fake_docker.py
+  s_ce066174a8d2c7::t_d5980cd6bbbf38 19-22,55,87-93,96,107,127
+tests/test_pages_deploy.py
+  s_ce066174a8d2c7::t_1dfb8381b047dc 87-90,290,334-354
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "5e7281af525d7a4f20892a1268ac5b9a2738c083",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
