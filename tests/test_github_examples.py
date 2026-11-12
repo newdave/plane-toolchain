@@ -1,6 +1,7 @@
 """Example automation must fail closed before remote writes."""
 
 import asyncio
+import re
 import runpy
 from pathlib import Path
 
@@ -108,3 +109,33 @@ def test_workflows_parse_and_do_not_activate_examples():
     for path in [*root.glob("examples/github/*.yml"), *root.glob(".github/workflows/*.yml")]:
         assert yaml.load(path.read_text(), Loader=yaml.BaseLoader)["on"]
     assert not list(root.glob(".github/workflows/plane-*.yml"))
+
+
+ALL_FILES = ["plane-check.yml", *WRITE_FILES]
+
+
+@pytest.mark.parametrize("name", ALL_FILES)
+def test_secret_holding_jobs_skip_dev_dependencies(name):
+    text, _ = load(name)
+    assert "uv sync --locked --no-dev" in text
+    assert "uv run --locked --no-dev" in text
+    assert "uv sync --locked\n" not in text
+    assert "uv run --locked python" not in text
+
+
+@pytest.mark.parametrize("name", WRITE_FILES)
+def test_case_pattern_and_python_allow_list_match(name):
+    text, doc = load(name)
+    script = "\n".join(s.get("run", "") for s in doc["jobs"]["preconditions"]["steps"])
+    pattern = re.search(r"^\s*(\S+\|\S+)\)\s*;;", script, re.M).group(1)
+    assert set(pattern.split("|")) == set(ALLOWED) == module["TRUSTED_EVENTS"]
+
+
+@pytest.mark.parametrize("name", ALL_FILES)
+def test_no_status_override_and_secrets_scoped(name):
+    _, doc = load(name)
+    for job_name, job in doc["jobs"].items():
+        assert not re.search(r"always\(|cancelled\(|failure\(", str(job.get("if", "")))
+        if job_name == "preconditions":
+            assert "secrets." not in yaml.dump(job)
+    assert "secrets." in yaml.dump(doc["jobs"])
