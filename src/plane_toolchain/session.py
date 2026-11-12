@@ -7,7 +7,8 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+# Installed projects point at their own root; this checkout is the default.
+ROOT = Path(os.environ.get("PLANE_CONFIG_ROOT") or Path(__file__).resolve().parents[2])
 # Non-secret connection values only. PLANE_API_KEY is never read from checkout files.
 CONNECTION = ("PLANE_MCP_URL", "PLANE_WORKSPACE", "PLANE_PROJECT")
 
@@ -31,7 +32,11 @@ def literal(root: Path, names: tuple[str, ...]) -> dict[str, str]:
     values = {}
     local = root / "config/local.env"
     legacy = root / ".deploy/env"
-    for path in (root / "config/defaults.env", root / ".env", local if local.exists() else legacy):
+    paths = (root / "config/defaults.env", root / ".env", local if local.exists() else legacy)
+    # A project set up by scripts/install_project.py keeps its values only under .plane/.
+    if (root / ".plane/plane.sh").is_file():
+        paths = (root / ".plane/local.env",)
+    for path in paths:
         if path.is_file():
             values.update(assignments(path.read_text(), names))
     return values
