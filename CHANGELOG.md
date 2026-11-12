@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Project installer (`scripts/install_project.py`, `owner:project:apply`/`revert`) that connects another project to the Plane MCP bridge, registers Codex and Claude session hooks, and adds an AGENTS.md block making Plane the authoritative task system.
+
 ### Changed
 
 - Legacy deploy names are centralised in `plane_toolchain/legacy.py`, with a test that rejects new references elsewhere. Behaviour is unchanged.
