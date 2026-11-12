@@ -30,8 +30,12 @@ ALLOWED = PERMANENT | TEMPORARY
 
 
 def offenders(paths, reader, allowed=ALLOWED):
-    """Return paths outside `allowed` whose text mentions the legacy name, any case."""
-    return sorted(p for p in paths if p not in allowed and NEEDLE in reader(p).lower())
+    """Return paths outside `allowed` whose name or text mentions the legacy name, any case."""
+    return sorted(
+        p
+        for p in paths
+        if p not in allowed and (NEEDLE in p.lower() or NEEDLE in reader(p).lower())
+    )
 
 
 def tracked():
@@ -60,3 +64,8 @@ def test_guard_fails_on_new_occurrence_and_passes_on_allowed():
     assert offenders(files, files.__getitem__) == ["src/plane_toolchain/new.py"]
     assert offenders(["CHANGELOG.md", "README.md"], lambda _: "terrainlink") == []
     assert offenders(["a.py"], lambda _: "clean") == []
+
+
+def test_guard_fails_on_legacy_name_in_path():
+    paths = ["tests/TerrainLink_fixture.json", "CHANGELOG.md"]
+    assert offenders(paths, lambda _: "{}") == ["tests/TerrainLink_fixture.json"]
