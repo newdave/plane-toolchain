@@ -263,6 +263,28 @@ def test_revert_recovery_failure_reraises_original_and_keeps_api_running(applied
     assert len(running) == 1
 
 
+RECOVERY_STEPS = [("rename", "api", BACKUP), ("rename", f"api-pages-reverted-{NOW}", "api")]
+
+
+@pytest.mark.parametrize("step", [*RECOVERY_STEPS, ("start", "api")])
+def test_revert_recovery_step_failing_twice_still_leaves_one_running_api(applied, step):
+    applied.containers[BACKUP]["healthy"] = False
+    applied.fail += [step] * 2
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        deploy("revert", applied)
+    running = [n for n, c in applied.containers.items() if c["running"]]
+    assert running and "api" in running and len(running) == 1
+
+
+def test_revert_recovery_nothing_startable_reraises_original(applied):
+    applied.fail += [("start", "api")] * 4  # revert start, recovery, derived, original
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        deploy("revert", applied)
+    assert caught.value.__context__ is not None
+    assert not any(c["running"] for c in applied.containers.values())
+    assert "api" in applied.containers and BACKUP in applied.containers
+
+
 def test_check_verifies_label_and_health(applied, monkeypatch, capsys):
     remote("check", applied, monkeypatch)
     assert capsys.readouterr().out == "Pages image and API health verified\n"

@@ -114,6 +114,23 @@ def check(current, payload, health):
     return "Pages image and API health verified"
 
 
+def restore_any(name, backup, reverted, probe):
+    """Best effort after failed recovery: leave exactly one started `name` container."""
+    aside = reverted + "-aside"
+    if probe("inspect", name):
+        if probe("start", name):
+            return
+        if not probe("rename", name, aside):
+            return
+    for source in (reverted, backup):
+        if probe("inspect", source) and probe("rename", source, name):
+            if probe("start", name):
+                return
+            probe("rename", name, source)
+    if probe("inspect", aside):
+        probe("rename", aside, name)
+
+
 def revert(current, payload, docker, probe, health, now):
     name = payload["container"]
     backup = backup_name(name)
@@ -143,13 +160,7 @@ def revert(current, payload, docker, probe, health, now):
                 docker("rename", reverted, name)
             docker("start", name)
         except Exception:
-            # Best effort: leave one running `name` container, never two.
-            if probe("inspect", name):
-                probe("start", name)
-            elif probe("inspect", reverted):
-                probe("rename", reverted, name) and probe("start", name)
-            elif probe("rename", backup, name):
-                probe("start", name)
+            restore_any(name, backup, reverted, probe)
             raise error  # Recovery error stays as __context__.
         raise
     return "Original API container restored; derived container retained stopped"
@@ -216,7 +227,7 @@ def deploy(payload, docker, probe, create, health, now):
 REMOTE = program(
     ["http.client", "io", "json", "socket", "subprocess", "sys", "tarfile", "time"],
     [docker, docker_ok, backup_name, source_label, healthy, build_context, docker_create]
-    + [check, revert, apply, deploy],
+    + [check, restore_any, revert, apply, deploy],
     "print(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
     "    lambda name: healthy(name, docker_ok, time.sleep), time.time))\n",
 )
