@@ -1,0 +1,25 @@
+tests/test_legacy_payloads.py
+  s_ce066174a8d2c7::t_2ef6e48da79853 13-14
+tests/test_ce_tools.py
+  s_ce066174a8d2c7::t_2ef6e48da79853 39-84
+src/plane_toolchain/ce_tools.py
+  s_ce066174a8d2c7::t_2ef6e48da79853 11,25-50,71,76,108-109,114,126,148,153,156,160
+docs/extensions.md
+  s_ce066174a8d2c7::t_2ef6e48da79853 43-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "5ebd8f9601e6a5efb4a672cd0be1305a80aa0da9",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
