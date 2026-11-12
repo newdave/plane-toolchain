@@ -1,0 +1,21 @@
+SECURITY.md
+  s_ce066174a8d2c7::t_a0829ce48619a0 1-44
+.github/pull_request_template.md
+  s_ce066174a8d2c7::t_51436312d23bd4 1-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "a972c0ea16c9fa9ef4f0018d391ab87f740488e8",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
