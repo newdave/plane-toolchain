@@ -63,16 +63,23 @@ def source_label(container):
 
 
 def healthy(name, probe, sleep, attempts=45):
-    """Wait for the API inside the container to answer; raise when it never does."""
+    """Wait for the API and the Pages route inside the container; raise when they never answer."""
+    api = (
+        "import urllib.request; "
+        "urllib.request.urlopen('http://127.0.0.1:8000/api/instances/',timeout=3)"
+    )
+    # Unauthenticated dummy ids: 401/403 proves the route exists and auth is enforced.
+    pages = (
+        "import sys, urllib.error, urllib.request\n"
+        "try:\n"
+        "    urllib.request.urlopen('http://127.0.0.1:8000/api/v1/workspaces/health-probe/projects/"
+        "00000000-0000-0000-0000-000000000000/ce-pages/', timeout=3)\n"
+        "except urllib.error.HTTPError as error:\n"
+        "    sys.exit(0 if error.code in (401, 403) else 1)\n"
+        "sys.exit(1)"
+    )
     for _ in range(attempts):
-        if probe(
-            "exec",
-            name,
-            "python",
-            "-c",
-            "import urllib.request; "
-            "urllib.request.urlopen('http://127.0.0.1:8000/api/instances/',timeout=3)",
-        ):
+        if probe("exec", name, "python", "-c", api) and probe("exec", name, "python", "-c", pages):
             return
         sleep(1)
     raise ValueError("API health check failed")

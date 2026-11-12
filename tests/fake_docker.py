@@ -35,6 +35,7 @@ class FakeDocker:
             "labels": dict(labels or {}),
             "running": running,
             "healthy": healthy,
+            "pages_status": 401,  # HTTP status the Pages probe URL answers with
             "health": None,  # None: no healthcheck; else a status such as "starting"
             "restart_counts": [0],  # one value consumed per inspect; last one repeats
             "restarting": False,
@@ -109,6 +110,9 @@ class FakeDocker:
         if command == "exec":
             container = self.containers.get(rest[0])
             ok = bool(container and container["running"] and container["healthy"])
+            if ok and "/ce-pages/" in rest[-1]:
+                # The probe script exits 0 only for 401/403.
+                ok = container.get("pages_status", 401) in (401, 403)
             return (0 if ok else 1), b""
         if command == "build":
             assert rest[0] == "-t" and rest[2] == "-"
