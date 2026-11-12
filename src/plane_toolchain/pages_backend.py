@@ -7,6 +7,19 @@ The limited contract deliberately excludes edits to existing collaborative docum
 # Dependencies below exist in the Plane backend image, not TerrainLink's environment.
 # pyright: reportMissingImports=false
 
+# List rows omit document bodies (description_*); retrieve keeps full detail.
+LIST_FIELDS = (
+    "id",
+    "name",
+    "access",
+    "owned_by",
+    "created_at",
+    "updated_at",
+    "archived_at",
+    "is_locked",
+    "parent",
+)
+
 
 def creation_payload(data, sanitise, convert):
     """Validate and convert a complete new document before any database write."""
@@ -42,6 +55,9 @@ def routes():
 
     import requests
     from django.db import transaction
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    from django.http import Http404
+    from django.shortcuts import get_object_or_404
     from django.urls import path
     from plane.api.views.base import BaseAPIView
     from plane.app.permissions import ProjectPagePermission
@@ -56,14 +72,19 @@ def routes():
     from rest_framework.permissions import IsAuthenticated
     from rest_framework.response import Response
 
+    def found(source, **lookup):
+        """404 for absent rows and malformed ids; never a 500."""
+        try:
+            return get_object_or_404(source, **lookup)
+        except (DjangoValidationError, ValueError):
+            raise Http404 from None
+
     class Pages(BaseAPIView):
         permission_classes = [IsAuthenticated, ProjectPagePermission]
 
         def visible(self):
             slug, project_id = self.kwargs["slug"], self.kwargs["project_id"]
-            project = Project.objects.get(
-                id=project_id, workspace__slug=slug, archived_at__isnull=True
-            )
+            project = found(Project, id=project_id, workspace__slug=slug, archived_at__isnull=True)
             guest = ProjectMember.objects.filter(
                 project=project, member=self.request.user, is_active=True, role=5
             ).exists()
@@ -82,16 +103,14 @@ def routes():
         def get(self, request, slug, project_id, page_id=None):
             rows = self.visible()
             if page_id:
-                from django.shortcuts import get_object_or_404
-
-                return Response(PageDetailSerializer(get_object_or_404(rows, id=page_id)).data)
+                return Response(PageDetailSerializer(found(rows, id=page_id)).data)
             # Bound the explicit CE contract; no silent truncation or inferred cursor.
-            rows = list(rows[:1001])
+            rows = list(rows.values(*LIST_FIELDS)[:1001])
             if len(rows) > 1000:
                 raise ValidationError(
                     "More than 1000 project pages; add pagination before continuing"
                 )
-            return Response(PageDetailSerializer(rows, many=True).data)
+            return Response(rows)
 
         def post(self, request, slug, project_id):
             def sanitise(value):
