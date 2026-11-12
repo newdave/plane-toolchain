@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from plane_toolchain.remote import docker, program
+from plane_toolchain.remote import docker, program, require_env, say, ssh_argv
 
 
 def git_tracked(root):
@@ -223,7 +223,7 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         healthy = wait_healthy(probe, sleep)
     except BaseException:
         if not restore():
-            sys.stderr.write("MCP still unhealthy after rollback\n")
+            say("MCP still unhealthy after rollback", sys.stderr)
         raise
     if not healthy:
         if restore():
@@ -253,14 +253,13 @@ REMOTE = program(
         wait_healthy,
         deploy,
     ],
-    "print(deploy(json.load(sys.stdin), docker, git_tracked))\n",
+    "say(deploy(json.load(sys.stdin), docker, git_tracked))\n",
 )
 
 
 def main():
     operation = sys.argv[1]
-    host = os.environ["PLANE_MCP_SSH"]
-    directory = os.environ["PLANE_MCP_DIRECTORY"]
+    host, directory = require_env("PLANE_MCP_SSH", "PLANE_MCP_DIRECTORY")
     container = os.environ.get("PLANE_MCP_CONTAINER", "plane-mcp")
     if host.startswith("-") or not directory.startswith("/") or container.startswith("-"):
         raise ValueError("Invalid MCP deployment destination")
@@ -270,10 +269,8 @@ def main():
         "container": container,
         "source": Path(__file__).with_name("ce_tools.py").read_text(),
     }
-    import shlex
-
     subprocess.run(  # noqa: S603 - validated owner host; fixed remote program
-        ["ssh", host, "python3 -c " + shlex.quote(REMOTE)],  # noqa: S607 - system SSH
+        ssh_argv(host, REMOTE),
         input=json.dumps(payload),
         text=True,
         check=True,

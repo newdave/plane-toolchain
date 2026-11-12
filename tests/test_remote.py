@@ -1,5 +1,6 @@
 """Docker CLI seam routing; output must never leak unless the caller asks for it."""
 
+import signal
 import subprocess
 
 import pytest
@@ -47,3 +48,49 @@ def test_docker_ok_discards_output_and_never_raises(monkeypatch):
     monkeypatch.setattr(subprocess, "run", run)
     assert remote.docker_ok("inspect", "missing") is False
     assert calls == [{"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}]
+
+
+def test_ssh_argv_never_prompts_and_ends_options_before_host():
+    assert remote.ssh_argv("owner@host", "print(1)") == [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=4",
+        "--",
+        "owner@host",
+        "python3 -c 'print(1)'",
+    ]
+
+
+class Closed:
+    """An SSH channel that went away: every write fails."""
+
+    def write(self, text):
+        raise BrokenPipeError
+
+    def flush(self):
+        raise BrokenPipeError
+
+
+def test_say_ignores_a_closed_channel(capsys):
+    remote.say("done")
+    assert capsys.readouterr().out == "done\n"
+    remote.say("lost", Closed())  # Must not raise mid-operation.
+
+
+def entry_marker():
+    calls.append("entry")  # noqa: F821 - provided by the program namespace
+
+
+def test_program_ignores_hup_and_pipe_before_entry(monkeypatch):
+    calls = []
+    monkeypatch.setattr(signal, "signal", lambda number, handler: calls.append((number, handler)))
+    source = remote.program(["json"], [entry_marker], "entry_marker()\n")
+    namespace = {"__name__": "__main__", "calls": calls}
+    exec(compile(source, "<string>", "exec"), namespace)  # noqa: S102 - assembled test program
+    assert calls == [(signal.SIGHUP, signal.SIG_IGN), (signal.SIGPIPE, signal.SIG_IGN), "entry"]

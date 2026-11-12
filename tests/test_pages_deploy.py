@@ -10,7 +10,7 @@ import sys
 
 import pytest
 from fake_docker import NOW, FakeDocker, run_program
-from plane_toolchain import pages_deploy
+from plane_toolchain import pages_deploy, remote as remote_module
 
 SOURCE = "ROUTES = []\n"
 DIGEST = hashlib.sha256(SOURCE.encode()).hexdigest()
@@ -133,7 +133,8 @@ def test_apply_refuses_when_rollback_container_exists(host, monkeypatch):
     host.add(BACKUP, running=False)
     with pytest.raises(ValueError, match="Existing rollback container"):
         remote("apply", host, monkeypatch)
-    assert host.calls == [("inspect", "api"), ("inspect", BACKUP)]
+    # The second inspect reads the backup's labels for reconciliation; nothing changes.
+    assert host.calls == [("inspect", "api"), ("inspect", BACKUP), ("inspect", BACKUP)]
 
 
 def test_apply_refuses_image_without_registry_digest(host, monkeypatch):
@@ -171,10 +172,11 @@ def test_apply_start_failure_retains_failed_derived_and_restores_original(host, 
     with pytest.raises(subprocess.CalledProcessError):
         remote("apply", host, monkeypatch)
     failed = f"api-pages-failed-{NOW}"
-    assert host.calls[-8:] == [
+    assert host.calls[-9:] == [
         ("start", "api"),
         ("inspect", "api"),
         ("stop", "api"),
+        ("inspect", failed),
         ("rename", "api", failed),
         ("update", "--restart=no", failed),
         ("rename", BACKUP, "api"),
@@ -336,6 +338,195 @@ def test_apply_retire_rename_failure_keeps_live_policy(host):
         deploy("apply", host)
     assert restart(host, "api") == "unless-stopped"
     assert BACKUP not in host.containers
+    # The stopped original is started again: a failed retire rename never leaves the API down.
+    assert running(host) == ["api"]
+    assert host.calls[-3:] == [("stop", "api"), ("rename", "api", BACKUP), ("start", "api")]
+
+
+def running(fake):
+    return [name for name, container in fake.containers.items() if container["running"]]
+
+
+NOTE = "Restart policy set to unless-stopped; adjust if your deployment differs\n"
+APPLIED = "Pages derived image applied; API healthy; original container retained for rollback\n"
+
+
+def assert_freshly_applied(fake, policy):
+    """Final layout after a reconciled apply: one running derived `api`, original retained."""
+    assert running(fake) == ["api"]
+    assert fake.containers["api"]["image"] == IMAGE
+    assert fake.containers["api"]["labels"] == {"owner": "kept", "terrainlink.pages.source": DIGEST}
+    assert restart(fake, "api") == policy
+    assert fake.containers[BACKUP]["labels"] == {"owner": "kept"}
+    assert set(retained(fake).values()) == {"no"}
+
+
+@pytest.fixture
+def retired():
+    """A previous apply died after `rename api -> backup`: no container is named `api`."""
+    fake = FakeDocker()
+    fake.add(BACKUP, labels={"owner": "kept"}, running=False, RestartPolicy={"Name": "no"})
+    return fake
+
+
+def test_apply_reconciles_missing_api_with_default_policy_note(retired, monkeypatch, capsys):
+    remote("apply", retired, monkeypatch)
+    assert capsys.readouterr().out == NOTE + APPLIED
+    assert retired.calls[:8] == [
+        ("inspect", "api"),
+        ("inspect", BACKUP),
+        ("inspect", BACKUP),
+        ("rename", BACKUP, "api"),
+        ("update", "--restart=unless-stopped", "api"),
+        ("start", "api"),
+        HEALTH,
+        PAGES,
+    ]
+    assert_freshly_applied(retired, "unless-stopped")
+    assert set(retired.containers) == {"api", BACKUP}
+
+
+def test_apply_reconciles_missing_api_keeping_unretired_policy(retired, monkeypatch, capsys):
+    # Died between the rename and `update --restart=no`: the backup still holds the live policy.
+    retired.containers[BACKUP]["host_config"]["RestartPolicy"] = {
+        "Name": "on-failure",
+        "MaximumRetryCount": 3,
+    }
+    remote("apply", retired, monkeypatch)
+    assert capsys.readouterr().out == APPLIED
+    assert ("update", "--restart=on-failure:3", "api") in retired.calls
+    assert_freshly_applied(retired, "on-failure")
+
+
+def test_apply_reconcile_health_failure_leaves_original_running(retired):
+    retired.containers[BACKUP]["healthy"] = False
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", retired)
+    assert running(retired) == ["api"]
+    assert retired.containers["api"]["labels"] == {"owner": "kept"}
+    assert not retired.builds
+
+
+@pytest.mark.parametrize("label", [DIGEST, "older-digest"])
+def test_apply_reconciles_stopped_derived_as_failed_apply(retired, monkeypatch, capsys, label):
+    # Died after create, before start or health: the derived copy of the live policy is kept.
+    retired.add(
+        "api",
+        labels={"owner": "kept", "terrainlink.pages.source": label},
+        running=False,
+        RestartPolicy={"Name": "always"},
+    )
+    stale = retired.containers["api"]["id"]
+    remote("apply", retired, monkeypatch)
+    assert capsys.readouterr().out == APPLIED
+    failed = f"api-pages-failed-{NOW}"
+    assert retired.calls[:10] == [
+        ("inspect", "api"),
+        ("inspect", BACKUP),
+        ("inspect", BACKUP),
+        ("inspect", failed),
+        ("rename", "api", failed),
+        ("update", "--restart=no", failed),
+        ("rename", BACKUP, "api"),
+        ("update", "--restart=always", "api"),
+        ("start", "api"),
+        HEALTH,
+    ]
+    assert retired.containers[failed]["id"] == stale
+    assert_freshly_applied(retired, "always")
+    assert set(retired.containers) == {"api", BACKUP, failed}
+
+
+def test_apply_reconcile_promote_failure_stays_reconcilable(retired, capsys):
+    retired.add("api", labels={"terrainlink.pages.source": "old"}, running=False)
+    retired.fail.append(("rename", BACKUP, "api"))
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy("apply", retired)
+    # Now the missing-`api` layout: the next apply promotes the original.
+    assert "api" not in retired.containers and BACKUP in retired.containers
+    assert set(retained(retired).values()) == {"no"}
+    assert deploy("apply", retired) == APPLIED.rstrip("\n")
+    assert capsys.readouterr().out == NOTE
+    assert_freshly_applied(retired, "unless-stopped")
+
+
+def test_reconcile_and_failing_apply_in_same_second_keep_both_failed(retired):
+    # now() is constant: reconcile (b) and the failed apply would pick the same name.
+    retired.add("api", labels={"terrainlink.pages.source": "old"}, running=False)
+    stale = retired.containers["api"]["id"]
+    retired.created_healthy = False
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", retired)
+    failed = f"api-pages-failed-{NOW}"
+    assert retired.containers[failed]["id"] == stale
+    assert retired.containers[failed + "-1"]["image"] == IMAGE
+    assert_original_restored(retired)
+    assert running(retired) == ["api"] and restart(retired, "api") == "unless-stopped"
+    assert set(retained(retired).values()) == {"no"}
+
+
+def test_reconcile_note_survives_a_later_apply_failure(retired, capsys):
+    retired.fail.append("create")
+    with pytest.raises(ValueError, match="creation"):
+        deploy("apply", retired)
+    assert capsys.readouterr().out == NOTE
+    # The create rollback restores the promoted original with the policy it was given.
+    assert running(retired) == ["api"] and restart(retired, "api") == "unless-stopped"
+    assert set(retired.containers) == {"api"}
+
+
+def test_apply_with_backup_and_running_current_derived_stays_idempotent(applied):
+    assert deploy("apply", applied) == "Pages image already applied; API healthy"
+    assert running(applied) == ["api"]
+
+
+@pytest.mark.parametrize(
+    "layout",
+    ["running-original", "running-older-derived", "labelled-backup", "unhealthy-derived"],
+)
+def test_apply_refuses_other_layouts_with_backup(retired, layout):
+    if layout == "running-original":
+        retired.add("api", labels={"owner": "kept"})
+    elif layout == "running-older-derived":
+        retired.add("api", labels={"terrainlink.pages.source": "older-digest"})
+    elif layout == "labelled-backup":
+        retired.containers[BACKUP]["labels"]["terrainlink.pages.source"] = "older-digest"
+    else:
+        retired.add("api", labels={"terrainlink.pages.source": DIGEST}, healthy=False)
+    before = json.dumps(retired.containers, sort_keys=True)
+    with pytest.raises(ValueError, match="Existing rollback container|API health check failed"):
+        deploy("apply", retired)
+    assert json.dumps(retired.containers, sort_keys=True) == before
+    assert not retired.builds
+
+
+def test_apply_stopped_current_derived_without_backup_still_refuses(host):
+    host.add("api", labels={"terrainlink.pages.source": DIGEST}, running=False)
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", host)
+    assert not host.builds
+
+
+def test_remote_ignores_hup_and_pipe_before_any_docker_call(host, monkeypatch, capsys):
+    import signal
+
+    monkeypatch.setattr(signal, "signal", lambda number, handler: host.calls.append(number))
+    remote("apply", host, monkeypatch)
+    assert host.calls[:3] == [signal.SIGHUP, signal.SIGPIPE, ("inspect", "api")]
+
+
+def test_remote_finishes_apply_when_ssh_channel_is_gone(host, monkeypatch):
+    class Closed:
+        def write(self, text):
+            raise BrokenPipeError
+
+        def flush(self):
+            raise BrokenPipeError
+
+    monkeypatch.setattr(sys, "stdout", Closed())
+    remote("apply", host, monkeypatch)
+    assert running(host) == ["api"]
+    assert host.containers["api"]["labels"]["terrainlink.pages.source"] == DIGEST
 
 
 def test_replacement_drops_old_id_alias():
@@ -483,7 +674,9 @@ def test_main_ships_fixed_program_and_source_digest_over_ssh(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *args, **kw: calls.append((args, kw)))
     pages_deploy.main()
     [((argv,), kw)] = calls
-    assert argv == ["ssh", "owner@host", "python3 -c " + shlex.quote(pages_deploy.REMOTE)]
+    assert argv[0] == "ssh" and argv[1:3] == ["-o", "BatchMode=yes"]
+    assert argv[-3:] == ["--", "owner@host", "python3 -c " + shlex.quote(pages_deploy.REMOTE)]
+    assert argv == remote_module.ssh_argv("owner@host", pages_deploy.REMOTE)
     assert kw["text"] and kw["check"]
     sent = json.loads(kw["input"])
     source = (pages_deploy.Path(pages_deploy.__file__).with_name("pages_backend.py")).read_text()
@@ -497,7 +690,9 @@ def test_main_ships_fixed_program_and_source_digest_over_ssh(monkeypatch):
     )
 
 
-@pytest.mark.parametrize(("host", "container"), [("-oProxy", "api"), ("h", "api;rm"), ("h", "")])
+@pytest.mark.parametrize(
+    ("host", "container"), [("-oProxy", "api"), ("h", "api;rm"), ("h", "api x")]
+)
 def test_main_rejects_unsafe_destination(monkeypatch, host, container):
     monkeypatch.setattr(sys, "argv", ["pages_deploy", "check"])
     monkeypatch.setenv("PLANE_MCP_SSH", host)
@@ -506,6 +701,55 @@ def test_main_rejects_unsafe_destination(monkeypatch, host, container):
     monkeypatch.setattr(subprocess, "run", lambda *args, **kw: pytest.fail("Must not connect"))
     with pytest.raises(ValueError, match="Invalid deployment destination"):
         pages_deploy.main()
+
+
+ENV = {
+    "PLANE_MCP_SSH": "secret-owner@secret-host",
+    "PLANE_API_CONTAINER": "secretapi",
+    "PLANE_LIVE_URL": "https://secret-live.example:3000",
+}
+
+
+def main_exit(monkeypatch, capsys, env):
+    monkeypatch.setattr(sys, "argv", ["pages_deploy", "check"])
+    for name in ENV:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kw: pytest.fail("Must not connect"))
+    with pytest.raises(SystemExit) as caught:
+        pages_deploy.main()
+    output = capsys.readouterr()
+    assert output.out == "" and "secret" not in str(caught.value.code) + output.err
+    return caught.value.code
+
+
+@pytest.mark.parametrize("missing", list(ENV))
+@pytest.mark.parametrize("empty", [False, True])
+def test_main_names_missing_environment_variable_only(monkeypatch, capsys, missing, empty):
+    env = {name: value for name, value in ENV.items() if name != missing}
+    if empty:
+        env[missing] = ""
+    assert main_exit(monkeypatch, capsys, env) == "Missing environment variable: " + missing
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://secret-live:3000",
+        "secret-live:3000",
+        "http://",
+        "https://user:secret@live",
+        "https://secret@live",
+        "https://live/?token=secret",
+        "https://live/#secret",
+        "https://live:secret",
+        "https://secret live",
+        "https://live\\secret",
+    ],
+)
+def test_main_rejects_invalid_live_url_without_echoing_it(monkeypatch, capsys, url):
+    assert main_exit(monkeypatch, capsys, ENV | {"PLANE_LIVE_URL": url}) == "Invalid PLANE_LIVE_URL"
 
 
 # Injected seams: deploy() with an in-memory Docker host, no process patching.
