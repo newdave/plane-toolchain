@@ -232,6 +232,17 @@ def test_revert_refuses_when_label_changed(applied, monkeypatch):
     assert applied.calls == [("inspect", "api"), ("inspect", BACKUP)]
 
 
+def test_revert_accepts_derived_from_older_source(applied, monkeypatch, capsys):
+    # A source upgrade changes the digest; the label still marks the container as ours.
+    applied.containers["api"]["labels"]["terrainlink.pages.source"] = "older-digest"
+    remote("revert", applied, monkeypatch)
+    assert capsys.readouterr().out == (
+        "Original API container restored; derived container retained stopped\n"
+    )
+    assert_original_restored(applied)
+    assert retained(applied) == {f"api-pages-reverted-{NOW}": "no"}
+
+
 def test_revert_without_backup_and_with_label_fails_before_changes(applied, monkeypatch):
     del applied.containers[BACKUP]
     with pytest.raises(subprocess.CalledProcessError):

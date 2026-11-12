@@ -206,7 +206,8 @@ def revert(current, payload, docker, probe, health, now):
         if source_label(current) is None:
             return "Original API container already restored"
         docker("inspect", backup)  # Fail before any change when no rollback container exists.
-    if source_label(current) != payload["digest"]:
+    # Any source label marks our derived container, including one built from older source.
+    if source_label(current) is None:
         raise ValueError("API changed; refusing rollback")
     reverted = name + "-pages-reverted-" + str(int(now()))
     policy = restart_arg(current)  # Live (derived) policy; the backup's own inspect shows `no`.

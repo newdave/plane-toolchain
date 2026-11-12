@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Pages revert accepts a derived container built from older source, so an upgrade can run revert, then apply.
+
 ## [0.1.0] - 2026-11-12
 
 ### Added
