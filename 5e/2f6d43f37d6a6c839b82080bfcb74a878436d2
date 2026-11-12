@@ -1,0 +1,21 @@
+tests/test_pages_deploy.py
+  s_ce066174a8d2c7::t_95b39bf085dfe3 266-287
+src/plane_toolchain/pages_deploy.py
+  s_ce066174a8d2c7::t_95b39bf085dfe3 117-133,163,230
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "5e2f6d43f37d6a6c839b82080bfcb74a878436d2",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
