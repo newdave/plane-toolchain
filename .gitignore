@@ -14,3 +14,4 @@ dist/
 .claude/settings.local.json
 .claude/scheduled_tasks.json
 .DS_Store
+tools/mcp-remote/node_modules/

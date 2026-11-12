@@ -1,6 +1,6 @@
 [tools]
 python = "3.12.12"
-node = "26"
+node = "26.13.1"
 uv = "0.9.3"
 actionlint = "1.7.12"
 shellcheck = "0.11.0"
@@ -15,7 +15,7 @@ shell = "zsh"
 script = '(( ! $+functions[_plane_toolchain_prompt_remove] )) || _plane_toolchain_prompt_remove'
 
 [tasks.setup]
-run = "uv sync --locked"
+run = ["uv sync --locked", "npm ci --ignore-scripts --no-audit --no-fund --prefix tools/mcp-remote"]
 [tasks.lint]
 run = ["uv run --locked ruff check .", "uv run --locked ruff format --check ."]
 [tasks."lint:ci"]
