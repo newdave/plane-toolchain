@@ -1,5 +1,6 @@
 """MCP entry-point remote program: characterised end to end against a fake host."""
 
+import ast
 import hashlib
 import json
 import shlex
@@ -189,3 +190,36 @@ def test_main_rejects_unsafe_destination(monkeypatch, host, directory, container
     monkeypatch.setattr(subprocess, "run", lambda *args, **kw: pytest.fail("Must not connect"))
     with pytest.raises(ValueError, match="Invalid MCP deployment destination"):
         mcp_deploy.main()
+
+
+def test_remote_program_is_stdlib_only():
+    tree = ast.parse(mcp_deploy.REMOTE)
+    modules = {
+        alias.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert modules and modules <= set(sys.stdlib_module_names)
+    assert not any(isinstance(node, ast.ImportFrom) for node in ast.walk(tree))
+
+
+# Injected seams: deploy() with an in-memory Docker host, no process patching.
+
+
+def deploy(operation, root, fake, source=DESIRED):
+    data = dict(operation=operation, directory=str(root), container="plane-mcp", source=source)
+    return mcp_deploy.deploy(data, fake.docker, lambda path: fake.tracked)
+
+
+def test_seam_apply_revert_and_restart_rollback(root):
+    fake = mcp_host()
+    assert deploy("apply", root, fake).startswith("MCP entry point apply verified")
+    assert deploy("check", root, fake) == "MCP entry point verified"
+    fake.fail.append("restart")
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy("revert", root, fake)
+    assert (root / "server.py").read_text() == DESIRED
+    assert fake.calls[-2:] == [RESTART, RESTART]
+    assert deploy("revert", root, fake).startswith("MCP entry point revert verified")
+    assert (root / "server.py").read_bytes() == ORIGINAL
