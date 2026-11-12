@@ -2,6 +2,8 @@
 
 Run `mise run setup` and `mise run check` before committing. Work on a branch and submit a pull request. CI must pass before merging.
 
+Install the git hooks once per clone with `pre-commit install --hook-type pre-commit --hook-type commit-msg`. A global git template hook usually installs only the pre-commit stage, so without this command the commit-msg check does not run. The hooks run ruff, actionlint, shellcheck, YAML/JSON and private-key checks on commit, and reject AI attribution trailers (`Co-authored-by:` or "Generated with/by" naming an AI tool) in commit messages; human co-authors are fine. Tool versions come from `uv.lock` and `mise.toml`. Pytest stays in `mise run check` and CI.
+
 The default branch is protected by the ruleset in `.github/rulesets/main.json`: pull requests only, the `check` status must pass on an up-to-date branch, linear history (rebase or squash), and no force-push or deletion. Pull requests may use auto-merge, and merged branches are deleted. The repository owner maintains it with `gh`:
 
 ```sh
