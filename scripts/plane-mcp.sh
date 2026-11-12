@@ -28,9 +28,12 @@ if [[ -z "${PLANE_API_KEY:-}" && -f "$secrets" ]]; then
   done < <("${sops_cmd[@]}" decrypt --output-type dotenv "$secrets")
 fi
 uv run --locked python -m plane_toolchain.settings
+# Locked tree from tools/mcp-remote (npm ci); never fetched or resolved at runtime.
+bin=tools/mcp-remote/node_modules/.bin/mcp-remote
+[[ -x "$bin" ]] || { echo "mcp-remote missing: run 'mise run setup'" >&2; exit 1; }
 # mcp-remote expands headers from environment, keeping credentials out of argv.
 # shellcheck disable=SC2016  # literal ${VAR}: mcp-remote expands it, not the shell
-exec npx --yes mcp-remote@0.16.6 "$PLANE_MCP_URL" \
+exec "$bin" "$PLANE_MCP_URL" \
   --transport http-only --silent \
   --header 'Authorization:Bearer ${PLANE_API_KEY}' \
   --header 'x-workspace-slug:${PLANE_WORKSPACE}'

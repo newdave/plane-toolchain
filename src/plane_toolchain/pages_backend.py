@@ -21,21 +21,34 @@ LIST_FIELDS = (
 )
 
 
+# Client-facing text comes only from this table, never from an exception object.
+INPUT_ERRORS = {
+    "fields": "Only name, description_html and access are supported",
+    "name": "Expected a non-empty page name of at most 255 characters",
+    "body": "Invalid page body or access",
+    "document": "Live service did not return a complete document",
+}
+
+
 class PageInputError(ValueError):
-    """Fixed, client-safe validation message."""
+    """Client-safe validation failure identified by an INPUT_ERRORS key."""
+
+    def __init__(self, key):
+        super().__init__(INPUT_ERRORS[key])
+        self.key = key
 
 
 def creation_payload(data, sanitise, convert):
     """Validate and convert a complete new document before any database write."""
     if set(data) - {"name", "description_html", "access"}:
-        raise PageInputError("Only name, description_html and access are supported")
+        raise PageInputError("fields")
     name = data.get("name")
     body = data.get("description_html")
     access = data.get("access", 1)
     if not isinstance(name, str) or not name.strip() or len(name) > 255:
-        raise PageInputError("Expected a non-empty page name of at most 255 characters")
+        raise PageInputError("name")
     if not isinstance(body, str) or len(body.encode()) > 1_000_000 or access not in (0, 1):
-        raise PageInputError("Invalid page body or access")
+        raise PageInputError("body")
     clean = sanitise(body)
     converted = convert(clean)
     if (
@@ -43,7 +56,7 @@ def creation_payload(data, sanitise, convert):
         or not isinstance(converted.get("description_binary"), str)
         or not converted["description_binary"]
     ):
-        raise PageInputError("Live service did not return a complete document")
+        raise PageInputError("document")
     return dict(
         name=name,
         access=access,
@@ -139,7 +152,8 @@ def routes():
             try:
                 data = creation_payload(request.data, sanitise, convert)
             except PageInputError as error:
-                raise ValidationError(str(error)) from None
+                message = INPUT_ERRORS.get(error.key, "Invalid page input")
+                raise ValidationError(message) from None
             except ValueError:
                 raise ValidationError("Invalid page input") from None
             binary = PageBinaryUpdateSerializer(
