@@ -1,0 +1,21 @@
+docs/github-actions.md
+  s_ce066174a8d2c7::t_5072b6c933749a 34
+.github/workflows/release.yml
+  s_ce066174a8d2c7::t_42dd9a43e3703b 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "4444896be12f14b84b125800add4e2d616c4f0e6",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
