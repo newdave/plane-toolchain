@@ -7,6 +7,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from plane_toolchain.session import assignments
+
 
 def set_enabled(path: Path, enabled: bool, *, restore: bool = True):
     if path.is_symlink():
@@ -20,13 +22,20 @@ def set_enabled(path: Path, enabled: bool, *, restore: bool = True):
     if backup.is_symlink() or backup.parent.is_symlink():
         raise ValueError("Refusing symlinked Plane backup")
     if enabled and not backup.exists():
-        previous = re.findall(r"(?m)^\s*(?:export\s+)?PLANE_ENABLED=(.*)$", text)
-        if any(value.strip() not in {"true", "false"} for value in previous):
+        previous = [value for _, value in assignments(text, ("PLANE_ENABLED",))]
+        if any(value not in {"true", "false"} for value in previous):
             raise ValueError("PLANE_ENABLED must be a literal true or false before activation")
         backup.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as output:
-            json.dump({"enabled": previous[-1].strip() == "true" if previous else False}, output)
+        # Temp file, fsync, then atomic replace: an interrupted write never leaves a bad backup.
+        fd, tmp = tempfile.mkstemp(dir=backup.parent, prefix=".backup-")
+        try:
+            with os.fdopen(fd, "w") as output:
+                json.dump({"enabled": bool(previous) and previous[-1] == "true"}, output)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(tmp, backup)
+        finally:
+            Path(tmp).unlink(missing_ok=True)
     if not enabled and restore and backup.exists():
         saved = json.loads(backup.read_text())
         if not isinstance(saved.get("enabled"), bool):
