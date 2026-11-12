@@ -21,6 +21,7 @@ jobs:
       - name: Verify tag is on the default branch and matches pyproject
         run: |
           set -euo pipefail
+          # Works without persisted credentials because the repo is public; a private fork must supply a token.
           git fetch --no-tags origin "$DEFAULT_BRANCH"
           git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH" \
             || { echo "::error::$TAG is not on $DEFAULT_BRANCH"; exit 1; }

@@ -31,7 +31,7 @@ The workflows validate the toolchain revision before checkout and fetch that exa
 
 Each tagged release (`v0.x.y`, see `CHANGELOG.md`) lists its commit in the release notes as `Pin: <sha>`. Set `PLANE_TOOLCHAIN_REF` to that full 40-character commit SHA, not the tag. Tags can move; a SHA cannot.
 
-Renovate's `helpers:pinGitHubActionDigests` preset keeps `uses:` SHAs current in consuming repositories. It does not update the `PLANE_TOOLCHAIN_REF` variable. Update that by hand from the release notes, or reference this repository as `uses: owner/plane-toolchain/...@<sha> # v0.1.0` so Renovate proposes the next release digest.
+Renovate keeps the `uses:` action SHAs in your workflows current, but it cannot track `PLANE_TOOLCHAIN_REF`. Bump that variable by hand to the commit SHA printed as `Pin:` in the release notes.
 
 ## Trusted events and failed preconditions
 
