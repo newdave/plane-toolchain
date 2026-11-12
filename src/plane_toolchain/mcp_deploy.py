@@ -49,6 +49,12 @@ def write_atomic(path, text):
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+    # Sync the directory so a power loss cannot bring back the older file.
+    descriptor = os.open(pathlib.Path(path).parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def owned_digests(recorded):
@@ -143,6 +149,8 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
             final = {"installed": sha256(desired)}
             if backup.exists():
                 final["original"] = sha256(backup.read_bytes())
+                if "original" in recorded and recorded["original"] != final["original"]:
+                    raise ValueError("Backup does not match the recorded original; reconcile")
                 if recorded != final:
                     write_atomic(receipt, json.dumps(final))
             return "MCP compatibility entry point already applied"

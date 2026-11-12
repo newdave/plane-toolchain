@@ -583,3 +583,22 @@ def test_interrupt_with_unhealthy_rollback_notes_on_stderr(root, capsys):
     with pytest.raises(KeyboardInterrupt):
         mcp_deploy.deploy(data, fake.docker, lambda path: False, sleep=sleep)
     assert "MCP still unhealthy after rollback" in capsys.readouterr().err
+
+
+def test_already_applied_does_not_repair_receipt_over_mismatched_backup(root):
+    fake, receipt = upgraded_host(root)
+    (root / "server.py.before-terrainlink-ce").write_bytes(b"tampered\n")
+    with pytest.raises(ValueError, match="Backup does not match"):
+        deploy("apply", root, fake, source=V1)
+    assert (root / "terrainlink-ce-receipt.json").read_bytes() == receipt
+
+
+def test_receipt_write_fsyncs_directory(root, monkeypatch):
+    kinds = []
+    real = mcp_deploy.os.fsync
+    monkeypatch.setattr(mcp_deploy.os, "fsync", lambda fd: (kinds.append(fd), real(fd)))
+    opened = []
+    real_open = mcp_deploy.os.open
+    monkeypatch.setattr(mcp_deploy.os, "open", lambda *a: opened.append(a) or real_open(*a))
+    deploy("apply", root, mcp_host())
+    assert any(call[0] == root.resolve() or call[0] == root for call in opened)
