@@ -1,0 +1,24 @@
+tests/test_legacy_names.py
+  s_2913fb743b94c4::t_7c5fb9185009cc 33-38,67-69
+  s_2913fb743b94c4::t_2402b66bffc06a 70-71
+tests/test_remote.py
+  s_2913fb743b94c4::t_e089d92a283371 119-128,140-175
+  s_2913fb743b94c4::t_7659da570b68da 3-4,7
+  s_2913fb743b94c4::t_21e376d8bdcf93 129-139
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "4dced8c5067a068014ef04b83be73d46e3a83391",
+  "prompts": {},
+  "sessions": {
+    "s_2913fb743b94c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b7b5da91-6cd3-4516-b410-f2bad19bef49",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
