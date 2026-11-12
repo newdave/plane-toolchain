@@ -1,0 +1,21 @@
+examples/github/plane-check.yml
+  s_ce066174a8d2c7::t_eb33d6a098348c 27,30
+tests/test_github_examples.py
+  s_ce066174a8d2c7::t_e5eed014e46761 4,112-141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "b0488a7545c374ccff788cdfb63d66f78c348bb1",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
