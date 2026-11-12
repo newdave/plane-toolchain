@@ -7,11 +7,42 @@ The extensions augment the official Plane MCP server. They reuse its API-key aut
 | Tool | Operations | Limits |
 | --- | --- | --- |
 | `ce_workitem_relation` | Definitions, list, create built-in dependencies | Additive, same project, 1–100 distinct targets; no deletion or custom definitions |
-| `ce_page` | List, retrieve, create project Pages | No editing or deletion of existing collaborative documents |
+| `ce_page` | List, retrieve, create, update project Pages | Update replaces the whole body; needs `expected_updated_at` and `force=true`; no deletion |
 
 Relations normalise CE `issue_id` objects into the MCP dependency contract. Each source and target is checked through the project-scoped work-item API before creating a relation.
 
 Pages require both the MCP extension and the backend adapter. The backend keeps Plane authentication, permissions, sanitisation and throttling. It checks project membership and private-page visibility. Creation converts HTML through Plane Live into consistent JSON and binary document formats before writing in a transaction. Conversion failure writes nothing. List requests fail above 1,000 Pages rather than silently truncating results.
+
+### Page update
+
+`ce_page` update sends `PATCH .../ce-pages/<page_id>/` with `description_html`, `expected_updated_at` and `force`. The backend runs these steps in order and writes nothing if one fails:
+
+1. Validate the request. Without `force=true` it refuses: an edit disconnects open editors.
+2. Load the page. Refuse locked (400), archived (400) or changed pages (409 when `updated_at` differs from `expected_updated_at`, compared as instants). Record a SHA-256 digest of the stored HTML and binary body.
+3. Sanitise the HTML and convert it through Live (502 on failure).
+4. Publish Live's `force_close` command for the page on the Redis channel `hocuspocus:admin` (Plane's `REDIS_URL`). A publish error or no subscriber returns 502.
+5. Wait 1 second so Live can store edits it held in memory.
+6. In a transaction, lock the row with `select_for_update` and recheck locked and archived. Refuse with 409 only if the stored body differs from the digest. Live re-storing an unchanged document on unload bumps `updated_at`; that does not block the write.
+7. Save the old body as a `PageVersion` and prune the page's versions to 20, oldest first. Then write the HTML, JSON and binary formats in one `save()`.
+
+After commit it queues Plane's `page_transaction` (mention log). It does not queue `track_page_version`: in CE v1.4.3 that task reads a missing `Page.description` attribute, and if fixed it would overwrite the snapshot in place.
+
+It then polls the stored binary for 12 seconds (one Live debounce plus margin). If it changes, the response is 409 "Edit was overwritten by an open editor; retry". The write and its version stay, but Live's store has replaced the body. A successful update therefore takes about 13 seconds plus conversion time.
+
+Missing or invisible pages get 403 from Plane's `ProjectPagePermission` before the view runs, as for retrieve. The view's own 404 is defence in depth.
+
+Why: Live keeps an open document in memory and stores it with a 10-second debounce. It never re-reads the database, so a database write while the document is open is overwritten. `force_close` is the only external way to disconnect its editors; Live then stores and unloads the document.
+
+Risks:
+
+- Edits typed in the last moments before the disconnect may be lost. Usually Live stores them first, the body changes and the update is refused with 409. A store arriving after the lock overwrites the new body; the 12-second watch reports it, but a store after the watch goes unreported.
+- Any refusal after `force_close` (409, locked, archived) leaves editors disconnected with nothing written.
+- Plane's own page metadata update (rename and similar) saves the whole row. One that read the page before this update can write the old body back. Nothing here detects that.
+- An editor that reconnects inside the wait loads the old body.
+- An offline client keeps its old document state. When it reconnects, it may merge that state into the new body.
+- The previous body stays recoverable from page version history.
+
+**PTC-44 migration note.** `ce_tools.py` and `pages_backend.py` changed, so both payload digests changed. Hosts report a source difference on `owner:plane-mcp-compat:check` and `owner:plane-pages:check`. Redeploy both through the owner tasks, with explicit deployment authority. For Pages, run revert, then apply. Update needs both payloads redeployed.
 
 The backend adapter was tested against **Plane CE v1.4.3**. Its Django imports, permission contract and Live conversion route depend on that layout. Compatibility with another version requires testing in a separate environment. The MCP entry point imports `plane` and `plane_mcp` from the existing official server image; those server dependencies are not installed by the client package.
 
@@ -46,7 +77,7 @@ The extracted server payloads retain their original bytes, including comments, s
 
 **PTC-13 migration note.** `ce_tools.py` changed (canonical UUIDs, SDK private-call guard, `FASTMCP_HOST`), so its payload digest changed. `pages_backend.py` is unchanged. A host with a pre-PTC-13 `ce_tools.py` receipt will report a source difference on `owner:plane-mcp-compat:check`; review, then re-apply. Receipt and backup names are unchanged, so revert still works.
 
-`ce_tools.py` is not version-pinned to the Plane SDK because the SDK lives in the hosted image. It calls private SDK methods (`relations._get`, `pages._get`, `pages._post`) and now raises a clear `RuntimeError` naming a missing method. Retest after upgrading the image. Project, work item and target IDs are canonicalised with `str(UUID(x))` (lowercase, hyphenated) before building paths.
+`ce_tools.py` is not version-pinned to the Plane SDK because the SDK lives in the hosted image. It calls private SDK methods (`relations._get`, `pages._get`, `pages._post`, `pages._patch`) and now raises a clear `RuntimeError` naming a missing method. Retest after upgrading the image. Project, work item and target IDs are canonicalised with `str(UUID(x))` (lowercase, hyphenated) before building paths.
 
 The MCP entry point binds to `FASTMCP_HOST` (bare host or address; default `0.0.0.0`, which the container needs to be reachable) and `FASTMCP_PORT` (default `8211`).
 

@@ -66,15 +66,41 @@ def relation_result(response):
     }
 
 
+CE_PAGE_DESCRIPTION = """Plane CE project Pages: list, retrieve, create, update.
+
+Create and update validate HTML and use Plane Live to generate the editor document.
+access: 0 public within project, 1 private. Project membership and private-page
+permissions are enforced by the backend with the caller's API key.
+Retrieve/list before creating to avoid duplicate pages after an uncertain write.
+
+update replaces the whole body of page_id with description_html. Pass
+expected_updated_at exactly as returned by retrieve; a changed page is refused (409).
+Locked and archived pages are refused. update requires force=true because it
+disconnects everyone editing the page in Live first; unsaved edits from the last
+few seconds may be lost. The replaced body is kept as a page version.
+"""
+
+
 def page_request(action, project_id, page_id):
     """Keep Pages compatibility explicit and project scoped."""
     project_id = canonical_uuid(project_id)
-    if action not in {"list", "retrieve", "create"}:
-        raise ValueError("CE Pages supports list, retrieve and create only")
+    if action not in {"list", "retrieve", "create", "update"}:
+        raise ValueError("CE Pages supports list, retrieve, create and update only")
     path = f"{project_id}/ce-pages"
-    if action == "retrieve":
+    if action in {"retrieve", "update"}:
         path += "/" + canonical_uuid(page_id)
     return path
+
+
+def page_update_body(description_html, expected_updated_at, force):
+    """Request body for a whole-body Page update; the backend validates it again."""
+    if not isinstance(expected_updated_at, str) or not expected_updated_at:
+        raise ValueError("update requires expected_updated_at from retrieve")
+    return {
+        "description_html": description_html,
+        "expected_updated_at": expected_updated_at,
+        "force": force,
+    }
 
 
 def main():
@@ -128,22 +154,17 @@ def main():
             )
         )
 
-    @server.tool(name="ce_page")
+    @server.tool(name="ce_page", description=CE_PAGE_DESCRIPTION)
     def ce_page(
-        action: Literal["list", "retrieve", "create"],
+        action: Literal["list", "retrieve", "create", "update"],
         project_id: str,
         page_id: str = "",
         name: str = "",
         description_html: str = "",
         access: int = 1,
+        expected_updated_at: str = "",
+        force: bool = False,
     ) -> dict | list:
-        """Plane CE project Pages: list, retrieve, create. Existing document edits are unsupported.
-
-        Creation validates HTML and uses Plane Live to generate the editor document.
-        access: 0 public within project, 1 private. Project membership and private-page
-        permissions are enforced by the backend with the caller's API key.
-        Retrieve/list before creating to avoid duplicate pages after an uncertain write.
-        """
         path = page_request(action, project_id, page_id)
         project_id = canonical_uuid(project_id)
         client, workspace = get_plane_client_context()
@@ -152,6 +173,10 @@ def main():
         if action == "create":
             return sdk_private(client.pages, "_post")(
                 endpoint, {"name": name, "description_html": description_html, "access": access}
+            )
+        if action == "update":
+            return sdk_private(client.pages, "_patch")(
+                endpoint, page_update_body(description_html, expected_updated_at, force)
             )
         return sdk_private(client.pages, "_get")(endpoint)
 

@@ -24,7 +24,7 @@ def test_invalid_relation_identity_fails_closed():
         relation_result(SimpleNamespace(model_dump=lambda: {"blocked_by": [{}]}))
 
 
-def test_ce_pages_refuses_document_edits_and_requires_explicit_project():
+def test_ce_pages_requires_explicit_project_and_known_action():
     from uuid import uuid4
 
     from plane_toolchain.ce_tools import page_request
@@ -33,9 +33,38 @@ def test_ce_pages_refuses_document_edits_and_requires_explicit_project():
     assert page_request("list", project, "") == f"{project}/ce-pages"
     assert page_request("retrieve", project, page) == f"{project}/ce-pages/{page}"
     with pytest.raises(ValueError):
-        page_request("update", project, page)
+        page_request("delete", project, page)
     with pytest.raises(ValueError):
         page_request("list", "", "")
+
+
+def test_ce_page_update_targets_canonical_page_path_with_precondition_body():
+    from uuid import uuid4
+
+    from plane_toolchain.ce_tools import page_request, page_update_body
+
+    u = uuid4()
+    assert page_request("update", str(u).upper(), "{" + str(u) + "}") == f"{u}/ce-pages/{u}"
+    with pytest.raises(ValueError):
+        page_request("update", str(u), "")
+    assert page_update_body("<p>x</p>", "2026-11-13T01:02:03Z", True) == {
+        "description_html": "<p>x</p>",
+        "expected_updated_at": "2026-11-13T01:02:03Z",
+        "force": True,
+    }
+    with pytest.raises(ValueError, match="expected_updated_at"):
+        page_update_body("<p>x</p>", "", True)
+
+
+def test_ce_page_description_explains_update_precondition_and_force():
+    from plane_toolchain.ce_tools import CE_PAGE_DESCRIPTION
+
+    text = CE_PAGE_DESCRIPTION.lower()
+    assert "update" in text
+    assert "expected_updated_at" in text
+    assert "force" in text
+    assert "disconnect" in text
+    assert "unsupported" not in text
 
 
 def test_ids_are_canonicalised_for_paths():
