@@ -1,0 +1,27 @@
+tests/test_session.py
+  s_ce066174a8d2c7::t_59a7dcd91c497b 37-52
+docs/configuration.md
+  s_ce066174a8d2c7::t_f04036ec0ba89b 19
+  s_ce066174a8d2c7::t_b1ea79a4b07c61 20
+src/plane_toolchain/session.py
+  s_ce066174a8d2c7::t_0a0bf1accb9f05 11-12,15-17,20,24,26-36
+  s_ce066174a8d2c7::t_48926be2763f7e 50-54
+scripts/plane-mcp.sh
+  s_ce066174a8d2c7::t_ed7d145c3f61a0 2-3,12-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "b2cd84263c35e7c78682117dda4e9cc90addbda4",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
