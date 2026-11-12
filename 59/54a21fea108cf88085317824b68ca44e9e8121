@@ -1,0 +1,23 @@
+tests/test_mcp_remote_pin.py
+  s_ce066174a8d2c7::t_80917e69ef114e 27,45-57
+renovate.json
+  s_ce066174a8d2c7::t_80917e69ef114e 37-41
+docs/configuration.md
+  s_ce066174a8d2c7::t_80917e69ef114e 37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "5954a21fea108cf88085317824b68ca44e9e8121",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
