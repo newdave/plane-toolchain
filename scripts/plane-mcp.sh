@@ -27,7 +27,9 @@ while IFS= read -r -d '' entry; do
   export "${entry%%=*}=${entry#*=}"
 done < <(python3 src/plane_toolchain/session.py connection)
 # Optional SOPS-encrypted key file (ignored by *.enc.env). Only PLANE_API_KEY is exported.
+# Installed projects (PLANE_CONFIG_ROOT, set by .plane/plane.sh) keep theirs under .plane/.
 secrets="$(pick config/plane.enc.env)"
+[[ -z "${PLANE_CONFIG_ROOT:-}" ]] || secrets="$PLANE_CONFIG_ROOT/.plane/plane.enc.env"
 if [[ -z "${PLANE_API_KEY:-}" && -f "$secrets" ]]; then
   # Clients launch the bridge outside mise; use the same key path on macOS and Linux.
   if [[ -z "${SOPS_AGE_KEY_FILE:-}" && -f "$HOME/.config/sops/age/keys.txt" ]]; then

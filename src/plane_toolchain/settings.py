@@ -16,7 +16,12 @@ class Settings:
     @classmethod
     def from_env(cls, env):
         if env.get("PLANE_ENABLED") != "true":
-            raise ValueError("Plane integration disabled; use mise run plane:enable")
+            hint = (
+                ".plane/plane.sh enable"
+                if env.get("PLANE_CONFIG_ROOT")
+                else "mise run plane:enable"
+            )
+            raise ValueError(f"Plane integration disabled; use {hint}")
         url = env.get("PLANE_MCP_URL", "")
         try:
             parsed = urlsplit(url)
