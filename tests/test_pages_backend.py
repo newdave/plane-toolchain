@@ -258,3 +258,14 @@ def test_post_hides_internal_error_text_from_client(monkeypatch):
         view.post(view.request, "w", "x")
     assert str(caught.value) == "Invalid page input"
     assert "secret-token-123" not in str(caught.value)
+
+
+def test_input_errors_come_from_the_fixed_message_table():
+    from plane_toolchain.pages_backend import INPUT_ERRORS, PageInputError
+
+    for key, message in INPUT_ERRORS.items():
+        error = PageInputError(key)
+        assert error.key == key
+        assert str(error) == message
+    with pytest.raises(KeyError):
+        PageInputError("not-a-key")
