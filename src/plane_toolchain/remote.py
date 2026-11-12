@@ -21,8 +21,10 @@ def docker(*args, **kw):
 
 def docker_ok(*args):
     """Run the Docker CLI without raising or output; return whether it succeeded."""
-    result = subprocess.run(  # noqa: S603,S607
-        ["docker", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    result = subprocess.run(  # noqa: S603 - fixed docker argv
+        ["docker", *args],  # noqa: S607 - docker on PATH
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     return result.returncode == 0
 

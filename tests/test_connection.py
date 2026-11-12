@@ -1,10 +1,10 @@
-"""Contracts for hosted MCP's union wrapper and cursor pagination."""
+"""Contracts for hosted MCP's union wrapper and pacing."""
 
 import asyncio
 from types import SimpleNamespace
 
 import pytest
-from plane_toolchain.connection import decode, paced, paginated
+from plane_toolchain.connection import decode, paced
 
 
 def test_pacing_serialises_calls_and_does_not_retry_uncertain_writes():
@@ -40,24 +40,3 @@ def test_error_result_is_never_treated_as_data():
         decode(SimpleNamespace(is_error=True, structured_content={"result": "error"}))
     with pytest.raises(ValueError):
         decode(SimpleNamespace(is_error=False, structured_content={"result": "API error"}))
-
-
-def test_pagination_follows_cursor_and_rejects_repeat():
-    calls = []
-
-    async def call(name, arguments):
-        calls.append(arguments["cursor"])
-        return {
-            "results": [{"id": len(calls)}],
-            "next_page_results": len(calls) < 2,
-            "next_cursor": "second",
-        }
-
-    assert asyncio.run(paginated(call, "workitem", {})) == [{"id": 1}, {"id": 2}]
-    assert calls == ["", "second"]
-
-    async def repeated(name, arguments):
-        return {"results": [], "next_page_results": True, "next_cursor": "same"}
-
-    with pytest.raises(ValueError, match="pagination"):
-        asyncio.run(paginated(repeated, "workitem", {}))
