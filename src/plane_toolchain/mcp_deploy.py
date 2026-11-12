@@ -10,6 +10,7 @@ import sys
 import time
 from pathlib import Path
 
+from plane_toolchain.legacy import MCP, MCP_BACKUP_NAME, MCP_RECEIPT_NAME
 from plane_toolchain.remote import docker, program, require_env, say, ssh_argv
 
 
@@ -31,7 +32,7 @@ def rewrite(target, content):
     """Overwrite target in place so the bind-mounted inode survives; flush and fsync.
 
     Not atomic: a crash between truncate and fsync leaves a partial file. The backup
-    (`server.py.before-terrainlink-ce`) holds the upstream original, not the previous
+    (`MCP_BACKUP_NAME`, see legacy.py) holds the upstream original, not the previous
     install: restore it by hand, or re-apply.
     """
     with open(target, "r+b") as handle:
@@ -127,8 +128,8 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
     """
     root = pathlib.Path(data["directory"]).resolve(strict=True)
     target = root / "server.py"
-    backup = root / "server.py.before-terrainlink-ce"
-    receipt = root / "terrainlink-ce-receipt.json"
+    backup = root / MCP_BACKUP_NAME
+    receipt = root / MCP_RECEIPT_NAME
     if target.is_symlink() or not target.is_file():
         raise ValueError("Expected regular MCP entry point")
     if tracked(root):
@@ -254,6 +255,7 @@ REMOTE = program(
         deploy,
     ],
     "say(deploy(json.load(sys.stdin), docker, git_tracked))\n",
+    MCP,
 )
 
 
