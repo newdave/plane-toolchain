@@ -39,7 +39,8 @@ def replacement(original, image, live_url, digest):
     for name, value in original["NetworkSettings"]["Networks"].items():
         if value.get("IPAMConfig"):
             raise ValueError("Static network addresses need a deployment-specific migration")
-        endpoints[name] = {"Aliases": value.get("Aliases") or []}
+        aliases = [a for a in value.get("Aliases") or [] if a != original.get("Id", "")[:12]]
+        endpoints[name] = {"Aliases": aliases}
     body["NetworkingConfig"] = {"EndpointsConfig": endpoints}
     return body
 
@@ -128,27 +129,29 @@ def check(current, payload, health):
 def restore_any(name, backup, reverted, probe, docker, policy):
     """Best effort after failed recovery: leave exactly one started `name` container.
 
-    A retained container gets `--restart=no`; a promoted one gets `policy`, the live
-    deployment's policy read before any retirement (updates are best effort).
+    A retained container gets `--restart=no` only after its rename succeeds; a promoted one
+    gets `policy`, the live deployment's policy read before any retirement (best effort).
     """
     aside = reverted + "-aside"
     try:
         if probe("inspect", name):
+            probe("update", "--restart=" + policy, name)
             if probe("start", name):
                 return
-            probe("update", "--restart=no", name)
             if not probe("rename", name, aside):
                 return
+            probe("update", "--restart=no", aside)
         for source in (reverted, backup):
             if probe("inspect", source) and probe("rename", source, name):
                 probe("update", "--restart=" + policy, name)
                 if probe("start", name):
                     return
-                probe("update", "--restart=no", name)
-                probe("rename", name, source)
+                if probe("rename", name, source):
+                    probe("update", "--restart=no", source)
         if probe("inspect", aside):
             if probe("rename", aside, name):
                 probe("update", "--restart=" + policy, name)
+                probe("start", name)
     finally:
         # Return a parked container to its legacy name: derived -> reverted, original -> backup.
         if probe("inspect", aside):
@@ -175,8 +178,8 @@ def revert(current, payload, docker, probe, health, now):
     try:
         done.append("stop")
         docker("stop", name)
-        probe("update", "--restart=no", name)
         docker("rename", name, reverted)
+        probe("update", "--restart=no", reverted)
         done.append("derived")
         docker("rename", backup, name)
         done.append("original")
@@ -187,8 +190,8 @@ def revert(current, payload, docker, probe, health, now):
         try:
             if "original" in done:
                 docker("stop", name)
-                probe("update", "--restart=no", name)
                 docker("rename", name, backup)
+                probe("update", "--restart=no", backup)
             if "derived" in done:
                 docker("rename", reverted, name)
             probe("update", "--restart=" + policy, name)
@@ -227,8 +230,8 @@ def apply(current, payload, docker, probe, create, health, now):
     body = namespace["replacement"](current, image, payload["live_url"], digest)
     policy = restart_arg(current)  # Read before retiring; restored when promoted back.
     docker("stop", name)
-    probe("update", "--restart=no", name)
     docker("rename", name, backup)
+    probe("update", "--restart=no", backup)  # After the rename: a failed rename keeps the policy.
     try:
         create(name, body)
         docker("start", name)
@@ -236,8 +239,9 @@ def apply(current, payload, docker, probe, create, health, now):
     except BaseException:
         if probe("inspect", name):
             probe("stop", name)
-            probe("update", "--restart=no", name)
-            docker("rename", name, name + "-pages-failed-" + str(int(now())))
+            failed = name + "-pages-failed-" + str(int(now()))
+            docker("rename", name, failed)
+            probe("update", "--restart=no", failed)
         docker("rename", backup, name)
         probe("update", "--restart=" + policy, name)
         docker("start", name)

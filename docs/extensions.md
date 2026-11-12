@@ -52,4 +52,6 @@ The MCP entry point binds to `FASTMCP_HOST` (bare host or address; default `0.0.
 
 Legacy `terrainlink` backup names, receipt names, image labels and backend module paths are intentionally preserved. Renaming them would break existing rollback state. Their presence is compatibility metadata, not a dependency on TerrainLink.
 
+**PTC-7 migration note.** The Pages helper now runs `docker update --restart=no` on every retired container (`<name>-before-terrainlink-pages`, `<name>-pages-reverted-*`, `<name>-pages-failed-*`) and restores the live restart policy when one is promoted back. Retained containers from earlier deployments keep their old policy and may restart with the daemon beside the live API. Before relying on this, run `docker update --restart=no` once on each existing retained container.
+
 Apply and revert restart services. Obtain deployment authority before running them. A retained rollback container must be reconciled before a later Pages upgrade; the helper refuses to discard it automatically.

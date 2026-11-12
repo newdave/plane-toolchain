@@ -82,8 +82,8 @@ def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypat
         ("image", "inspect", "sha256:base"),
         ("build", "-t", IMAGE, "-"),
         ("stop", "api"),
-        ("update", "--restart=no", "api"),
         ("rename", "api", BACKUP),
+        ("update", "--restart=no", BACKUP),
         ("create", "api"),
         ("start", "api"),
         HEALTH,
@@ -160,8 +160,8 @@ def test_apply_start_failure_retains_failed_derived_and_restores_original(host, 
         ("start", "api"),
         ("inspect", "api"),
         ("stop", "api"),
-        ("update", "--restart=no", "api"),
         ("rename", "api", failed),
+        ("update", "--restart=no", failed),
         ("rename", BACKUP, "api"),
         ("update", "--restart=unless-stopped", "api"),
         ("start", "api"),
@@ -193,8 +193,8 @@ def test_revert_restores_original_and_retains_derived_stopped(applied, monkeypat
         ("inspect", "api"),
         ("inspect", BACKUP),
         ("stop", "api"),
-        ("update", "--restart=no", "api"),
         ("rename", "api", reverted),
+        ("update", "--restart=no", reverted),
         ("rename", BACKUP, "api"),
         ("update", "--restart=unless-stopped", "api"),
         ("start", "api"),
@@ -298,9 +298,37 @@ def test_restore_any_cascade_keeps_retained_off_and_live_policy(applied, step):
     applied.fail += [step] * 2
     with pytest.raises((ValueError, subprocess.CalledProcessError)):
         deploy("revert", applied)
-    assert restart(applied, "api") in ("always", "no")
+    assert restart(applied, "api") == "always"
     assert all(v == "no" for v in retained(applied).values())
     assert not any(n.endswith("-aside") and c["running"] for n, c in applied.containers.items())
+
+
+def test_recovery_rename_failure_keeps_live_policy_on_running_original(applied):
+    policy_applied(applied)
+    applied.containers[BACKUP]["healthy"] = False
+    applied.fail.append(("rename", "api", BACKUP))
+    with pytest.raises(ValueError, match="health"):
+        deploy("revert", applied)
+    assert applied.containers["api"]["running"]
+    assert restart(applied, "api") == "always"
+    assert set(retained(applied).values()) == {"no"}
+
+
+def test_apply_retire_rename_failure_keeps_live_policy(host):
+    host.fail.append(("rename", "api", BACKUP))
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy("apply", host)
+    assert restart(host, "api") == "unless-stopped"
+    assert BACKUP not in host.containers
+
+
+def test_replacement_drops_old_id_alias():
+    fake = FakeDocker()
+    fake.add("api")
+    original = fake.document("api")
+    original["NetworkSettings"]["Networks"]["shared"]["Aliases"] = ["api", original["Id"][:12]]
+    body = pages_deploy.replacement(original, IMAGE, "http://live:3000", DIGEST)
+    assert body["NetworkingConfig"]["EndpointsConfig"]["shared"]["Aliases"] == ["api"]
 
 
 def test_update_failure_does_not_break_apply_or_revert(host):
@@ -385,7 +413,7 @@ def test_revert_parked_original_returns_to_backup_name(applied):
 
 
 def test_revert_recovery_nothing_startable_reraises_original(applied):
-    applied.fail += [("start", "api")] * 4  # revert start, recovery, derived, original
+    applied.fail += [("start", "api")] * 5  # revert, recovery, then the cascade starts
     with pytest.raises(subprocess.CalledProcessError) as caught:
         deploy("revert", applied)
     assert caught.value.__context__ is not None
