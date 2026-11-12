@@ -1,0 +1,35 @@
+templates/project/plane.sh
+  s_f997234b8f2229::t_42f5b5e05c4553 1-44
+mise.toml
+  s_f997234b8f2229::t_fcfb289842f65f 25,60-63
+tests/test_project_install.py
+  s_f997234b8f2229::t_10616aff644987 1-13,15-21,23-111,118-173
+  s_f997234b8f2229::t_ac65734f5bc329 22
+  s_f997234b8f2229::t_dd1dd7168286eb 14
+  s_f997234b8f2229::t_74af7772e53f1e 174-180
+  s_f997234b8f2229::t_f57e9e510b66a4 112-117
+templates/project/AGENTS.md
+  s_f997234b8f2229::t_dc1ea9f8c28262 1-14
+scripts/install_project.py
+  s_f997234b8f2229::t_f57e9e510b66a4 272,276-277
+  s_f997234b8f2229::t_4fe579299c8a90 57,59-60,167
+  s_f997234b8f2229::t_7295918143dfb8 85-86,88-91,95,162,180,187-188,251-253
+  s_f997234b8f2229::t_89a67b0f476bb4 75,78-84,87,154
+  s_f997234b8f2229::t_96f5432a604d7a 1-56,58,61-74,76-77,92-94,96-153,155-161,163-166,168-179,181-186,189-250,254-271,273-275,278-337
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "45d8201567edda2591ebde8121e302d03c94c76a",
+  "prompts": {},
+  "sessions": {
+    "s_f997234b8f2229": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ea15c55-f8a8-46eb-98da-121c034fa13f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
