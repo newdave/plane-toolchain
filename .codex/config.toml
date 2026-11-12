@@ -1,0 +1,3 @@
+[mcp_servers.plane]
+command = "bash"
+args = ["scripts/plane-mcp.sh"]

@@ -1,0 +1,49 @@
+[tools]
+python = "3.12.12"
+node = "26"
+uv = "0.9.3"
+
+[hooks.enter]
+shell = "zsh"
+script = 'source "{{config_root}}/scripts/plane-prompt.zsh" "{{config_root}}"'
+
+[hooks.leave]
+shell = "zsh"
+script = '(( ! $+functions[_plane_toolchain_prompt_remove] )) || _plane_toolchain_prompt_remove'
+
+[tasks.setup]
+run = "uv sync --locked"
+[tasks.lint]
+run = ["uv run --locked ruff check .", "uv run --locked ruff format --check ."]
+[tasks.test]
+run = "uv run --locked pytest -q"
+[tasks.check]
+depends = ["lint", "test"]
+[tasks."plane:enable"]
+run = "uv run --locked python -m plane_toolchain.config enable"
+[tasks."plane:disable"]
+run = "uv run --locked python -m plane_toolchain.config disable"
+[tasks."plane:status"]
+run = "python3 src/plane_toolchain/session.py status"
+[tasks."owner:plane:apply"]
+run = "uv run --locked python -m plane_toolchain.config apply"
+[tasks."owner:plane:revert"]
+run = "uv run --locked python -m plane_toolchain.config revert"
+[tasks."owner:plane-mcp-compat:apply"]
+run = "uv run --locked python -m plane_toolchain.mcp_deploy apply"
+[tasks."owner:plane-mcp-compat:revert"]
+run = "uv run --locked python -m plane_toolchain.mcp_deploy revert"
+[tasks."owner:plane-mcp-compat:check"]
+run = "uv run --locked python -m plane_toolchain.mcp_deploy check"
+[tasks."owner:plane-pages:apply"]
+run = "uv run --locked python -m plane_toolchain.pages_deploy apply"
+[tasks."owner:plane-pages:revert"]
+run = "uv run --locked python -m plane_toolchain.pages_deploy revert"
+[tasks."owner:plane-pages:check"]
+run = "uv run --locked python -m plane_toolchain.pages_deploy check"
+[tasks."plane:example"]
+run = "uv run --locked python examples/github/plane_event.py"
+[tasks."owner:github-examples:apply"]
+run = "uv run --locked python scripts/github_examples.py apply"
+[tasks."owner:github-examples:revert"]
+run = "uv run --locked python scripts/github_examples.py revert"
