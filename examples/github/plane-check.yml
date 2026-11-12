@@ -24,10 +24,10 @@ jobs:
         run: |
           python3 -m venv .bootstrap
           .bootstrap/bin/pip install 'uv==0.9.3'
-          .bootstrap/bin/uv sync --locked
+          .bootstrap/bin/uv sync --locked --no-dev
       - name: Call Plane through MCP
         working-directory: .plane-toolchain
-        run: .bootstrap/bin/uv run --locked python examples/github/plane_event.py
+        run: .bootstrap/bin/uv run --locked --no-dev python examples/github/plane_event.py
         env:
           PLANE_ENABLED: 'true'
           PLANE_MCP_URL: ${{ vars.PLANE_MCP_URL }}
