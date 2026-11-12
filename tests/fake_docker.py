@@ -85,6 +85,12 @@ class FakeDocker:
             if rest[0] not in self.containers:
                 return 1, b""
             return 0, json.dumps([self.document(rest[0])]).encode()
+        if command == "ps":
+            # `ps -a --filter name=^<prefix> --format {{.Names}}`: names starting with prefix.
+            prefix = rest[rest.index("--filter") + 1].removeprefix("name=^")
+            return 0, "".join(
+                n + "\n" for n in sorted(self.containers) if n.startswith(prefix)
+            ).encode()
         if command == "image":
             assert rest[0] == "inspect"
             return 0, json.dumps([{"RepoDigests": self.images[rest[1]]}]).encode()

@@ -249,6 +249,94 @@ def test_repeat_revert_exits_zero_with_message(applied, monkeypatch, capsys):
     assert_original_restored(applied)
 
 
+@pytest.fixture
+def interrupted():
+    """A revert died after `rename api -> reverted`: no `api`; the original waits as backup."""
+    fake = FakeDocker()
+    fake.add(BACKUP, labels={"owner": "kept"}, running=False, RestartPolicy={"Name": "no"})
+    fake.add(
+        f"api-pages-reverted-{NOW - 5}",
+        labels={"owner": "kept", "terrainlink.pages.source": DIGEST},
+        running=False,
+    )
+    return fake
+
+
+def test_revert_finishes_interrupted_revert_with_derived_policy(interrupted, monkeypatch, capsys):
+    reverted = f"api-pages-reverted-{NOW - 5}"
+    interrupted.containers[reverted]["host_config"]["RestartPolicy"] = {
+        "Name": "on-failure",
+        "MaximumRetryCount": 3,
+    }
+    remote("revert", interrupted, monkeypatch)
+    assert capsys.readouterr().out == "Original API container restored\n"
+    assert interrupted.calls[-5:] == [
+        ("rename", BACKUP, "api"),
+        ("update", "--restart=on-failure:3", "api"),
+        ("start", "api"),
+        HEALTH,
+        PAGES,
+    ]
+    assert_original_restored(interrupted)
+    assert restart(interrupted, "api") == "on-failure"
+    assert running(interrupted) == ["api"]
+    assert retained(interrupted) == {reverted: "on-failure"}  # Untouched, stopped.
+
+
+def test_interrupted_revert_after_retire_update_uses_default_with_note(
+    interrupted, monkeypatch, capsys
+):
+    interrupted.containers[f"api-pages-reverted-{NOW - 5}"]["host_config"]["RestartPolicy"] = {
+        "Name": "no"
+    }
+    remote("revert", interrupted, monkeypatch)
+    assert capsys.readouterr().out == NOTE + "Original API container restored\n"
+    assert restart(interrupted, "api") == "unless-stopped"
+    assert_original_restored(interrupted)
+
+
+def test_interrupted_revert_keeps_backup_own_policy(interrupted, monkeypatch, capsys):
+    interrupted.containers[f"api-pages-reverted-{NOW - 5}"]["host_config"]["RestartPolicy"] = {
+        "Name": "no"
+    }
+    interrupted.containers[BACKUP]["host_config"]["RestartPolicy"] = {"Name": "always"}
+    remote("revert", interrupted, monkeypatch)
+    assert capsys.readouterr().out == "Original API container restored\n"
+    assert restart(interrupted, "api") == "always"
+
+
+def test_interrupted_revert_without_reverted_container_uses_default(monkeypatch, capsys):
+    fake = FakeDocker()
+    fake.add(BACKUP, labels={"owner": "kept"}, running=False, RestartPolicy={"Name": "no"})
+    remote("revert", fake, monkeypatch)
+    assert capsys.readouterr().out == NOTE + "Original API container restored\n"
+    assert restart(fake, "api") == "unless-stopped"
+    assert running(fake) == ["api"]
+
+
+def test_interrupted_revert_health_failure_leaves_original_running(interrupted, monkeypatch):
+    interrupted.containers[BACKUP]["healthy"] = False
+    with pytest.raises(ValueError, match="API health check failed"):
+        remote("revert", interrupted, monkeypatch)
+    assert running(interrupted) == ["api"]
+    assert interrupted.containers["api"]["labels"] == {"owner": "kept"}
+
+
+def test_revert_missing_api_with_labelled_backup_still_raises(monkeypatch):
+    fake = FakeDocker()
+    fake.add(BACKUP, labels={"terrainlink.pages.source": DIGEST}, running=False)
+    with pytest.raises(subprocess.CalledProcessError):
+        remote("revert", fake, monkeypatch)
+    assert running(fake) == []
+    assert not any(call[0] in ("rename", "start") for call in fake.calls)
+
+
+def test_revert_missing_api_and_backup_still_raises(monkeypatch):
+    fake = FakeDocker()
+    with pytest.raises(subprocess.CalledProcessError):
+        remote("revert", fake, monkeypatch)
+
+
 def assert_derived_back(fake):
     assert restart(fake, "api") == "unless-stopped"
     assert set(retained(fake).values()) == {"no"}
