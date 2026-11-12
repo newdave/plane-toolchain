@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$(git rev-parse --show-toplevel)/src/plane_toolchain/session.py\"; [ ! -f \"$f\" ] || python3 \"$f\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
