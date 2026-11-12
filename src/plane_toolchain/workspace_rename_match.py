@@ -83,8 +83,8 @@ def _href(pats, old, value):
     return None
 
 
-def _walk(obj, old, new, pats, count_only):
-    """Return (object, counts) for the editor-document rules; `new` is ignored if counting."""
+def _walk(obj, old, new, pats):
+    """Return (object, counts) for the editor-document rules."""
     counts = {"url": 0, "href": 0, "embed": 0, "slug": 0}
     if isinstance(obj, dict):
         out = {}
@@ -101,14 +101,14 @@ def _walk(obj, old, new, pats, count_only):
                 counts[hit[0]] += 1
                 out[key] = hit[2]
             else:
-                out[key], c = _walk(value, old, new, pats, count_only)
+                out[key], c = _walk(value, old, new, pats)
                 for k in counts:
                     counts[k] += c[k]
         return out, counts
     if isinstance(obj, list):
         out = []
         for item in obj:
-            value, c = _walk(item, old, new, pats, count_only)
+            value, c = _walk(item, old, new, pats)
             out.append(value)
             for k in counts:
                 counts[k] += c[k]
@@ -123,10 +123,10 @@ def rewrite_json_slug(obj, old, new, hosts=()):
     that are own-host or root-relative OLD links, using the `rewrite_html` rules. Other string
     values are left alone. Walks dicts and lists; the input is not mutated.
     """
-    out, counts = _walk(obj, old, new, _patterns(old, hosts), False)
+    out, counts = _walk(obj, old, new, _patterns(old, hosts))
     return out, sum(counts.values())
 
 
 def scan_json(obj, old, hosts=()):
     """Count matches per form without rewriting: {"url", "href", "embed", "slug"}."""
-    return _walk(obj, old, old, _patterns(old, hosts), True)[1]
+    return _walk(obj, old, old, _patterns(old, hosts))[1]
