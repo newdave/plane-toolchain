@@ -34,6 +34,22 @@ def test_legacy_env_precedence(tmp_path):
     assert plane_session.switch(tmp_path, {}) == "disabled"
 
 
+def test_connection_values_read_literally_with_environment_precedence(tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/local.env").write_text(
+        "PLANE_MCP_URL=https://mcp.example.org/http/api-key/mcp # endpoint\n"
+        "export PLANE_WORKSPACE='demo'\n"
+        "PLANE_PROJECT=$(touch should-not-exist)\n"
+        "PLANE_API_KEY=never-read-from-files\n"
+    )
+    values = plane_session.connection(tmp_path, {"PLANE_PROJECT": "from-env"})
+    assert values == {
+        "PLANE_MCP_URL": "https://mcp.example.org/http/api-key/mcp",
+        "PLANE_WORKSPACE": "demo",
+    }
+    assert not (tmp_path / "should-not-exist").exists()
+
+
 def test_both_clients_register_same_startup_hook():
     root = Path(__file__).resolve().parents[1]
     for path in (root / ".codex/hooks.json", root / ".claude/settings.json"):
