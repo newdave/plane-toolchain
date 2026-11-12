@@ -1,0 +1,21 @@
+.github/rulesets/main.json
+  s_ce066174a8d2c7::t_bdc8f808d8b30f 1-33
+CONTRIBUTING.md
+  s_ce066174a8d2c7::t_b29d0f67c9e304 5-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "04476b38152fe9acfb064d9ca1883ca54f94b20f",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
