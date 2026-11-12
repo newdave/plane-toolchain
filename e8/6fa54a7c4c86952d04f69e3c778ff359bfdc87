@@ -1,0 +1,20 @@
+renovate.json
+  s_ce066174a8d2c7::t_198fb7e816f34c 7
+  s_ce066174a8d2c7::t_1aa5ba54f6de7b 1-6,8-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "e86fa54a7c4c86952d04f69e3c778ff359bfdc87",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
