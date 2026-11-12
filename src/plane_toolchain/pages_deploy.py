@@ -31,12 +31,16 @@ def replacement(original, image, live_url, digest):
     ]
     body["Env"].append("CE_PLANE_LIVE_URL=" + live_url)
     body["Labels"] = dict(body.get("Labels") or {}, **{"terrainlink.pages.source": digest})
+    # The copied hostname is the old container id; keep only an explicit custom one.
+    if body.get("Hostname") == original.get("Id", "")[:12]:
+        body.pop("Hostname", None)
     body["HostConfig"] = copy.deepcopy(original["HostConfig"])
     endpoints = {}
     for name, value in original["NetworkSettings"]["Networks"].items():
         if value.get("IPAMConfig"):
             raise ValueError("Static network addresses need a deployment-specific migration")
-        endpoints[name] = {"Aliases": value.get("Aliases") or []}
+        aliases = [a for a in value.get("Aliases") or [] if a != original.get("Id", "")[:12]]
+        endpoints[name] = {"Aliases": aliases}
     body["NetworkingConfig"] = {"EndpointsConfig": endpoints}
     return body
 
@@ -44,6 +48,14 @@ def replacement(original, image, live_url, digest):
 def backup_name(name):
     """Legacy rollback container name; deployed receipts depend on it."""
     return name + "-before-terrainlink-pages"
+
+
+def restart_arg(container):
+    """`docker update --restart` value for a container's current policy."""
+    policy = container["HostConfig"].get("RestartPolicy") or {}
+    name = policy.get("Name") or "no"
+    count = policy.get("MaximumRetryCount")
+    return name + ":" + str(count) if name == "on-failure" and count else name
 
 
 def source_label(container):
@@ -121,22 +133,32 @@ def check(current, payload, health):
     return "Pages image and API health verified"
 
 
-def restore_any(name, backup, reverted, probe, docker):
-    """Best effort after failed recovery: leave exactly one started `name` container."""
+def restore_any(name, backup, reverted, probe, docker, policy):
+    """Best effort after failed recovery: leave exactly one started `name` container.
+
+    A retained container gets `--restart=no` only after its rename succeeds; a promoted one
+    gets `policy`, the live deployment's policy read before any retirement (best effort).
+    """
     aside = reverted + "-aside"
     try:
         if probe("inspect", name):
+            probe("update", "--restart=" + policy, name)
             if probe("start", name):
                 return
             if not probe("rename", name, aside):
                 return
+            probe("update", "--restart=no", aside)
         for source in (reverted, backup):
             if probe("inspect", source) and probe("rename", source, name):
+                probe("update", "--restart=" + policy, name)
                 if probe("start", name):
                     return
-                probe("rename", name, source)
+                if probe("rename", name, source):
+                    probe("update", "--restart=no", source)
         if probe("inspect", aside):
-            probe("rename", aside, name)
+            if probe("rename", aside, name):
+                probe("update", "--restart=" + policy, name)
+                probe("start", name)
     finally:
         # Return a parked container to its legacy name: derived -> reverted, original -> backup.
         if probe("inspect", aside):
@@ -158,14 +180,17 @@ def revert(current, payload, docker, probe, health, now):
     if source_label(current) != payload["digest"]:
         raise ValueError("API changed; refusing rollback")
     reverted = name + "-pages-reverted-" + str(int(now()))
+    policy = restart_arg(current)  # Live (derived) policy; the backup's own inspect shows `no`.
     done = []  # Completed swap steps, so recovery undoes only what happened.
     try:
         done.append("stop")
         docker("stop", name)
         docker("rename", name, reverted)
+        probe("update", "--restart=no", reverted)
         done.append("derived")
         docker("rename", backup, name)
         done.append("original")
+        probe("update", "--restart=" + policy, name)
         docker("start", name)
         health(name)
     except BaseException as error:
@@ -173,11 +198,13 @@ def revert(current, payload, docker, probe, health, now):
             if "original" in done:
                 docker("stop", name)
                 docker("rename", name, backup)
+                probe("update", "--restart=no", backup)
             if "derived" in done:
                 docker("rename", reverted, name)
+            probe("update", "--restart=" + policy, name)
             docker("start", name)
         except Exception:
-            restore_any(name, backup, reverted, probe, docker)
+            restore_any(name, backup, reverted, probe, docker, policy)
             raise error  # Recovery error stays as __context__.
         raise
     return "Original API container restored; derived container retained stopped"
@@ -208,8 +235,10 @@ def apply(current, payload, docker, probe, create, health, now):
     namespace = {}
     exec(payload["replacement"], namespace)  # noqa: S102 - source shipped by main()
     body = namespace["replacement"](current, image, payload["live_url"], digest)
+    policy = restart_arg(current)  # Read before retiring; restored when promoted back.
     docker("stop", name)
     docker("rename", name, backup)
+    probe("update", "--restart=no", backup)  # After the rename: a failed rename keeps the policy.
     try:
         create(name, body)
         docker("start", name)
@@ -217,8 +246,11 @@ def apply(current, payload, docker, probe, create, health, now):
     except BaseException:
         if probe("inspect", name):
             probe("stop", name)
-            docker("rename", name, name + "-pages-failed-" + str(int(now())))
+            failed = name + "-pages-failed-" + str(int(now()))
+            docker("rename", name, failed)
+            probe("update", "--restart=no", failed)
         docker("rename", backup, name)
+        probe("update", "--restart=" + policy, name)
         docker("start", name)
         raise
     return "Pages derived image applied; API healthy; original container retained for rollback"
@@ -243,7 +275,16 @@ def deploy(payload, docker, probe, create, health, now):
 
 REMOTE = program(
     ["http.client", "io", "json", "socket", "subprocess", "sys", "tarfile", "time"],
-    [docker, docker_ok, backup_name, source_label, healthy, build_context, docker_create]
+    [
+        docker,
+        docker_ok,
+        backup_name,
+        restart_arg,
+        source_label,
+        healthy,
+        build_context,
+        docker_create,
+    ]
     + [check, restore_any, revert, apply, deploy],
     "print(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
     "    lambda name: healthy(name, docker_ok, time.sleep), time.time))\n",

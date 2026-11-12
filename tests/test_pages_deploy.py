@@ -64,9 +64,18 @@ def host():
 @pytest.fixture
 def applied():
     fake = FakeDocker()
-    fake.add(BACKUP, labels={"owner": "kept"}, running=False)
+    fake.add(BACKUP, labels={"owner": "kept"}, running=False, RestartPolicy={"Name": "no"})
     fake.add("api", labels={"owner": "kept", "terrainlink.pages.source": DIGEST})
     return fake
+
+
+def restart(fake, name):
+    return fake.containers[name]["host_config"]["RestartPolicy"]["Name"]
+
+
+def retained(fake):
+    """Every container that is not the live `api` must not auto-start."""
+    return {n: restart(fake, n) for n in fake.containers if n != "api"}
 
 
 def assert_original_restored(fake):
@@ -87,6 +96,7 @@ def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypat
         ("build", "-t", IMAGE, "-"),
         ("stop", "api"),
         ("rename", "api", BACKUP),
+        ("update", "--restart=no", BACKUP),
         ("create", "api"),
         ("start", "api"),
         HEALTH,
@@ -145,10 +155,11 @@ def test_apply_create_failure_restores_original(host, monkeypatch):
     host.fail.append("create")
     with pytest.raises(ValueError, match="creation"):
         remote("apply", host, monkeypatch)
-    assert host.calls[-4:] == [
+    assert host.calls[-5:] == [
         ("create", "api"),
         ("inspect", "api"),
         ("rename", BACKUP, "api"),
+        ("update", "--restart=unless-stopped", "api"),
         ("start", "api"),
     ]
     assert_original_restored(host)
@@ -160,17 +171,21 @@ def test_apply_start_failure_retains_failed_derived_and_restores_original(host, 
     with pytest.raises(subprocess.CalledProcessError):
         remote("apply", host, monkeypatch)
     failed = f"api-pages-failed-{NOW}"
-    assert host.calls[-6:] == [
+    assert host.calls[-8:] == [
         ("start", "api"),
         ("inspect", "api"),
         ("stop", "api"),
         ("rename", "api", failed),
+        ("update", "--restart=no", failed),
         ("rename", BACKUP, "api"),
+        ("update", "--restart=unless-stopped", "api"),
         ("start", "api"),
     ]
     assert_original_restored(host)
     assert host.containers[failed]["image"] == IMAGE
     assert not host.containers[failed]["running"]
+    assert retained(host) == {failed: "no"}
+    assert restart(host, "api") == "unless-stopped"
 
 
 def test_apply_health_failure_retains_failed_derived_and_restores_original(host, monkeypatch):
@@ -194,13 +209,18 @@ def test_revert_restores_original_and_retains_derived_stopped(applied, monkeypat
         ("inspect", BACKUP),
         ("stop", "api"),
         ("rename", "api", reverted),
+        ("update", "--restart=no", reverted),
         ("rename", BACKUP, "api"),
+        ("update", "--restart=unless-stopped", "api"),
         ("start", "api"),
         HEALTH,
         PAGES,
     ]
     assert_original_restored(applied)
     assert not applied.containers[reverted]["running"]
+    # The backup was retired in an earlier run (`no`); revert restores the live policy.
+    assert retained(applied) == {reverted: "no"}
+    assert restart(applied, "api") == "unless-stopped"
 
 
 def test_revert_refuses_when_label_changed(applied, monkeypatch):
@@ -228,6 +248,8 @@ def test_repeat_revert_exits_zero_with_message(applied, monkeypatch, capsys):
 
 
 def assert_derived_back(fake):
+    assert restart(fake, "api") == "unless-stopped"
+    assert set(retained(fake).values()) == {"no"}
     assert fake.containers["api"]["labels"]["terrainlink.pages.source"] == DIGEST
     assert fake.containers["api"]["running"]
     assert not fake.containers[BACKUP]["running"]
@@ -251,6 +273,105 @@ def test_revert_failure_swaps_back_and_restarts_derived(applied, monkeypatch, fa
         ("rename", reverted, "api"),
         ("start", "api"),
     ]
+
+
+def policy_applied(fake):
+    fake.add("api", labels={"terrainlink.pages.source": DIGEST}, RestartPolicy={"Name": "always"})
+    fake.containers[BACKUP]["host_config"]["RestartPolicy"] = {"Name": "no"}
+
+
+def test_restart_policy_round_trips_through_apply_and_revert(host):
+    host.containers["api"]["host_config"]["RestartPolicy"] = {
+        "Name": "on-failure",
+        "MaximumRetryCount": 3,
+    }
+    deploy("apply", host)
+    assert retained(host) == {BACKUP: "no"}
+    assert host.containers["api"]["host_config"]["RestartPolicy"]["Name"] == "on-failure"
+    deploy("revert", host)
+    assert host.containers["api"]["host_config"]["RestartPolicy"] == {
+        "Name": "on-failure",
+        "MaximumRetryCount": 3,
+    }
+    assert set(retained(host).values()) == {"no"}
+
+
+def test_revert_failure_recovery_promotes_with_policy_and_retires_with_no(applied):
+    policy_applied(applied)
+    applied.containers[BACKUP]["healthy"] = False
+    with pytest.raises(ValueError, match="health"):
+        deploy("revert", applied)
+    assert restart(applied, "api") == "always"
+    assert set(retained(applied).values()) == {"no"}
+
+
+@pytest.mark.parametrize(
+    "step", [("rename", "api", BACKUP), ("rename", f"api-pages-reverted-{NOW}", "api")]
+)
+def test_restore_any_cascade_keeps_retained_off_and_live_policy(applied, step):
+    policy_applied(applied)
+    applied.containers[BACKUP]["healthy"] = False
+    applied.fail += [step] * 2
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        deploy("revert", applied)
+    assert restart(applied, "api") == "always"
+    assert all(v == "no" for v in retained(applied).values())
+    assert not any(n.endswith("-aside") and c["running"] for n, c in applied.containers.items())
+
+
+def test_recovery_rename_failure_keeps_live_policy_on_running_original(applied):
+    policy_applied(applied)
+    applied.containers[BACKUP]["healthy"] = False
+    applied.fail.append(("rename", "api", BACKUP))
+    with pytest.raises(ValueError, match="health"):
+        deploy("revert", applied)
+    assert applied.containers["api"]["running"]
+    assert restart(applied, "api") == "always"
+    assert set(retained(applied).values()) == {"no"}
+
+
+def test_apply_retire_rename_failure_keeps_live_policy(host):
+    host.fail.append(("rename", "api", BACKUP))
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy("apply", host)
+    assert restart(host, "api") == "unless-stopped"
+    assert BACKUP not in host.containers
+
+
+def test_replacement_drops_old_id_alias():
+    fake = FakeDocker()
+    fake.add("api")
+    original = fake.document("api")
+    original["NetworkSettings"]["Networks"]["shared"]["Aliases"] = ["api", original["Id"][:12]]
+    body = pages_deploy.replacement(original, IMAGE, "http://live:3000", DIGEST)
+    assert body["NetworkingConfig"]["EndpointsConfig"]["shared"]["Aliases"] == ["api"]
+
+
+def test_update_failure_does_not_break_apply_or_revert(host):
+    host.fail += [("update",)] * 4
+    assert deploy("apply", host).startswith("Pages derived image applied")
+    assert deploy("revert", host).startswith("Original API container restored")
+    assert host.containers["api"]["running"]
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_replacement_clears_default_hostname_keeps_explicit(explicit):
+    fake = FakeDocker()
+    fake.add("api", hostname="custom-host" if explicit else None)
+    original = fake.document("api")
+    body = pages_deploy.replacement(original, IMAGE, "http://live:3000", DIGEST)
+    if explicit:
+        assert body["Hostname"] == "custom-host"
+    else:
+        assert original["Config"]["Hostname"] == original["Id"][:12]
+        assert "Hostname" not in body
+
+
+def test_applied_container_gets_fresh_hostname(host):
+    old = host.containers["api"]["hostname"]
+    deploy("apply", host)
+    derived = host.containers["api"]
+    assert derived["hostname"] != old and derived["hostname"] == derived["id"][:12]
 
 
 @pytest.mark.parametrize("step", [("stop", "api"), ("rename", "api"), ("rename", BACKUP)])
@@ -308,7 +429,7 @@ def test_revert_parked_original_returns_to_backup_name(applied):
 
 
 def test_revert_recovery_nothing_startable_reraises_original(applied):
-    applied.fail += [("start", "api")] * 4  # revert start, recovery, derived, original
+    applied.fail += [("start", "api")] * 5  # revert, recovery, then the cascade starts
     with pytest.raises(subprocess.CalledProcessError) as caught:
         deploy("revert", applied)
     assert caught.value.__context__ is not None
@@ -406,7 +527,8 @@ def test_seam_apply_success(host):
     assert host.streams[("build", "-t", IMAGE, "-")] == (subprocess.DEVNULL, subprocess.DEVNULL)
     assert host.containers["api"]["labels"]["terrainlink.pages.source"] == DIGEST
     assert host.containers["api"]["running"]
-    assert host.containers[BACKUP]["host_config"] == host.containers["api"]["host_config"]
+    assert restart(host, BACKUP) == "no"
+    assert restart(host, "api") == "unless-stopped"
     assert not host.containers[BACKUP]["running"]
 
 

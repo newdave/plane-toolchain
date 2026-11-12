@@ -1,5 +1,6 @@
 """In-memory Docker host for offline deployment tests; records every call."""
 
+import hashlib
 import io
 import json
 import subprocess
@@ -24,8 +25,11 @@ class FakeDocker:
         self.tracked = False
         self.created_healthy = True
 
-    def add(self, name, labels=None, running=True, healthy=True, **host_config):
+    def add(self, name, labels=None, running=True, healthy=True, hostname=None, **host_config):
+        ident = self.new_id()
         self.containers[name] = {
+            "id": ident,
+            "hostname": hostname or ident[:12],
             "image": "sha256:base",
             "env": ["OPAQUE_SECRET=do-not-print", "CE_PLANE_LIVE_URL=http://old:3000"],
             "labels": dict(labels or {}),
@@ -38,11 +42,17 @@ class FakeDocker:
             "host_config": {"RestartPolicy": {"Name": "unless-stopped"}, **host_config},
         }
 
+    def new_id(self):
+        self.serial = getattr(self, "serial", 0) + 1
+        return hashlib.sha256(str(self.serial).encode()).hexdigest()
+
     def document(self, name):
         container = self.containers[name]
         return {
+            "Id": container["id"],
             "Image": container["image"],
             "Config": {
+                "Hostname": container["hostname"],
                 "Image": container["image"],
                 "Env": list(container["env"]),
                 "Labels": dict(container["labels"]),
@@ -89,6 +99,14 @@ class FakeDocker:
                 return 1, b""
             self.containers[new] = self.containers.pop(old)
             return 0, b""
+        if command == "update":
+            assert rest[0].startswith("--restart=") and len(rest) == 2
+            if rest[1] not in self.containers:
+                return 1, b""
+            name, _, count = rest[0][len("--restart=") :].partition(":")
+            policy = {"Name": name, **({"MaximumRetryCount": int(count)} if count else {})}
+            self.containers[rest[1]]["host_config"]["RestartPolicy"] = policy
+            return 0, b""
         if command == "exec":
             container = self.containers.get(rest[0])
             ok = bool(container and container["running"] and container["healthy"])
@@ -128,7 +146,10 @@ class FakeDocker:
             raise ValueError("Derived API container creation failed")
         if name in self.containers:
             raise ValueError("Derived API container creation failed")
+        ident = self.new_id()
         self.containers[name] = {
+            "id": ident,
+            "hostname": body.get("Hostname") or ident[:12],
             "image": body["Image"],
             "env": list(body["Env"]),
             "labels": dict(body["Labels"]),
