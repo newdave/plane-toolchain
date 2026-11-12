@@ -1,0 +1,24 @@
+.github/workflows/ci.yml
+  s_ce066174a8d2c7::t_a180ea95ae0462 19-26
+scripts/plane-mcp.sh
+  s_ce066174a8d2c7::t_16386876460e7c 6-7,32
+mise.toml
+  s_ce066174a8d2c7::t_4d1e375a83627a 5-7,21-23,25-27,31
+  s_ce066174a8d2c7::t_16386876460e7c 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "a59ba88179cd8b9cd147576a60f71d2eef57b9e1",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
