@@ -265,3 +265,64 @@ def test_main_rejects_unsafe_destination(monkeypatch, host, container):
     monkeypatch.setattr(subprocess, "run", lambda *args, **kw: pytest.fail("Must not connect"))
     with pytest.raises(ValueError, match="Invalid deployment destination"):
         pages_deploy.main()
+
+
+# Injected seams: deploy() with an in-memory Docker host, no process patching.
+
+
+def seams(fake):
+    def health(name):
+        pages_deploy.healthy(name, fake.probe, lambda seconds: None, attempts=3)
+
+    return dict(docker=fake.docker, probe=fake.probe, create=fake.create, health=health)
+
+
+def deploy(operation, fake):
+    return pages_deploy.deploy(payload(operation), now=lambda: NOW + 0.5, **seams(fake))
+
+
+def test_seam_apply_success(host):
+    assert deploy("apply", host).startswith("Pages derived image applied")
+    assert host.containers["api"]["labels"]["terrainlink.pages.source"] == DIGEST
+    assert host.containers["api"]["running"]
+    assert host.containers[BACKUP]["host_config"] == host.containers["api"]["host_config"]
+    assert not host.containers[BACKUP]["running"]
+
+
+@pytest.mark.parametrize("failure", ["create", "start", "health"])
+def test_seam_apply_failure_restores_original(host, failure):
+    if failure == "health":
+        host.created_healthy = False
+    else:
+        host.fail.append(failure)
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        deploy("apply", host)
+    assert_original_restored(host)
+    failed = f"api-pages-failed-{NOW}"
+    assert (failed in host.containers) == (failure != "create")
+
+
+def test_seam_apply_idempotent_and_refuses_existing_backup(applied, host):
+    assert deploy("apply", applied) == "Pages image already applied; API healthy"
+    assert ("build", "-t", IMAGE, "-") not in applied.calls
+    host.add(BACKUP, running=False)
+    with pytest.raises(ValueError, match="Existing rollback container"):
+        deploy("apply", host)
+    assert host.containers["api"]["running"]
+
+
+def test_seam_revert_success_and_check_label_mismatch(applied):
+    assert deploy("check", applied) == "Pages image and API health verified"
+    assert deploy("revert", applied).startswith("Original API container restored")
+    assert_original_restored(applied)
+    with pytest.raises(ValueError, match="does not match source"):
+        deploy("check", applied)
+
+
+def test_healthy_retries_then_raises():
+    attempts, sleeps = [], []
+    with pytest.raises(ValueError, match="API health check failed"):
+        pages_deploy.healthy("api", lambda *args: attempts.append(args) or False, sleeps.append)
+    assert len(attempts) == 45 and sleeps == [1] * 45
+    answers = iter([False, True])
+    pages_deploy.healthy("api", lambda *args: next(answers), sleeps.append)
