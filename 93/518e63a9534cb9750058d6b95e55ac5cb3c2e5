@@ -1,0 +1,25 @@
+docs/extensions.md
+  s_ce066174a8d2c7::t_b85aeee1d25cba 43-49
+tests/test_legacy_payloads.py
+  s_ce066174a8d2c7::t_b85aeee1d25cba 13-14
+tests/test_ce_tools.py
+  s_ce066174a8d2c7::t_94f490b2611637 39-74
+src/plane_toolchain/ce_tools.py
+  s_ce066174a8d2c7::t_6001dd3f6c21a8 11,25-48,69,74,106-107,112,124,146,151,154,158
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "93518e63a9534cb9750058d6b95e55ac5cb3c2e5",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
