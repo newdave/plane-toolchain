@@ -5,6 +5,7 @@ Existing documents are edited only as a whole-body replacement with an updated_a
 precondition, after force-closing open editors through Live's Redis admin channel.
 """
 
+import hashlib
 import json
 from datetime import datetime, timezone
 
@@ -38,15 +39,21 @@ INPUT_ERRORS = {
     "archived": "Page is archived; restore it before editing",
     "conflict": "Page changed since expected_updated_at; retrieve it and retry",
     "close": "Could not disconnect open editors through Live; nothing written",
+    "overwritten": "Edit was overwritten by an open editor; retry",
 }
 
 # Update error keys that are not plain 400 validation failures.
-UPDATE_STATUS = {"conflict": 409, "close": 502}
+UPDATE_STATUS = {"conflict": 409, "overwritten": 409, "close": 502}
 
 # Live (apps/live) subscribes to this channel; a document's name is its page id.
 ADMIN_CHANNEL = "hocuspocus:admin"
 # Live closes connections about 50 ms after the command, then stores pending edits.
 FORCE_CLOSE_WAIT_SECONDS = 1.0
+# After commit, watch one Live store debounce (10 s) plus margin for a late overwrite.
+LATE_STORE_WINDOW_SECONDS = 12.0
+LATE_STORE_POLL_SECONDS = 1.0
+# Plane's track_page_version keeps at most this many versions per page.
+VERSION_LIMIT = 20
 
 
 class PageInputError(ValueError):
@@ -110,14 +117,25 @@ def update_request(data):
     return body, expected
 
 
-def editable(page, expected):
-    """Refuse what Plane's description update refuses, then check the precondition."""
+def editable(page):
+    """Refuse what Plane's description update refuses."""
     if page.is_locked:
         raise PageInputError("locked")
     if page.archived_at:
         raise PageInputError("archived")
-    if page.updated_at != expected:
-        raise PageInputError("conflict")
+
+
+def stored_bytes(value):
+    """BinaryField reads back as memoryview, bytes or None."""
+    return bytes(value) if value is not None else b""
+
+
+def content_digest(page):
+    """Digest of the stored body; Live re-storing an unchanged document keeps it."""
+    digest = hashlib.sha256()
+    for part in ((page.description_html or "").encode(), stored_bytes(page.description_binary)):
+        digest.update(hashlib.sha256(part).digest())
+    return digest.hexdigest()
 
 
 def page_update(data, load, prepare, close_editors, wait, locked, version):
@@ -129,14 +147,20 @@ def page_update(data, load, prepare, close_editors, wait, locked, version):
     """
     body, expected = update_request(data)
     page = load()
-    editable(page, expected)
+    editable(page)
+    if page.updated_at != expected:
+        raise PageInputError("conflict")
+    seen = content_digest(page)
     # Convert before disconnecting anyone: a Live failure leaves editors untouched.
     new = prepare(body)
     close_editors(str(page.id))
-    # Let Live store edits it held in memory; they move updated_at and fail the recheck.
+    # Let Live store edits it held in memory. Its unload store bumps updated_at even
+    # when nothing changed, so the recheck compares content instead.
     wait(FORCE_CLOSE_WAIT_SECONDS)
     with locked() as page:
-        editable(page, expected)
+        editable(page)
+        if content_digest(page) != seen:
+            raise PageInputError("conflict")
         old_html = page.description_html
         version(page)
         page.description_html = new["description_html"]
@@ -145,6 +169,22 @@ def page_update(data, load, prepare, close_editors, wait, locked, version):
         # One save(): Page.save() derives description_stripped and bumps updated_at.
         page.save()
     return {"page": page, "old_html": old_html}
+
+
+def late_store(reread, written, wait):
+    """Raise "overwritten" if a late Live store replaces the committed body.
+
+    reread returns the stored description_binary, or None once the page is gone.
+    """
+    waited = 0.0
+    while waited < LATE_STORE_WINDOW_SECONDS:
+        wait(LATE_STORE_POLL_SECONDS)
+        waited += LATE_STORE_POLL_SECONDS
+        current = reread()
+        if current is None:
+            return
+        if stored_bytes(current) != stored_bytes(written):
+            raise PageInputError("overwritten")
 
 
 def force_close_message(doc_id):
@@ -317,6 +357,26 @@ def routes():
                     description_json=row.description_json,
                     description_binary=row.description_binary,
                 )
+                # Same cap as Plane's track_page_version, oldest first.
+                stale = list(
+                    PageVersion.objects.filter(page_id=row.id)
+                    .order_by("-last_saved_at")
+                    .values_list("id", flat=True)[VERSION_LIMIT:]
+                )
+                if stale:
+                    PageVersion.objects.filter(id__in=stale).delete()
+
+            def reread():
+                rows = Page.objects.filter(pk=page_id).values_list("description_binary", flat=True)
+                return rows.first()
+
+            def client_error(error):
+                message = INPUT_ERRORS.get(error.key, "Invalid page input")
+                if error.key in UPDATE_STATUS:
+                    failure = APIException(message)
+                    failure.status_code = UPDATE_STATUS[error.key]
+                    return failure
+                return ValidationError(message)
 
             try:
                 result = page_update(
@@ -329,12 +389,7 @@ def routes():
                     version=version,
                 )
             except PageInputError as error:
-                message = INPUT_ERRORS.get(error.key, "Invalid page input")
-                if error.key in UPDATE_STATUS:
-                    failure = APIException(message)
-                    failure.status_code = UPDATE_STATUS[error.key]
-                    raise failure from None
-                raise ValidationError(message) from None
+                raise client_error(error) from None
             except ValueError:
                 raise ValidationError("Invalid page input") from None
             page = result["page"]
@@ -350,6 +405,11 @@ def routes():
             except Exception:
                 # The body is committed; a retry would only hit the precondition.
                 logging.getLogger(__name__).warning("Page transaction not queued: %s", page.id)
+            try:
+                # The write and its version stay; the caller learns Live replaced it.
+                late_store(reread, page.description_binary, time.sleep)
+            except PageInputError as error:
+                raise client_error(error) from None
             return Response(PageDetailSerializer(page).data)
 
     # Import confirms this image uses the reviewed CE layout; fail startup on drift.

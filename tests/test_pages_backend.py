@@ -404,14 +404,57 @@ def test_update_precondition_compares_instants_not_strings():
     assert not isinstance(result, Exception)
 
 
-def test_update_rechecks_precondition_under_lock_after_editors_flush():
+def test_update_unchanged_live_restore_bumping_updated_at_does_not_block_write():
     from datetime import datetime, timezone
 
     events = []
-    flushed = _page(events=events, updated_at=datetime(2026, 11, 13, 2, tzinfo=timezone.utc))
+    restored = _page(events=events, updated_at=datetime(2026, 11, 13, 2, tzinfo=timezone.utc))
+    result, events = _update(events=events, locked_page=restored)
+    assert result["page"] is restored
+    assert [e[0] for e in _writes(events)] == ["version", "save"]
+
+
+@pytest.mark.parametrize(
+    "changed", [{"description_binary": b"flushed"}, {"description_html": "<p>Flushed</p>"}]
+)
+def test_update_refuses_when_content_changed_under_lock_after_force_close(changed):
+    events = []
+    flushed = _page(events=events, **changed)
     error, events = _update(events=events, locked_page=flushed)
     assert error.key == "conflict"
     assert not _writes(events)
+
+
+def test_update_recheck_under_lock_still_refuses_newly_locked_page():
+    events = []
+    error, events = _update(events=events, locked_page=_page(events=events, is_locked=True))
+    assert error.key == "locked"
+    assert not _writes(events)
+
+
+def _reads(*values):
+    queue = list(values)
+    return lambda: queue.pop(0) if len(queue) > 1 else queue[0]
+
+
+def test_late_store_watch_passes_when_body_stays_as_written():
+    from plane_toolchain.pages_backend import LATE_STORE_WINDOW_SECONDS, late_store
+
+    waits = []
+    late_store(_reads(memoryview(b"new")), b"new", waits.append)
+    assert sum(waits) >= LATE_STORE_WINDOW_SECONDS
+    assert LATE_STORE_WINDOW_SECONDS > 10  # Live debounce is 10 s
+
+
+def test_late_store_watch_reports_overwrite_and_stops_early():
+    from plane_toolchain.pages_backend import PageInputError, late_store
+
+    waits = []
+    with pytest.raises(PageInputError) as caught:
+        late_store(_reads(b"new", b"live"), b"new", waits.append)
+    assert caught.value.key == "overwritten"
+    assert str(caught.value) == "Edit was overwritten by an open editor; retry"
+    assert len(waits) == 2
 
 
 def test_update_without_force_is_refused_before_any_side_effect():
@@ -511,11 +554,14 @@ def test_update_errors_map_to_http_status():
     from plane_toolchain.pages_backend import INPUT_ERRORS, UPDATE_STATUS
 
     assert UPDATE_STATUS["conflict"] == 409
+    assert UPDATE_STATUS["overwritten"] == 409
     assert UPDATE_STATUS["close"] == 502
     assert set(UPDATE_STATUS) <= set(INPUT_ERRORS)
 
 
-def test_patch_missing_page_is_404_before_any_side_effect(monkeypatch):
+def test_patch_view_lookup_of_absent_page_is_404_behind_permission_403(monkeypatch):
+    # ProjectPagePermission answers 403 for missing or invisible pages before the
+    # view runs (as for retrieve); this 404 is the view's own defence in depth.
     view, _, http404 = _pages_view(monkeypatch)
     view.request.data = {
         "description_html": "<p>x</p>",
@@ -541,3 +587,255 @@ def test_detail_route_allows_get_and_patch_only(monkeypatch):
     args, _ = pages_backend.routes()[1]
     assert args[0].endswith("<uuid:page_id>/")
     assert args[1].allowed == ["get", "patch"]
+
+
+class _ApiError(Exception):
+    def __init__(self, detail=""):
+        super().__init__(detail)
+        self.status_code = 500
+
+
+def _patch_env(monkeypatch, locked_changes=None, reads=(b"new",), existing_versions=0):
+    """Real patch() over fakes recording transaction scope, locking and writes."""
+    import base64
+    import sys
+    import time
+    import types
+    from contextlib import contextmanager
+    from datetime import datetime, timezone
+
+    from plane_toolchain import pages_backend
+
+    _pages_view(monkeypatch)
+    log = []
+    state = {"depth": 0, "next_id": 1000}
+
+    def row(**changes):
+        page = types.SimpleNamespace(
+            id="0b5e1b2c-6f9e-4a39-9d3b-3d2f1c0a9e11",
+            workspace_id="ws",
+            updated_at=datetime(2026, 11, 13, 1, 2, 3, 123456, tzinfo=timezone.utc),
+            is_locked=False,
+            archived_at=None,
+            description_html="<p>Old</p>",
+            description_json={"type": "old"},
+            description_binary=memoryview(b"old"),
+        )
+        page.__dict__.update(changes)
+        page.save = lambda: log.append(("save", state["depth"] > 0, page.description_binary))
+        return page
+
+    first, locked_row = row(), row(**(locked_changes or {}))
+    read_queue = list(reads)
+
+    @contextmanager
+    def atomic():
+        log.append("atomic-enter")
+        state["depth"] += 1
+        try:
+            yield
+        finally:
+            state["depth"] -= 1
+            log.append("atomic-exit")
+
+    class Locked:
+        def filter(self, *args, **kwargs):
+            return self
+
+    class Reread:
+        def values_list(self, field, flat=False):
+            assert field == "description_binary"
+            return self
+
+        def first(self):
+            return read_queue.pop(0) if len(read_queue) > 1 else read_queue[0]
+
+    class PageRows:
+        def filter(self, *args, **kwargs):
+            return Reread() if "pk" in kwargs else self
+
+        def distinct(self):
+            return self
+
+        def order_by(self, *args):
+            return self
+
+        def values(self, *fields):
+            return ["id-subquery"]
+
+        def select_for_update(self):
+            log.append("select_for_update")
+            return Locked()
+
+    versions = [
+        {"id": n, "page_id": first.id, "last_saved_at": n} for n in range(1, existing_versions + 1)
+    ]
+
+    class Versions:
+        def __init__(self, items):
+            self.items = items
+
+        def filter(self, **kwargs):
+            items = versions
+            if "page_id" in kwargs:
+                items = [v for v in items if v["page_id"] == kwargs["page_id"]]
+            if "id__in" in kwargs:
+                items = [v for v in items if v["id"] in kwargs["id__in"]]
+            return Versions(items)
+
+        def order_by(self, key):
+            reverse = key.startswith("-")
+            return Versions(sorted(self.items, key=lambda v: v["last_saved_at"], reverse=reverse))
+
+        def values_list(self, field, flat=False):
+            return [v[field] for v in self.items]
+
+        def delete(self):
+            ids = [v["id"] for v in self.items]
+            versions[:] = [v for v in versions if v["id"] not in ids]
+            log.append(("prune", sorted(ids), state["depth"] > 0))
+
+        def create(self, **kwargs):
+            state["next_id"] += 1
+            versions.append(
+                {"id": state["next_id"], "page_id": kwargs["page_id"], "last_saved_at": 10**6}
+            )
+            log.append(("version", state["depth"] > 0, bytes(kwargs["description_binary"])))
+
+    class Project:
+        pass
+
+    def get_object_or_404(source, **kwargs):
+        if source is Project:
+            return types.SimpleNamespace(guest_view_all_features=True)
+        if isinstance(source, Locked):
+            log.append("locked-get")
+            return locked_row
+        log.append("load")
+        return first
+
+    class Binary:
+        def __init__(self, data):
+            self.data = data
+
+        def is_valid(self, raise_exception=False):
+            self.validated_data = dict(self.data)
+            if "description_binary" in self.data:
+                self.validated_data["description_binary"] = base64.b64decode(
+                    self.data["description_binary"]
+                )
+            return True
+
+    def post(url, json, timeout):
+        return types.SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"description_json": {"type": "doc"}, "description_binary": "bmV3"},
+        )
+
+    class Client:
+        def publish(self, channel, message):
+            log.append("publish")
+            return 1
+
+    def module(name, **attrs):
+        mod = types.ModuleType(name)
+        mod.__dict__.update(attrs)
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    module("requests", post=post, RequestException=OSError)
+    module("django.db", transaction=types.SimpleNamespace(atomic=atomic))
+    module("django.shortcuts", get_object_or_404=get_object_or_404)
+    module("rest_framework.exceptions", APIException=_ApiError, ValidationError=ValueError)
+    module("plane.settings.redis", redis_instance=Client)
+    module(
+        "plane.bgtasks.page_transaction_task",
+        page_transaction=types.SimpleNamespace(delay=lambda **kwargs: log.append("transaction")),
+    )
+    serializers = sys.modules["plane.app.serializers"]
+    monkeypatch.setattr(serializers, "PageBinaryUpdateSerializer", Binary)
+    models = sys.modules["plane.db.models"]
+    monkeypatch.setattr(models, "Page", types.SimpleNamespace(objects=PageRows()))
+    monkeypatch.setattr(models, "PageVersion", types.SimpleNamespace(objects=Versions(versions)))
+    monkeypatch.setattr(models, "Project", Project)
+    monkeypatch.setattr(time, "sleep", lambda seconds: log.append(("sleep", seconds)))
+    monkeypatch.setenv("CE_PLANE_LIVE_URL", "http://live.invalid")
+
+    view = pages_backend.routes()[1][0][1]()
+    view.kwargs = {"slug": "w", "project_id": "x", "page_id": first.id}
+    view.request = types.SimpleNamespace(
+        user=types.SimpleNamespace(id="u"),
+        data={"description_html": "<p>New</p>", "expected_updated_at": STAMP, "force": True},
+    )
+    return view, log, versions
+
+
+def _run_patch(view):
+    return view.patch(view.request, "w", "x", page_id=view.kwargs["page_id"])
+
+
+def _first(log, kind):
+    return next(
+        i for i, e in enumerate(log) if e == kind or (isinstance(e, tuple) and e[0] == kind)
+    )
+
+
+def _tuples(log, *kinds):
+    return [e for e in log if isinstance(e, tuple) and e[0] in kinds]
+
+
+def test_patch_locks_before_recheck_and_writes_inside_one_transaction(monkeypatch):
+    view, log, _ = _patch_env(monkeypatch)
+    response = _run_patch(view)
+    assert response.data[0] == "detail"
+    order = [_first(log, k) for k in ("load", "publish", "sleep", "select_for_update")]
+    assert order == sorted(order)
+    enter, exit_ = _first(log, "atomic-enter"), _first(log, "atomic-exit")
+    assert _first(log, "select_for_update") < _first(log, "locked-get")
+    assert enter < _first(log, "locked-get") < _first(log, "version") < _first(log, "save") < exit_
+    assert _tuples(log, "version", "save") == [("version", True, b"old"), ("save", True, b"new")]
+    assert exit_ < _first(log, "transaction")
+
+
+def test_patch_recheck_uses_the_locked_row_and_rolls_back(monkeypatch):
+    view, log, _ = _patch_env(monkeypatch, locked_changes={"description_binary": b"flushed"})
+    with pytest.raises(_ApiError) as caught:
+        _run_patch(view)
+    assert caught.value.status_code == 409
+    assert not _tuples(log, "version", "save")
+    assert "atomic-exit" in log
+    assert "transaction" not in log
+
+
+def test_patch_prunes_versions_to_twenty_oldest_first_inside_transaction(monkeypatch):
+    view, log, versions = _patch_env(monkeypatch, existing_versions=21)
+    _run_patch(view)
+    assert len(versions) == 20
+    assert _tuples(log, "prune") == [("prune", [1, 2], True)]
+    assert _first(log, "version") < _first(log, "prune") < _first(log, "save")
+
+
+def test_patch_keeps_versions_under_the_cap(monkeypatch):
+    view, log, versions = _patch_env(monkeypatch, existing_versions=3)
+    _run_patch(view)
+    assert len(versions) == 4
+    assert not _tuples(log, "prune")
+
+
+def test_patch_reports_late_live_store_as_overwritten_and_keeps_write(monkeypatch):
+    view, log, versions = _patch_env(monkeypatch, reads=(b"new", b"live"))
+    with pytest.raises(_ApiError) as caught:
+        _run_patch(view)
+    assert caught.value.status_code == 409
+    assert str(caught.value) == "Edit was overwritten by an open editor; retry"
+    assert ("save", True, b"new") in log
+    assert len(versions) == 1
+
+
+def test_patch_watches_one_debounce_window_after_commit(monkeypatch):
+    from plane_toolchain.pages_backend import LATE_STORE_WINDOW_SECONDS
+
+    view, log, _ = _patch_env(monkeypatch)
+    _run_patch(view)
+    after = log[_first(log, "atomic-exit") :]
+    waited = sum(e[1] for e in _tuples(after, "sleep"))
+    assert waited >= LATE_STORE_WINDOW_SECONDS
