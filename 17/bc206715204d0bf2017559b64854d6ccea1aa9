@@ -1,0 +1,25 @@
+CHANGELOG.md
+  s_ce066174a8d2c7::t_4ebb3f8e83a578 1-34
+tests/test_version.py
+  s_ce066174a8d2c7::t_f8eda417514798 1-18
+.github/workflows/release.yml
+  s_ce066174a8d2c7::t_c20c79c1df842d 1-41
+docs/github-actions.md
+  s_ce066174a8d2c7::t_b36a0fc7d3e359 30-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "17bc206715204d0bf2017559b64854d6ccea1aa9",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
