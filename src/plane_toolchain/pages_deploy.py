@@ -137,13 +137,20 @@ def revert(current, payload, docker, probe, health, now):
     except BaseException as error:
         try:
             if "original" in done:
-                probe("stop", name)
+                docker("stop", name)
                 docker("rename", name, backup)
             if "derived" in done:
                 docker("rename", reverted, name)
             docker("start", name)
-        except Exception as recovery:
-            raise error from recovery
+        except Exception:
+            # Best effort: leave one running `name` container, never two.
+            if probe("inspect", name):
+                probe("start", name)
+            elif probe("inspect", reverted):
+                probe("rename", reverted, name) and probe("start", name)
+            elif probe("rename", backup, name):
+                probe("start", name)
+            raise error  # Recovery error stays as __context__.
         raise
     return "Original API container restored; derived container retained stopped"
 

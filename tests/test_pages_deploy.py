@@ -245,13 +245,22 @@ def test_revert_early_failure_recovers_derived(applied, monkeypatch, step):
     assert_derived_back(applied)
 
 
-def test_revert_recovery_failure_reraises_original_error(applied):
+@pytest.mark.parametrize(
+    "step", [("rename", "api", BACKUP), ("rename", f"api-pages-reverted-{NOW}", "api"), ("start",)]
+)
+def test_revert_recovery_failure_reraises_original_and_keeps_api_running(applied, step):
     applied.containers[BACKUP]["healthy"] = False
-    applied.fail.append(("rename", "api", BACKUP))
-    with pytest.raises(ValueError, match="API health check failed") as caught:
+    if step == ("start",):
+        applied.fail += [("start", "api")] * 2  # revert start and recovery start both fail
+    else:
+        applied.fail.append(step)
+    with pytest.raises((ValueError, subprocess.CalledProcessError)) as caught:
         deploy("revert", applied)
-    assert isinstance(caught.value.__cause__, subprocess.CalledProcessError)
+    assert isinstance(caught.value.__context__, subprocess.CalledProcessError)
     assert "do-not-print" not in repr(caught.value)
+    assert applied.containers["api"]["running"]
+    running = [n for n, c in applied.containers.items() if c["running"]]
+    assert len(running) == 1
 
 
 def test_check_verifies_label_and_health(applied, monkeypatch, capsys):
