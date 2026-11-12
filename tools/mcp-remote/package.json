@@ -4,8 +4,5 @@
   "description": "Locked mcp-remote dependency tree for scripts/plane-mcp.sh.",
   "dependencies": {
     "mcp-remote": "0.16.6"
-  },
-  "engines": {
-    "node": "26.13.1"
   }
 }
