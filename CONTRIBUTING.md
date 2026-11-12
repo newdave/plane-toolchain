@@ -2,6 +2,14 @@
 
 Run `mise run setup` and `mise run check` before committing. Work on a branch and submit a pull request. CI must pass before merging.
 
+The default branch is protected by the ruleset in `.github/rulesets/main.json`: pull requests only, the `check` status must pass on an up-to-date branch, linear history (rebase or squash), and no force-push or deletion. Pull requests may use auto-merge, and merged branches are deleted. The repository owner maintains it with `gh`:
+
+```sh
+gh api repos/OWNER/REPO/rulesets                                      # find the ruleset id
+gh api -X PUT repos/OWNER/REPO/rulesets/ID --input .github/rulesets/main.json  # update
+gh api -X DELETE repos/OWNER/REPO/rulesets/ID                         # roll back
+```
+
 Keep changes project-scoped. Never commit credentials, deployment endpoints, private task contents or global agent configuration. Use fictional example identities. Keep hooks enabled.
 
 Plane owns task scope, acceptance, dependencies and status. Keep task status aligned with actual work; reread updates through MCP. Planning narratives belong in project Pages. Repository documentation describes shipped behaviour rather than duplicating the backlog.
