@@ -24,6 +24,8 @@ DEPENDENCIES = (
 
 def canonical_uuid(value):
     """Return the canonical lowercase hyphenated form; UUID() also accepts braces, urn: and hex."""
+    if not isinstance(value, str):
+        raise ValueError("Expected a UUID string")
     return str(UUID(value))
 
 
@@ -40,7 +42,7 @@ def sdk_private(resource, name):
 
 def bind_host(env):
     """Bind host from FASTMCP_HOST; default 0.0.0.0 because the container must listen publicly."""
-    host = env.get("FASTMCP_HOST", "0.0.0.0")
+    host = env.get("FASTMCP_HOST", "").strip() or "0.0.0.0"
     if not re.fullmatch(r"[A-Za-z0-9._:\-]+", host):
         raise ValueError("FASTMCP_HOST must be a bare host name or address")
     return host

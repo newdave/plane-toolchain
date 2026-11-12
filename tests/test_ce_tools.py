@@ -69,6 +69,16 @@ def test_bind_host_default_env_and_validation():
     assert bind_host({}) == "0.0.0.0"
     assert bind_host({"FASTMCP_HOST": "127.0.0.1"}) == "127.0.0.1"
     assert bind_host({"FASTMCP_HOST": "mcp-host.local"}) == "mcp-host.local"
-    for bad in ("http://x", "a b", "x/y", " "):
+    for empty in ("", "  "):
+        assert bind_host({"FASTMCP_HOST": empty}) == "0.0.0.0"
+    for bad in ("http://x", "a b", "x/y"):
         with pytest.raises(ValueError):
             bind_host({"FASTMCP_HOST": bad})
+
+
+def test_canonical_uuid_rejects_non_string_with_value_error():
+    from plane_toolchain.ce_tools import canonical_uuid
+
+    for bad in (None, 5, b"x", []):
+        with pytest.raises(ValueError):
+            canonical_uuid(bad)
