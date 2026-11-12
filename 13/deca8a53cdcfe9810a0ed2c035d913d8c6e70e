@@ -1,0 +1,30 @@
+tests/test_github_examples.py
+  s_ce066174a8d2c7::t_a80f7fcb8c6544 31-34,46-86
+  s_ce066174a8d2c7::t_13ee65c6e58690 87-88
+examples/github/plane_event.py
+  s_ce066174a8d2c7::t_58c3bb1f6eb5ab 15-16,27-28
+examples/github/plane-comment.yml
+  s_ce066174a8d2c7::t_58c3bb1f6eb5ab 15-31,33,52
+  s_ce066174a8d2c7::t_4e0dd25cee9d13 55
+examples/github/plane-complete.yml
+  s_ce066174a8d2c7::t_4e0dd25cee9d13 63
+  s_ce066174a8d2c7::t_58c3bb1f6eb5ab 21-39,41,60
+docs/github-actions.md
+  s_ce066174a8d2c7::t_bea8231adbd844 30-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "13deca8a53cdcfe9810a0ed2c035d913d8c6e70e",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
