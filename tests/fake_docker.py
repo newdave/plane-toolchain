@@ -16,7 +16,10 @@ class FakeDocker:
         self.containers = {}
         self.images = {"sha256:base": ["registry.example/plane-backend@sha256:abc"]}
         self.calls = []
-        self.fail = []  # commands that fail once, in order of appearance
+        # One-shot failures: a bare command, or a tuple matching the leading arguments,
+        # e.g. "start" or ("rename", "api", "api-before-terrainlink-pages").
+        self.fail = []
+        self.streams = {}  # docker args -> (stdout, stderr) routing of the latest call
         self.builds = []
         self.tracked = False
         self.created_healthy = True
@@ -49,8 +52,7 @@ class FakeDocker:
         """Return (returncode, stdout) for one docker CLI invocation."""
         self.calls.append(args)
         command, rest = args[0], args[1:]
-        if command in self.fail:
-            self.fail.remove(command)
+        if self.failing(args):
             return 1, b""
         if command == "inspect":
             if rest[0] not in self.containers:
@@ -82,8 +84,16 @@ class FakeDocker:
             return 0, b""
         raise AssertionError(f"Unexpected docker call {args}")
 
+    def failing(self, args):
+        for entry in self.fail:
+            if entry == args[0] or (isinstance(entry, tuple) and args[: len(entry)] == entry):
+                self.fail.remove(entry)
+                return True
+        return False
+
     # Injected seams.
     def docker(self, *args, **kw):
+        self.streams[args] = (kw.get("stdout"), kw.get("stderr"))
         code, stdout = self.execute(*args, input=kw.get("input"))
         if code and kw.get("check", True):
             raise subprocess.CalledProcessError(code, ["docker", *args])
@@ -94,8 +104,7 @@ class FakeDocker:
 
     def create(self, name, body):
         self.calls.append(("create", name))
-        if "create" in self.fail:
-            self.fail.remove("create")
+        if self.failing(("create", name)):
             raise ValueError("Derived API container creation failed")
         if name in self.containers:
             raise ValueError("Derived API container creation failed")
@@ -115,6 +124,7 @@ class FakeDocker:
             code, stdout = (0 if self.tracked else 1), b""
         else:
             assert argv[0] == "docker"
+            self.streams[tuple(argv[1:])] = (kw.get("stdout"), kw.get("stderr"))
             code, stdout = self.execute(*argv[1:], input=kw.get("input"))
         if code and kw.get("check"):
             raise subprocess.CalledProcessError(code, argv)

@@ -84,6 +84,10 @@ def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypat
     assert derived["env"] == ["OPAQUE_SECRET=do-not-print", "CE_PLANE_LIVE_URL=http://live:3000"]
     assert derived["host_config"] == {"RestartPolicy": {"Name": "unless-stopped"}}
     assert original["labels"] == {"owner": "kept"} and not original["running"]
+    # Build and health output never reach the SSH terminal.
+    quiet = (subprocess.DEVNULL, subprocess.DEVNULL)
+    assert host.streams[("build", "-t", IMAGE, "-")] == quiet
+    assert host.streams[HEALTH] == quiet
     [(tag, files)] = host.builds
     assert tag == IMAGE
     assert files["plane_pages.py"] == SOURCE.encode()
@@ -283,6 +287,7 @@ def deploy(operation, fake):
 
 def test_seam_apply_success(host):
     assert deploy("apply", host).startswith("Pages derived image applied")
+    assert host.streams[("build", "-t", IMAGE, "-")] == (subprocess.DEVNULL, subprocess.DEVNULL)
     assert host.containers["api"]["labels"]["terrainlink.pages.source"] == DIGEST
     assert host.containers["api"]["running"]
     assert host.containers[BACKUP]["host_config"] == host.containers["api"]["host_config"]
@@ -326,3 +331,24 @@ def test_healthy_retries_then_raises():
     assert len(attempts) == 45 and sleeps == [1] * 45
     answers = iter([False, True])
     pages_deploy.healthy("api", lambda *args: next(answers), sleeps.append)
+
+
+def test_seam_apply_rollback_rename_failure_leaves_original_as_backup(host):
+    # Current behaviour: no further recovery when restoring the original fails.
+    host.fail += ["start", ("rename", BACKUP, "api")]
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy("apply", host)
+    assert not host.containers[BACKUP]["running"]
+    assert "api" not in host.containers
+    assert not host.containers[f"api-pages-failed-{NOW}"]["running"]
+
+
+def test_fake_fails_only_matching_call_once():
+    fake = FakeDocker()
+    fake.add("a")
+    fake.add("b")
+    fake.fail.append(("rename", "b"))
+    assert fake.probe("rename", "a", "c")
+    assert not fake.probe("rename", "b", "d")
+    assert fake.probe("rename", "b", "d")
+    assert fake.fail == []

@@ -9,9 +9,12 @@ import subprocess
 
 
 def docker(*args, **kw):
-    """Run the Docker CLI; raise on failure unless check=False; return stdout bytes."""
+    """Run the Docker CLI; raise on failure unless check=False; return stdout bytes.
+
+    Output is captured unless the caller routes stdout or stderr itself.
+    """
     kw.setdefault("check", True)
-    if "stdout" not in kw:
+    if "stdout" not in kw and "stderr" not in kw:
         kw["capture_output"] = True
     return subprocess.run(["docker", *args], **kw).stdout or b""  # noqa: S603,S607
 
