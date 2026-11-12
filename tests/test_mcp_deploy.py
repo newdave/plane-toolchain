@@ -14,6 +14,7 @@ from plane_toolchain import mcp_deploy
 ORIGINAL = b"from plane_mcp import get_header_mcp\nget_header_mcp().run()\n"
 DESIRED = "print('ce tools')\n"
 RESTART = ("restart", "plane-mcp")
+INSPECT = ("inspect", "plane-mcp")
 
 
 def mcp_host():
@@ -53,7 +54,7 @@ def test_apply_backs_up_original_writes_receipt_and_restarts(root, monkeypatch, 
     assert backup.stat().st_mode & 0o777 == 0o640
     receipt = json.loads((root / "terrainlink-ce-receipt.json").read_text())
     assert receipt == {"installed": sha(DESIRED.encode()), "original": sha(ORIGINAL)}
-    assert fake.calls == [git_call(root), RESTART]
+    assert fake.calls == [git_call(root), RESTART, INSPECT, ("sleep", 1), INSPECT]
 
 
 def test_apply_is_idempotent(root, monkeypatch, capsys):
@@ -84,7 +85,10 @@ def test_apply_refuses_changed_host_entry_point(root, monkeypatch):
     assert (root / "server.py").read_text() == "print('host edit')\n"
 
 
-@pytest.mark.parametrize("content", [b"print('x')\n", b"get_header_mcp\ndef run(): pass\n"])
+@pytest.mark.parametrize(
+    "content",
+    [b"print('x')\n", b"get_header_mcp\ndef run(): pass\n", b"get_header_mcp(\n", b""],
+)
 def test_apply_refuses_unexpected_original(root, monkeypatch, content):
     (root / "server.py").write_bytes(content)
     with pytest.raises(ValueError, match="Unexpected original entry point"):
@@ -112,7 +116,7 @@ def test_revert_restores_original(root, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out == "MCP entry point revert verified; verify authenticated MCP access separately\n"
     assert (root / "server.py").read_bytes() == ORIGINAL
-    assert fake.calls[-1] == RESTART
+    assert RESTART in fake.calls[-5:]
     remote("revert", root, fake, monkeypatch)
     assert capsys.readouterr().out == "Original MCP entry point already restored\n"
 
@@ -209,7 +213,9 @@ def test_remote_program_is_stdlib_only():
 
 def deploy(operation, root, fake, source=DESIRED):
     data = dict(operation=operation, directory=str(root), container="plane-mcp", source=source)
-    return mcp_deploy.deploy(data, fake.docker, lambda path: fake.tracked)
+    return mcp_deploy.deploy(
+        data, fake.docker, lambda path: fake.tracked, sleep=lambda seconds: fake.calls.append("nap")
+    )
 
 
 def test_seam_apply_revert_and_restart_rollback(root):
@@ -223,3 +229,128 @@ def test_seam_apply_revert_and_restart_rollback(root):
     assert fake.calls[-2:] == [RESTART, RESTART]
     assert deploy("revert", root, fake).startswith("MCP entry point revert verified")
     assert (root / "server.py").read_bytes() == ORIGINAL
+
+
+# Health wait, rollback and digest-based detection.
+
+
+def test_apply_timeout_restores_backup_bytes_and_inode(root, monkeypatch):
+    inode = (root / "server.py").stat().st_ino
+    fake = mcp_host()
+    fake.containers["plane-mcp"]["health"] = "starting"
+    with pytest.raises(RuntimeError, match="did not become healthy") as error:
+        deploy("apply", root, fake)
+    assert "OPAQUE_SECRET" not in str(error.value)
+    assert (root / "server.py").read_bytes() == ORIGINAL
+    assert (root / "server.py").stat().st_ino == inode
+    assert fake.calls.count(INSPECT) == 45
+    assert fake.calls.count("nap") >= 44
+    assert fake.calls[-1] == RESTART and fake.calls.count(RESTART) == 2
+    # Legacy receipt names survive a rolled-back apply.
+    assert (root / "server.py.before-terrainlink-ce").read_bytes() == ORIGINAL
+    assert (root / "terrainlink-ce-receipt.json").exists()
+
+
+def test_apply_crash_loop_rolls_back(root):
+    fake = mcp_host()
+    fake.containers["plane-mcp"]["restart_counts"] = [0, 1, 2, 3]
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        deploy("apply", root, fake)
+    assert (root / "server.py").read_bytes() == ORIGINAL
+    assert fake.calls.count(INSPECT) < 45
+    assert fake.calls[-1] == RESTART
+
+
+def test_restarting_container_is_not_healthy(root):
+    fake = mcp_host()
+    fake.containers["plane-mcp"]["restarting"] = True
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        deploy("apply", root, fake)
+    assert (root / "server.py").read_bytes() == ORIGINAL
+
+
+def test_stopped_container_is_not_healthy(root):
+    fake = mcp_host()
+    original_execute = fake.execute
+
+    def execute(*args, input=None):
+        code, out = original_execute(*args, input=input)
+        if args[0] == "restart":
+            fake.containers["plane-mcp"]["running"] = False
+        return code, out
+
+    fake.execute = execute
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        deploy("apply", root, fake)
+    assert (root / "server.py").read_bytes() == ORIGINAL
+
+
+def test_healthy_after_starting_succeeds(root):
+    fake = mcp_host()
+    fake.containers["plane-mcp"]["health"] = "healthy"
+    assert deploy("apply", root, fake).startswith("MCP entry point apply verified")
+    assert (root / "server.py").read_text() == DESIRED
+
+
+def test_revert_timeout_restores_installed_bytes(root):
+    fake = mcp_host()
+    deploy("apply", root, fake)
+    fake.containers["plane-mcp"]["health"] = "unhealthy"
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        deploy("revert", root, fake)
+    assert (root / "server.py").read_text() == DESIRED
+
+
+def test_write_failure_restores_previous_bytes(root, monkeypatch):
+    real_fsync = mcp_deploy.os.fsync
+    calls = []
+
+    def fsync(fd):
+        calls.append(fd)
+        if len(calls) == 1:
+            raise OSError("disk")
+        real_fsync(fd)
+
+    monkeypatch.setattr(mcp_deploy.os, "fsync", fsync)
+    fake = mcp_host()
+    with pytest.raises(OSError, match="disk"):
+        deploy("apply", root, fake)
+    assert (root / "server.py").read_bytes() == ORIGINAL
+    assert RESTART not in fake.calls
+
+
+def test_write_flushes_and_fsyncs_in_place(root, monkeypatch):
+    synced = []
+    real_fsync = mcp_deploy.os.fsync
+    monkeypatch.setattr(mcp_deploy.os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd)))
+    inode = (root / "server.py").stat().st_ino
+    deploy("apply", root, mcp_host())
+    assert synced
+    assert (root / "server.py").stat().st_ino == inode
+
+
+def test_apply_uses_receipt_original_digest_not_substring(root):
+    fake = mcp_host()
+    deploy("apply", root, fake)
+    (root / "server.py.before-terrainlink-ce").unlink()
+    # Receipt records the original digest: a different file is refused even if it looks plain.
+    (root / "server.py").write_bytes(b"get_header_mcp\n# edited\n")
+    with pytest.raises(ValueError, match="Unexpected original"):
+        deploy("apply", root, fake)
+
+
+def test_apply_without_backup_accepts_recorded_original_digest(root):
+    fake = mcp_host()
+    deploy("apply", root, fake)
+    (root / "server.py.before-terrainlink-ce").unlink()
+    (root / "server.py").write_bytes(ORIGINAL)
+    assert deploy("apply", root, fake).startswith("MCP entry point apply verified")
+    assert (root / "server.py.before-terrainlink-ce").read_bytes() == ORIGINAL
+
+
+def test_apply_refuses_backup_that_differs_from_recorded_original(root):
+    fake = mcp_host()
+    deploy("apply", root, fake)
+    (root / "server.py.before-terrainlink-ce").write_bytes(b"tampered\n")
+    with pytest.raises(ValueError, match="Backup does not match"):
+        deploy("apply", root, fake, source="print('newer')\n")

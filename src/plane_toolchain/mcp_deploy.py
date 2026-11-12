@@ -1,11 +1,13 @@
 """Reversible owner-approved MCP entry-point update; leave Docker settings intact."""
 
+import ast
 import hashlib
 import json
 import os
 import pathlib
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from plane_toolchain.remote import docker, program
@@ -25,11 +27,72 @@ def sha256(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def deploy(data, docker, tracked):
+def rewrite(target, content):
+    """Overwrite target in place so the bind-mounted inode survives; flush and fsync.
+
+    Not atomic: a crash between truncate and fsync leaves a partial file. The backup
+    (`server.py.before-terrainlink-ce`) then holds the recovery copy; restore it by hand.
+    """
+    with open(target, "r+b") as handle:
+        handle.truncate(0)
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def plain_entry_point(content):
+    """Return whether content is a bare upstream-style entry point (no defs or classes)."""
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError):
+        return False
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    names |= {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    defs = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    return "get_header_mcp" in names and not any(isinstance(n, defs) for n in ast.walk(tree))
+
+
+def inspect_state(docker, container):
+    """Return (running, restarting, health status or None, restart count); no config leaves."""
+    document = json.loads(docker("inspect", container))[0]
+    state = document["State"]
+    health = (state.get("Health") or {}).get("Status")
+    return (
+        bool(state.get("Running")),
+        bool(state.get("Restarting")),
+        health,
+        document.get("RestartCount", 0),
+    )
+
+
+def wait_healthy(probe, sleep, attempts=45):
+    """Poll until running, not restarting, healthy (if checked) and stable twice in a row."""
+    baseline = None
+    good = 0
+    for attempt in range(attempts):
+        if attempt:
+            sleep(1)
+        try:
+            running, restarting, health, count = probe()
+        except Exception:  # noqa: BLE001 - a failed probe counts as not yet healthy
+            good = 0
+            continue
+        if baseline is None:
+            baseline = count
+        if count != baseline:
+            return False
+        ok = running and not restarting and health in (None, "healthy")
+        good = good + 1 if ok else 0
+        if good >= 2:
+            return True
+    return False
+
+
+def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
     """Run one operation on the host entry point; return the operator message.
 
     docker(*args, **kw) -> bytes raises on failure unless check=False;
-    tracked(root) -> bool never raises.
+    tracked(root) -> bool never raises; probe() -> inspect_state tuple; sleep(seconds).
     """
     root = pathlib.Path(data["directory"]).resolve(strict=True)
     target = root / "server.py"
@@ -43,6 +106,7 @@ def deploy(data, docker, tracked):
     operation = data["operation"]
     desired = data["source"].encode()
     compile(desired, str(target), "exec")
+    recorded = json.loads(receipt.read_text()) if receipt.exists() else {}
     if operation == "check":
         if current != desired:
             raise ValueError("MCP compatibility entry point differs")
@@ -51,13 +115,17 @@ def deploy(data, docker, tracked):
         if current == desired:
             return "MCP compatibility entry point already applied"
         if backup.exists():
-            if current != backup.read_bytes() and (
-                not receipt.exists()
-                or sha256(current) != json.loads(receipt.read_text())["installed"]
-            ):
+            if current != backup.read_bytes() and sha256(current) != recorded.get("installed"):
                 raise ValueError("Host entry point changed; preserve it and reconcile")
+            if "original" in recorded and sha256(backup.read_bytes()) != recorded["original"]:
+                raise ValueError("Backup does not match the recorded original; reconcile")
         else:
-            if b"get_header_mcp" not in current or b"def " in current or b"class " in current:
+            # Digest first: a receipt that recorded the original is authoritative.
+            if "original" in recorded:
+                known = sha256(current) == recorded["original"]
+            else:
+                known = plain_entry_point(current)
+            if not known:
                 raise ValueError("Unexpected original entry point; review before replacing")
             backup.write_bytes(current)
             backup.chmod(target.stat().st_mode & 0o777)
@@ -68,32 +136,56 @@ def deploy(data, docker, tracked):
         previous = backup.read_bytes()
         if current == previous:
             return "Original MCP entry point already restored"
-        if sha256(current) != json.loads(receipt.read_text())["installed"]:
+        if sha256(current) != recorded["installed"]:
             raise ValueError("Host entry point changed; refusing overwrite")
         content = previous
     else:
         raise ValueError("Expected apply, revert or check")
-    # Overwrite the existing inode so the read-only bind mount sees the update.
-    # This file contains code only; Docker credentials and configuration stay untouched.
-    target.write_bytes(content)
     if operation == "apply":
         receipt.write_text(
             json.dumps({"installed": sha256(content), "original": sha256(backup.read_bytes())})
         )
+    if probe is None:
+
+        def probe():
+            return inspect_state(docker, data["container"])
+
+    def restore():
+        rewrite(target, current)
+        docker("restart", data["container"], check=False, stdout=subprocess.DEVNULL)
+
+    # This file contains code only; Docker credentials and configuration stay untouched.
+    try:
+        rewrite(target, content)
+    except BaseException:
+        rewrite(target, current)
+        raise
     try:
         docker("restart", data["container"], stdout=subprocess.DEVNULL)
+        healthy = wait_healthy(probe, sleep)
     except BaseException:
-        target.write_bytes(current)
-        docker("restart", data["container"], check=False, stdout=subprocess.DEVNULL)
+        restore()
         raise
+    if not healthy:
+        restore()
+        raise RuntimeError("MCP did not become healthy; previous entry point restored")
     if target.read_bytes() != content:
         raise ValueError("Entry point write not verified")
     return "MCP entry point " + operation + " verified; verify authenticated MCP access separately"
 
 
 REMOTE = program(
-    ["hashlib", "json", "pathlib", "subprocess", "sys"],
-    [docker, git_tracked, sha256, deploy],
+    ["ast", "hashlib", "json", "os", "pathlib", "subprocess", "sys", "time"],
+    [
+        docker,
+        git_tracked,
+        sha256,
+        rewrite,
+        plain_entry_point,
+        inspect_state,
+        wait_healthy,
+        deploy,
+    ],
     "print(deploy(json.load(sys.stdin), docker, git_tracked))\n",
 )
 
