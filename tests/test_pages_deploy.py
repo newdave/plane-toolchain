@@ -24,6 +24,19 @@ HEALTH = (
     "import urllib.request; "
     "urllib.request.urlopen('http://127.0.0.1:8000/api/instances/',timeout=3)",
 )
+PAGES = (
+    "exec",
+    "api",
+    "python",
+    "-c",
+    "import sys, urllib.error, urllib.request\n"
+    "try:\n"
+    "    urllib.request.urlopen('http://127.0.0.1:8000/api/v1/workspaces/health-probe/projects/"
+    "00000000-0000-0000-0000-000000000000/ce-pages/', timeout=3)\n"
+    "except urllib.error.HTTPError as error:\n"
+    "    sys.exit(0 if error.code in (401, 403) else 1)\n"
+    "sys.exit(1)",
+)
 
 
 def payload(operation):
@@ -77,6 +90,7 @@ def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypat
         ("create", "api"),
         ("start", "api"),
         HEALTH,
+        PAGES,
     ]
     derived, original = host.containers["api"], host.containers[BACKUP]
     assert derived["image"] == IMAGE and derived["running"]
@@ -88,6 +102,7 @@ def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypat
     quiet = (subprocess.DEVNULL, subprocess.DEVNULL)
     assert host.streams[("build", "-t", IMAGE, "-")] == quiet
     assert host.streams[HEALTH] == quiet
+    assert host.streams[PAGES] == quiet
     [(tag, files)] = host.builds
     assert tag == IMAGE
     assert files["plane_pages.py"] == SOURCE.encode()
@@ -101,7 +116,7 @@ def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypat
 def test_apply_is_idempotent_when_label_matches(applied, monkeypatch, capsys):
     remote("apply", applied, monkeypatch)
     assert capsys.readouterr().out == "Pages image already applied; API healthy\n"
-    assert applied.calls == [("inspect", "api"), HEALTH]
+    assert applied.calls == [("inspect", "api"), HEALTH, PAGES]
 
 
 def test_apply_refuses_when_rollback_container_exists(host, monkeypatch):
@@ -182,6 +197,7 @@ def test_revert_restores_original_and_retains_derived_stopped(applied, monkeypat
         ("rename", BACKUP, "api"),
         ("start", "api"),
         HEALTH,
+        PAGES,
     ]
     assert_original_restored(applied)
     assert not applied.containers[reverted]["running"]
@@ -303,7 +319,7 @@ def test_revert_recovery_nothing_startable_reraises_original(applied):
 def test_check_verifies_label_and_health(applied, monkeypatch, capsys):
     remote("check", applied, monkeypatch)
     assert capsys.readouterr().out == "Pages image and API health verified\n"
-    assert applied.calls == [("inspect", "api"), HEALTH]
+    assert applied.calls == [("inspect", "api"), HEALTH, PAGES]
 
 
 def test_check_rejects_label_mismatch(host, monkeypatch):
@@ -429,8 +445,47 @@ def test_healthy_retries_then_raises():
     with pytest.raises(ValueError, match="API health check failed"):
         pages_deploy.healthy("api", lambda *args: attempts.append(args) or False, sleeps.append)
     assert len(attempts) == 45 and sleeps == [1] * 45
-    answers = iter([False, True])
+    answers = iter([False, True, True])
     pages_deploy.healthy("api", lambda *args: next(answers), sleeps.append)
+
+
+def run_health(fake, attempts=2):
+    pages_deploy.healthy("api", fake.probe, lambda seconds: None, attempts=attempts)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_healthy_accepts_auth_required_pages_route(host, status):
+    host.containers["api"]["pages_status"] = status
+    run_health(host)
+    assert host.calls == [HEALTH, PAGES]
+
+
+@pytest.mark.parametrize("status", [404, 200, 500, 502])
+def test_healthy_rejects_other_pages_statuses(host, status):
+    host.containers["api"]["pages_status"] = status
+    with pytest.raises(ValueError, match="API health check failed"):
+        run_health(host)
+    assert host.calls == [HEALTH, PAGES] * 2
+
+
+def test_healthy_skips_pages_probe_while_instance_check_fails(host):
+    host.containers["api"]["healthy"] = False
+    with pytest.raises(ValueError, match="API health check failed"):
+        run_health(host)
+    assert host.calls == [HEALTH] * 2
+
+
+def test_healthy_needs_both_probes_in_one_attempt(host):
+    answers = iter([True, False, False, True, True])
+    calls = []
+
+    def probe(*args):
+        calls.append(args[-1])
+        return next(answers)
+
+    pages_deploy.healthy("api", probe, lambda seconds: None, attempts=3)
+    # Attempt 1: pages bad; attempt 2: instance bad; attempt 3: both good.
+    assert len(calls) == 5
 
 
 def test_seam_apply_rollback_rename_failure_leaves_original_as_backup(host):
