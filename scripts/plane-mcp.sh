@@ -3,6 +3,18 @@
 set +x
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# Linked worktrees lack git-ignored files; fall back to the main checkout's copy.
+# No fallback without git, in a main checkout, or in a copy nested in an unrelated repo.
+main=""
+if dirs="$(git rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)"; then
+  gitdir="${dirs%%$'\n'*}"
+  common="${dirs#*$'\n'}"
+  [[ "$gitdir" == "$common" ]] || main="$(dirname "$common")"
+fi
+# Print the local path if present, else the main checkout's if present, else the local path.
+pick() {
+  if [[ ! -e "$1" && -n "$main" && -e "$main/$1" ]]; then echo "$main/$1"; else echo "$1"; fi
+}
 PLANE_ENABLED="$(python3 src/plane_toolchain/session.py status)"
 export PLANE_ENABLED
 case "$PLANE_ENABLED" in
@@ -15,7 +27,7 @@ while IFS= read -r -d '' entry; do
   export "${entry%%=*}=${entry#*=}"
 done < <(python3 src/plane_toolchain/session.py connection)
 # Optional SOPS-encrypted key file (ignored by *.enc.env). Only PLANE_API_KEY is exported.
-secrets=config/plane.enc.env
+secrets="$(pick config/plane.enc.env)"
 if [[ -z "${PLANE_API_KEY:-}" && -f "$secrets" ]]; then
   # Clients launch the bridge outside mise; use the same key path on macOS and Linux.
   if [[ -z "${SOPS_AGE_KEY_FILE:-}" && -f "$HOME/.config/sops/age/keys.txt" ]]; then
@@ -29,7 +41,7 @@ if [[ -z "${PLANE_API_KEY:-}" && -f "$secrets" ]]; then
 fi
 uv run --locked python -m plane_toolchain.settings
 # Locked tree from tools/mcp-remote (npm ci); never fetched or resolved at runtime.
-bin=tools/mcp-remote/node_modules/.bin/mcp-remote
+bin="$(pick tools/mcp-remote/node_modules/.bin/mcp-remote)"
 [[ -x "$bin" ]] || { echo "mcp-remote missing: run 'mise run setup'" >&2; exit 1; }
 # mcp-remote expands headers from environment, keeping credentials out of argv.
 # shellcheck disable=SC2016  # literal ${VAR}: mcp-remote expands it, not the shell

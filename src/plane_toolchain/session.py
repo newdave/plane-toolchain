@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -23,15 +24,51 @@ def assignments(text: str, names: tuple[str, ...]) -> list[tuple[str, str]]:
     return found
 
 
+def main_checkout(root: Path) -> Path | None:
+    """Return the main checkout when root is a linked git worktree, else None."""
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv
+            [  # noqa: S607
+                "git",
+                "rev-parse",
+                "--absolute-git-dir",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    git_dir, _, common = result.stdout.strip().partition("\n")
+    # Equal dirs: a main checkout, or a copy nested in an unrelated repo. Neither falls back.
+    return Path(common).parent if git_dir != common else None
+
+
+def local_layers(root: Path) -> list[Path]:
+    """Return local settings files, lowest precedence first.
+
+    A worktree's own config/local.env overrides the main checkout's key by key. The main
+    checkout is consulted only when the worktree has neither config/local.env nor .deploy/env.
+    """
+    local = root / "config/local.env"
+    legacy = root / ".deploy/env"
+    if local.exists() or not legacy.exists():
+        main = main_checkout(root)
+        shared = [main / "config/local.env"] if main is not None else []
+        return [*shared, local]
+    return [legacy]
+
+
 def literal(root: Path, names: tuple[str, ...]) -> dict[str, str]:
     """Read KEY=value lines from checkout config files; later files win.
 
     Raises OSError or UnicodeDecodeError when a present file cannot be read.
     """
     values = {}
-    local = root / "config/local.env"
-    legacy = root / ".deploy/env"
-    for path in (root / "config/defaults.env", root / ".env", local if local.exists() else legacy):
+    for path in (root / "config/defaults.env", root / ".env", *local_layers(root)):
         if path.is_file():
             values.update(assignments(path.read_text(), names))
     return values
