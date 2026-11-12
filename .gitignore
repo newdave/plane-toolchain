@@ -10,3 +10,7 @@ config/local.env
 dist/
 *.egg-info/
 .bootstrap/
+.claude/worktrees/
+.claude/settings.local.json
+.claude/scheduled_tasks.json
+.DS_Store
