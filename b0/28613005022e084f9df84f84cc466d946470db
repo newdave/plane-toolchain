@@ -1,0 +1,47 @@
+CHANGELOG.md
+  s_2913fb743b94c4::t_c52750639c44ae 11
+tests/test_legacy_payloads.py
+  s_2913fb743b94c4::t_f24e0e1cac1f42 18
+tests/test_pages_backend.py
+  s_2913fb743b94c4::t_a65ee96ef603f3 407,411-422,428-457
+  s_2913fb743b94c4::t_5f548bea071ff5 557,562-564
+  s_2913fb743b94c4::t_f9c77d1f1ad73a 590-841
+  s_2913fb743b94c4::t_f988234a90c9db 458-459
+src/plane_toolchain/pages_backend.py
+  s_2913fb743b94c4::t_f7cecc88330973 120-121,126-135,137-138
+  s_2913fb743b94c4::t_ad46d01e383a62 52-56
+  s_2913fb743b94c4::t_f9a52dab7e53ca 174-189
+  s_2913fb743b94c4::t_d8a45274a085e2 42,46
+  s_2913fb743b94c4::t_fc5d85c62915f6 360-379,392,408-412
+  s_2913fb743b94c4::t_91ada4122ad9ab 8
+  s_2913fb743b94c4::t_9b97aceb12108d 136
+  s_2913fb743b94c4::t_417a1e77d9b0fa 150-153,157-158,161-163
+docs/extensions.md
+  s_2913fb743b94c4::t_d157beca7f6dab 38-40
+  s_2913fb743b94c4::t_d54b6b0ba652f4 21,25-26,30-32
+  s_d7c2df980df03a::t_f8cb3a31a89fce 33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "b028613005022e084f9df84f84cc466d946470db",
+  "prompts": {},
+  "sessions": {
+    "s_2913fb743b94c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b7b5da91-6cd3-4516-b410-f2bad19bef49",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    },
+    "s_d7c2df980df03a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3f60d184-07b0-4679-be2b-2bb71113702f",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
