@@ -1,0 +1,19 @@
+.github/workflows/ci.yml
+  s_ce066174a8d2c7::t_e5125e8f9d90f8 19,23,29-31,33-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "256a7746fbc92d7101051d638f1eb721f85d6a59",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
