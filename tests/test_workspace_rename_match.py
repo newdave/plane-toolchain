@@ -93,7 +93,7 @@ def test_other_workspace_href_untouched():
 
 def test_json_key_workspace_slug_exact_value_only():
     obj = {"workspace_slug": "acme", "other": "acme", "x": {"workspace_slug": "acme-two"}}
-    out, n = m.rewrite_json_slug(obj, "acme", "beta")
+    out, n = m.rewrite_json_slug(obj, "acme", "beta", HOSTS)
     assert out == {"workspace_slug": "beta", "other": "acme", "x": {"workspace_slug": "acme-two"}}
     assert n == 1
     assert obj["workspace_slug"] == "acme"  # input not mutated
@@ -101,7 +101,7 @@ def test_json_key_workspace_slug_exact_value_only():
 
 def test_json_nested_and_lists():
     obj = {"a": [{"workspace_slug": "acme"}, [{"workspace_slug": "acme"}], 3, None]}
-    out, n = m.rewrite_json_slug(obj, "acme", "beta")
+    out, n = m.rewrite_json_slug(obj, "acme", "beta", HOSTS)
     assert out == {"a": [{"workspace_slug": "beta"}, [{"workspace_slug": "beta"}], 3, None]}
     assert n == 2
 
@@ -124,3 +124,51 @@ def test_rewrite_is_idempotent_and_new_not_matched_when_old_is_prefix_of_new():
     assert n == 3
     assert m.rewrite_html(once, "acme", "acme-two", HOSTS) == (once, 0)
     assert "acme-two/x" in once and "acme-two-two" not in once
+
+
+DOC = {
+    "type": "doc",
+    "content": [
+        {"type": "issue-embed", "attrs": {"workspace_identifier": "acme", "id": "1"}},
+        {
+            "type": "text",
+            "text": "acme",
+            "marks": [{"type": "link", "attrs": {"href": "https://plane.example.com/acme/x"}}],
+        },
+        {"type": "text", "text": "r", "marks": [{"type": "link", "attrs": {"href": "/acme?a=1"}}]},
+    ],
+}
+
+
+def test_json_rewrites_embed_workspace_identifier():
+    out, n = m.rewrite_json_slug(DOC, "acme", "beta", HOSTS)
+    assert out["content"][0]["attrs"] == {"workspace_identifier": "beta", "id": "1"}
+    assert n == 3
+    assert DOC["content"][0]["attrs"]["workspace_identifier"] == "acme"
+
+
+def test_json_rewrites_link_href_own_host_and_root_relative():
+    out, _ = m.rewrite_json_slug(DOC, "acme", "beta", HOSTS)
+    assert out["content"][1]["marks"][0]["attrs"]["href"] == "https://plane.example.com/beta/x"
+    assert out["content"][2]["marks"][0]["attrs"]["href"] == "/beta?a=1"
+    assert out["content"][1]["text"] == "acme"
+
+
+def test_json_leaves_other_host_href_and_prefix_collision():
+    obj = {
+        "a": {"href": "https://evil.example.org/acme/x"},
+        "b": {"href": "/acme-two/x"},
+        "c": {"href": "https://plane.example.com/acme2"},
+        "d": {"workspace_identifier": "acme-two"},
+    }
+    assert m.rewrite_json_slug(obj, "acme", "beta", HOSTS) == (obj, 0)
+
+
+def test_json_leaves_unrelated_string_values():
+    obj = {"text": "see /acme/x and https://plane.example.com/acme", "name": "acme", "x": ["acme"]}
+    assert m.rewrite_json_slug(obj, "acme", "beta", HOSTS) == (obj, 0)
+
+
+def test_scan_json_counts_forms_without_rewriting():
+    assert m.scan_json(DOC, "acme", HOSTS) == {"url": 1, "href": 1, "embed": 1, "slug": 0}
+    assert m.scan_json({"workspace_slug": "acme"}, "acme", HOSTS)["slug"] == 1

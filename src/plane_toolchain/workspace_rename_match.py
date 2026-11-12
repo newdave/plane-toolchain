@@ -74,25 +74,59 @@ def scan_text(text, old, hosts):
     return {k: len(pats[k].findall(text)) if k in pats else 0 for k in ("url", "href", "embed")}
 
 
-def rewrite_json_slug(obj, old, new):
-    """Return (new object, count) with `workspace_slug` values equal to OLD set to NEW.
+def _href(pats, old, value):
+    """Return (kind, end) if an href value starts with an OLD link, else None."""
+    if "url" in pats and (x := pats["url"].match(value)):
+        return "url", x.end()
+    if re.match(rf"/{re.escape(old)}{_END}", value):
+        return "href", 1 + len(old)
+    return None
 
-    Walks dicts and lists; the input is not mutated.
-    """
+
+def _walk(obj, old, new, pats, count_only):
+    """Return (object, counts) for the editor-document rules; `new` is ignored if counting."""
+    counts = {"url": 0, "href": 0, "embed": 0, "slug": 0}
     if isinstance(obj, dict):
-        out, count = {}, 0
+        out = {}
         for key, value in obj.items():
-            if key == "workspace_slug" and value == old:
-                out[key], count = new, count + 1
+            hit = None
+            if isinstance(value, str):
+                if key == "workspace_slug" and value == old:
+                    hit = ("slug", value, new)
+                elif key == "workspace_identifier" and value == old:
+                    hit = ("embed", value, new)
+                elif key == "href" and (h := _href(pats, old, value)):
+                    hit = (h[0], value, value[: h[1] - len(old)] + new + value[h[1] :])
+            if hit:
+                counts[hit[0]] += 1
+                out[key] = hit[2]
             else:
-                out[key], n = rewrite_json_slug(value, old, new)
-                count += n
-        return out, count
+                out[key], c = _walk(value, old, new, pats, count_only)
+                for k in counts:
+                    counts[k] += c[k]
+        return out, counts
     if isinstance(obj, list):
-        out, count = [], 0
+        out = []
         for item in obj:
-            value, n = rewrite_json_slug(item, old, new)
+            value, c = _walk(item, old, new, pats, count_only)
             out.append(value)
-            count += n
-        return out, count
-    return obj, 0
+            for k in counts:
+                counts[k] += c[k]
+        return out, counts
+    return obj, counts
+
+
+def rewrite_json_slug(obj, old, new, hosts=()):
+    """Return (new object, count) with OLD set to NEW in an editor or notification document.
+
+    Rewrites `workspace_slug` and `workspace_identifier` values equal to OLD and `href` values
+    that are own-host or root-relative OLD links, using the `rewrite_html` rules. Other string
+    values are left alone. Walks dicts and lists; the input is not mutated.
+    """
+    out, counts = _walk(obj, old, new, _patterns(old, hosts), False)
+    return out, sum(counts.values())
+
+
+def scan_json(obj, old, hosts=()):
+    """Count matches per form without rewriting: {"url", "href", "embed", "slug"}."""
+    return _walk(obj, old, old, _patterns(old, hosts), True)[1]
