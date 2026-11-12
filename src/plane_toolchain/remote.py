@@ -50,9 +50,13 @@ def say(text, stream=None):
         pass
 
 
-def program(imports, functions, entry):
-    """Assemble a self-contained remote program from function source and an entry stub."""
+def program(imports, functions, entry, constants=None):
+    """Assemble a self-contained remote program from function source and an entry stub.
+
+    `constants` (name -> repr-able literal) become `NAME = <repr>` lines before the functions.
+    """
     parts = ["import " + ",".join(sorted({*imports, "signal", "sys"})), PREAMBLE]
+    parts += [f"{name} = {value!r}\n" for name, value in (constants or {}).items()]
     parts += [inspect.getsource(function) for function in [say, *functions]]
     return "\n".join(parts + [entry])
 

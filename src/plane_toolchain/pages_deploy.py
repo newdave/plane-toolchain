@@ -16,6 +16,14 @@ import tarfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from plane_toolchain.legacy import (
+    PAGES,
+    PAGES_BACKEND_FILE,
+    PAGES_BACKEND_MODULE,
+    PAGES_BACKUP_SUFFIX,
+    PAGES_IMAGE_PREFIX,
+    PAGES_LABEL,
+)
 from plane_toolchain.remote import docker, docker_ok, program, require_env, say, ssh_argv
 
 
@@ -29,7 +37,7 @@ def replacement(original, image, live_url, digest):
         value for value in body.get("Env", []) if not value.startswith("CE_PLANE_LIVE_URL=")
     ]
     body["Env"].append("CE_PLANE_LIVE_URL=" + live_url)
-    body["Labels"] = dict(body.get("Labels") or {}, **{"terrainlink.pages.source": digest})
+    body["Labels"] = dict(body.get("Labels") or {}, **{PAGES_LABEL: digest})
     # The copied hostname is the old container id; keep only an explicit custom one.
     if body.get("Hostname") == original.get("Id", "")[:12]:
         body.pop("Hostname", None)
@@ -46,7 +54,7 @@ def replacement(original, image, live_url, digest):
 
 def backup_name(name):
     """Legacy rollback container name; deployed receipts depend on it."""
-    return name + "-before-terrainlink-pages"
+    return name + PAGES_BACKUP_SUFFIX
 
 
 def restart_arg(container):
@@ -58,7 +66,7 @@ def restart_arg(container):
 
 
 def source_label(container):
-    return container["Config"].get("Labels", {}).get("terrainlink.pages.source")
+    return container["Config"].get("Labels", {}).get(PAGES_LABEL)
 
 
 def healthy(name, probe, sleep, attempts=45, pages=True):
@@ -93,11 +101,11 @@ def build_context(base_image, source):
     """Return a tar build context deriving the exact running image."""
     # No credentials or runtime environment in context.
     dockerfile = (
-        "FROM " + base_image + "\nCOPY plane_pages.py /code/plane/api/terrainlink_pages.py\n"
+        "FROM " + base_image + "\nCOPY plane_pages.py " + PAGES_BACKEND_FILE + "\n"
         "RUN python -c \"from pathlib import Path; p=Path('/code/plane/api/urls/__init__.py'); "
         "p.write_text(p.read_text()+"
-        "'\\nfrom plane.api.terrainlink_pages import routes\\nurlpatterns += routes()\\n')\"\n"
-        "RUN python -m py_compile /code/plane/api/terrainlink_pages.py\n"
+        "'\\nfrom " + PAGES_BACKEND_MODULE + " import routes\\nurlpatterns += routes()\\n')\"\n"
+        "RUN python -m py_compile " + PAGES_BACKEND_FILE + "\n"
     ).encode()
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w") as archive:
@@ -309,7 +317,7 @@ def apply(current, payload, docker, probe, create, health, now):
     base = json.loads(docker("image", "inspect", current["Image"]))[0]
     if not base.get("RepoDigests"):
         raise ValueError("Running image has no immutable registry digest")
-    image = "terrainlink-plane-pages:" + digest[:16]
+    image = PAGES_IMAGE_PREFIX + digest[:16]
     docker(
         "build",
         "-t",
@@ -319,7 +327,7 @@ def apply(current, payload, docker, probe, create, health, now):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    namespace = {}
+    namespace = {"PAGES_LABEL": PAGES_LABEL}  # the shipped replacement reads this
     exec(payload["replacement"], namespace)  # noqa: S102 - source shipped by main()
     body = namespace["replacement"](current, image, payload["live_url"], digest)
     policy = restart_arg(current)  # Read before retiring; restored when promoted back.
@@ -398,6 +406,7 @@ REMOTE = program(
     ],
     "say(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
     "    lambda name, pages=True: healthy(name, docker_ok, time.sleep, pages=pages), time.time))\n",
+    PAGES,
 )
 
 

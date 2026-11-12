@@ -94,3 +94,22 @@ def test_program_ignores_hup_and_pipe_before_entry(monkeypatch):
     namespace = {"__name__": "__main__", "calls": calls}
     exec(compile(source, "<string>", "exec"), namespace)  # noqa: S102 - assembled test program
     assert calls == [(signal.SIGHUP, signal.SIG_IGN), (signal.SIGPIPE, signal.SIG_IGN), "entry"]
+
+
+def test_program_emits_constants_before_functions():
+    source = remote.program(["os"], [remote.say], "say(NAME)\n", {"NAME": "a'b", "N": 3})
+    assert source.index('NAME = "a\'b"') < source.index("def say")
+    assert "N = 3\n" in source
+    compile(source, "<string>", "exec")
+
+
+@pytest.mark.parametrize("module", ["pages_deploy", "mcp_deploy"])
+def test_remote_compiles_standalone_with_legacy_constants(module):
+    from plane_toolchain import legacy, mcp_deploy, pages_deploy
+
+    source = {"pages_deploy": pages_deploy, "mcp_deploy": mcp_deploy}[module].REMOTE
+    compile(source, "<string>", "exec")
+    assert "plane_toolchain" not in source
+    names = legacy.PAGES if module == "pages_deploy" else legacy.MCP
+    for name, value in names.items():
+        assert f"{name} = {value!r}\n" in source
