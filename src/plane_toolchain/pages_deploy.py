@@ -9,15 +9,14 @@ import hashlib
 import http.client
 import io
 import json
-import os
-import shlex
 import socket
 import subprocess
 import sys
 import tarfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from plane_toolchain.remote import docker, docker_ok, program
+from plane_toolchain.remote import docker, docker_ok, program, require_env, say, ssh_argv
 
 
 def replacement(original, image, live_url, digest):
@@ -210,14 +209,50 @@ def revert(current, payload, docker, probe, health, now):
     return "Original API container restored; derived container retained stopped"
 
 
+def reconcile(current, name, backup, docker, probe, health, now):
+    """Undo a run that died mid-swap: return the original as running `name`, or refuse.
+
+    current is None when no container is named `name`.
+    """
+    held = json.loads(docker("inspect", backup))[0]
+    refuse = ValueError("Existing rollback container; reconcile before a new deployment")
+    if source_label(held) is not None:
+        raise refuse
+    if current is None:
+        # Died after the retire rename. A backup policy other than `no` predates the retire
+        # update and is the live one; otherwise fall back to Plane's compose default.
+        policy = restart_arg(held)
+        if policy == "no":
+            policy = "unless-stopped"
+            # Said at once: a later failure in this run must not hide the change.
+            say("Restart policy set to unless-stopped; adjust if your deployment differs")
+    elif source_label(current) is not None and not current["State"].get("Running"):
+        # Derived created but never started: retire it as a failed apply.
+        policy = restart_arg(current)  # Copied from the original before its retirement.
+        failed = name + "-pages-failed-" + str(int(now()))
+        docker("rename", name, failed)
+        probe("update", "--restart=no", failed)
+    else:
+        raise refuse
+    docker("rename", backup, name)
+    probe("update", "--restart=" + policy, name)
+    docker("start", name)
+    health(name)
+
+
 def apply(current, payload, docker, probe, create, health, now):
     name, digest = payload["container"], payload["digest"]
     backup = backup_name(name)
-    if source_label(current) == digest:
+    applied = current is not None and source_label(current) == digest
+    if applied and current["State"].get("Running"):
         health(name)
         return "Pages image already applied; API healthy"
-    if probe("inspect", backup):
-        raise ValueError("Existing rollback container; reconcile before a new deployment")
+    if current is None or probe("inspect", backup):
+        reconcile(current, name, backup, docker, probe, health, now)
+        current = json.loads(docker("inspect", name))[0]
+    elif applied:
+        health(name)  # Stopped derived without a rollback container: refuse via health.
+        return "Pages image already applied; API healthy"
     source = payload["source"].encode()
     base = json.loads(docker("image", "inspect", current["Image"]))[0]
     if not base.get("RepoDigests"):
@@ -236,8 +271,12 @@ def apply(current, payload, docker, probe, create, health, now):
     exec(payload["replacement"], namespace)  # noqa: S102 - source shipped by main()
     body = namespace["replacement"](current, image, payload["live_url"], digest)
     policy = restart_arg(current)  # Read before retiring; restored when promoted back.
-    docker("stop", name)
-    docker("rename", name, backup)
+    try:
+        docker("stop", name)
+        docker("rename", name, backup)
+    except BaseException:
+        probe("start", name)  # Never leave the live API stopped; its policy is unchanged.
+        raise
     probe("update", "--restart=no", backup)  # After the rename: a failed rename keeps the policy.
     try:
         create(name, body)
@@ -262,8 +301,14 @@ def deploy(payload, docker, probe, create, health, now):
     docker(*args, **kw) -> bytes raises on failure; probe(*args) -> bool never raises;
     create(name, body) raises unless created; health(name) raises unless healthy.
     """
-    current = json.loads(docker("inspect", payload["container"]))[0]
     operation = payload["operation"]
+    try:
+        current = json.loads(docker("inspect", payload["container"]))[0]
+    except subprocess.CalledProcessError:
+        # A missing API with a rollback container is a half-finished apply; apply reconciles.
+        if operation != "apply" or not probe("inspect", backup_name(payload["container"])):
+            raise
+        current = None
     if operation == "check":
         return check(current, payload, health)
     if operation == "revert":
@@ -285,19 +330,36 @@ REMOTE = program(
         build_context,
         docker_create,
     ]
-    + [check, restore_any, revert, apply, deploy],
-    "print(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
+    + [check, restore_any, revert, reconcile, apply, deploy],
+    "say(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
     "    lambda name: healthy(name, docker_ok, time.sleep), time.time))\n",
 )
+
+
+def valid_live_url(url):
+    """Return whether url is plain http(s) with a host and no credentials, query or fragment."""
+    try:
+        parsed = urlsplit(url)
+        parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname
+        and not (parsed.username or parsed.password or parsed.query or parsed.fragment)
+        and not any(c.isspace() or c == "\\" for c in url)
+    )
 
 
 def main():
     import inspect
 
     operation = sys.argv[1]
-    host = os.environ["PLANE_MCP_SSH"]
-    container = os.environ["PLANE_API_CONTAINER"]
-    live_url = os.environ["PLANE_LIVE_URL"]
+    host, container, live_url = require_env(
+        "PLANE_MCP_SSH", "PLANE_API_CONTAINER", "PLANE_LIVE_URL"
+    )
+    if not valid_live_url(live_url):
+        sys.exit("Invalid PLANE_LIVE_URL")
     if host.startswith("-") or not container.replace("-", "").replace("_", "").isalnum():
         raise ValueError("Invalid deployment destination")
     source = Path(__file__).with_name("pages_backend.py").read_text()
@@ -310,7 +372,7 @@ def main():
         replacement="import copy\n" + inspect.getsource(replacement),
     )
     subprocess.run(  # noqa: S603 - validated owner host; fixed remote program
-        ["ssh", host, "python3 -c " + shlex.quote(REMOTE)],  # noqa: S607 - system SSH
+        ssh_argv(host, REMOTE),
         input=json.dumps(payload),
         text=True,
         check=True,
