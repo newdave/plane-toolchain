@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -23,13 +24,38 @@ def assignments(text: str, names: tuple[str, ...]) -> list[tuple[str, str]]:
     return found
 
 
+def main_checkout(root: Path) -> Path | None:
+    """Return the main checkout when root is a linked git worktree, else None."""
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],  # noqa: S607
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return Path(result.stdout.strip()).parent
+
+
+def local_env(root: Path) -> Path:
+    """Return root's config/local.env; in a worktree without one, the main checkout's."""
+    local = root / "config/local.env"
+    if not local.exists():
+        main = main_checkout(root)
+        if main is not None and (main / "config/local.env").exists():
+            return main / "config/local.env"
+    return local
+
+
 def literal(root: Path, names: tuple[str, ...]) -> dict[str, str]:
     """Read KEY=value lines from checkout config files; later files win.
 
     Raises OSError or UnicodeDecodeError when a present file cannot be read.
     """
     values = {}
-    local = root / "config/local.env"
+    local = local_env(root)
     legacy = root / ".deploy/env"
     for path in (root / "config/defaults.env", root / ".env", local if local.exists() else legacy):
         if path.is_file():

@@ -1,0 +1,3 @@
+# Claude Code copies these git-ignored files into worktrees it creates.
+config/plane.enc.env
+config/local.env

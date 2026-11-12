@@ -12,6 +12,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The Plane bridge and session status resolve git-ignored `config/local.env`, `config/plane.enc.env` and `tools/mcp-remote/node_modules` from the main checkout when a linked worktree lacks them. A root `.worktreeinclude` lists the config files.
 - Pages revert accepts a derived container built from older source, so an upgrade can run revert, then apply.
 - Restoring the original API (revert, reconcile) checks API health only: the upstream image has no Pages route, so the Pages probe made every revert roll back.
 
