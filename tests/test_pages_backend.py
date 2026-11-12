@@ -70,3 +70,133 @@ def test_replacement_rejects_auto_removal_before_stopping_original():
 
     with pytest.raises(ValueError, match="AutoRemove"):
         replacement({"HostConfig": {"AutoRemove": True}}, "derived", "http://live:3000", "digest")
+
+
+def _pages_view(monkeypatch, missing_project=False):
+    """Build the Pages view from stubbed Django/Plane modules (they exist only in the CE image)."""
+    import sys
+    import types
+
+    from plane_toolchain import pages_backend
+
+    calls = {}
+
+    class Http404(Exception):
+        pass
+
+    def module(name, **attrs):
+        mod = types.ModuleType(name)
+        mod.__dict__.update(attrs)
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    def get_object_or_404(model, **kwargs):
+        calls["lookup"] = kwargs
+        if missing_project:
+            raise Http404
+        return types.SimpleNamespace(guest_view_all_features=True)
+
+    class Rows:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def distinct(self):
+            return self
+
+        def order_by(self, *args):
+            return self
+
+        def values(self, *fields):
+            calls["values"] = fields
+            return [{"id": "p1"}]
+
+    class Q:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __or__(self, other):
+            return self
+
+    class Members:
+        def filter(self, **kwargs):
+            return types.SimpleNamespace(exists=lambda: False)
+
+    class Permission:
+        pass
+
+    class BaseAPIView:
+        @classmethod
+        def as_view(cls, **kwargs):
+            return cls
+
+    class PageViewSet:
+        permission_classes = [Permission]
+
+    for name in (
+        "requests",
+        "django",
+        "plane",
+        "plane.api",
+        "plane.api.views",
+        "plane.app",
+        "plane.app.views",
+        "plane.app.views.page",
+        "rest_framework",
+    ):
+        module(name)
+    module("django.db", transaction=None)
+    module("django.urls", path=lambda *args, **kwargs: (args, kwargs))
+    module("django.shortcuts", get_object_or_404=get_object_or_404)
+    module("django.db.models", Q=Q)
+    module("plane.api.views.base", BaseAPIView=BaseAPIView)
+    module("plane.app.permissions", ProjectPagePermission=Permission)
+    module(
+        "plane.app.serializers",
+        PageBinaryUpdateSerializer=None,
+        PageDetailSerializer=None,
+        PageSerializer=None,
+    )
+    module("plane.app.views.page.base", PageViewSet=PageViewSet)
+    module(
+        "plane.db.models",
+        Page=types.SimpleNamespace(objects=Rows()),
+        Project=object,
+        ProjectMember=types.SimpleNamespace(objects=Members()),
+    )
+    module("rest_framework.exceptions", APIException=Exception, ValidationError=ValueError)
+    module("rest_framework.permissions", IsAuthenticated=object)
+    module(
+        "rest_framework.response",
+        Response=lambda data, status=200: types.SimpleNamespace(data=data),
+    )
+    view = pages_backend.routes()[0][0][1]()
+    view.kwargs = {"slug": "w", "project_id": "x"}
+    view.request = types.SimpleNamespace(user="u")
+    return view, calls, Http404
+
+
+def test_missing_or_archived_project_is_404_not_500(monkeypatch):
+    view, calls, http404 = _pages_view(monkeypatch, missing_project=True)
+    with pytest.raises(http404):
+        view.get(view.request, "w", "x")
+    assert calls["lookup"]["archived_at__isnull"] is True
+
+
+def test_list_returns_light_fields_without_document_bodies(monkeypatch):
+    from plane_toolchain import pages_backend
+
+    view, calls, _ = _pages_view(monkeypatch)
+    response = view.get(view.request, "w", "x")
+    assert response.data == [{"id": "p1"}]
+    assert calls["values"] == pages_backend.LIST_FIELDS
+    assert set(pages_backend.LIST_FIELDS) >= {
+        "id",
+        "name",
+        "access",
+        "owned_by",
+        "created_at",
+        "updated_at",
+        "archived_at",
+        "is_locked",
+        "parent",
+    }
+    assert not [f for f in pages_backend.LIST_FIELDS if f.startswith("description")]
