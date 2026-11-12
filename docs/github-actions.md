@@ -27,6 +27,12 @@ Store `PLANE_API_KEY` as an Actions secret. Use a dedicated Plane identity with 
 
 The workflows validate the toolchain revision before checkout and fetch that exact revision into `.plane-toolchain`. Dependencies come from its lockfile. They do not execute pull-request code. They grant only `contents: read` on GitHub; Plane writes use the separate Plane key.
 
+## Pinning a release
+
+Each tagged release (`v0.x.y`, see `CHANGELOG.md`) lists its commit in the release notes as `Pin: <sha>`. Set `PLANE_TOOLCHAIN_REF` to that full 40-character commit SHA, not the tag. Tags can move; a SHA cannot.
+
+Renovate keeps the `uses:` action SHAs in your workflows current, but it cannot track `PLANE_TOOLCHAIN_REF`. Bump that variable by hand to the commit SHA printed as `Pin:` in the release notes.
+
 ## Trusted events and failed preconditions
 
 Both write examples start with a secret-free `preconditions` job. The write job `needs:` it, so a refused run fails visibly (red, with an `::error::` message) instead of a skipped job reporting success. It fails unless `PLANE_ENABLED` is `true`, the event is allow-listed, and the ref is the default branch. The completion example also fails unless `deployment_verified` is `true`.
