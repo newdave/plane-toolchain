@@ -50,7 +50,7 @@ The extracted server payloads retain their original bytes, including comments, s
 
 The MCP entry point binds to `FASTMCP_HOST` (bare host or address; default `0.0.0.0`, which the container needs to be reachable) and `FASTMCP_PORT` (default `8211`).
 
-Legacy `terrainlink` backup names, receipt names, image labels and backend module paths are intentionally preserved. Renaming them would break existing rollback state. Their presence is compatibility metadata, not a dependency on TerrainLink.
+Legacy `terrainlink` backup names, receipt names, image labels and backend module paths are compatibility metadata, not a dependency on TerrainLink. The helpers still write them, because existing rollback state depends on them. [ADR 0001](decisions/0001-neutral-names.md) sets the neutral replacements and the migration: read both names, write only neutral names, refuse when they disagree, and remove legacy reads after a deprecation window. Do not rename them outside that migration.
 
 **PTC-7 migration note.** The Pages helper now runs `docker update --restart=no` on every retired container (`<name>-before-terrainlink-pages`, `<name>-pages-reverted-*`, `<name>-pages-failed-*`) and restores the live restart policy when one is promoted back. Retained containers from earlier deployments keep their old policy and may restart with the daemon beside the live API. Before relying on this, run `docker update --restart=no` once on each existing retained container.
 
