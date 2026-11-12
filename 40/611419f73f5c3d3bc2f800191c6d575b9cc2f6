@@ -1,0 +1,21 @@
+docs/superpowers/specs/2026-11-13-workspace-slug-rename-design.md
+  s_2913fb743b94c4::t_d40b8328657177 54-55
+  s_2913fb743b94c4::t_34fe9563a1aaf2 66-70
+  s_2913fb743b94c4::t_00bac6572cfceb 160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "40611419f73f5c3d3bc2f800191c6d575b9cc2f6",
+  "prompts": {},
+  "sessions": {
+    "s_2913fb743b94c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b7b5da91-6cd3-4516-b410-f2bad19bef49",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
