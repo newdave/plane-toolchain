@@ -1,0 +1,49 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Reviewed Renovate config: pinned digests, uv/mise/mcp-remote updates, weekly grouped PRs.",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "timezone": "Australia/Melbourne",
+  "schedule": ["before 6am on monday"],
+  "dependencyDashboard": { "enabled": true },
+  "osvVulnerabilityAlerts": true,
+  "platformAutomerge": true,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "description": "Refresh uv.lock weekly.",
+    "schedule": ["before 6am on monday"]
+  },
+  "github-actions": {
+    "description": "Cover workflows plus the example workflows under examples/github.",
+    "managerFilePatterns": [
+      "/(^|/)\\.github/(?:workflows|actions)/.+\\.ya?ml$/",
+      "/(^|/)examples/github/[^/]+\\.ya?ml$/"
+    ]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "mcp-remote pinned in the npx invocation of scripts/plane-mcp.sh.",
+      "managerFilePatterns": ["/(^|/)scripts/plane-mcp\\.sh$/"],
+      "matchStrings": ["npx --yes mcp-remote@(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "mcp-remote",
+      "datasourceTemplate": "npm"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Group minor and patch updates per weekly run.",
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "minor and patch updates"
+    },
+    {
+      "description": "Wait for npm releases to age before proposing them.",
+      "matchDatasources": ["npm"],
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Automerge only digest, patch and pin updates once the required check passes.",
+      "matchUpdateTypes": ["digest", "patch", "pin", "pinDigest"],
+      "automerge": true
+    }
+  ]
+}

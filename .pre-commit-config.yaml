@@ -1,0 +1,37 @@
+# Mirrors `mise run check` minus pytest (left to mise/CI). Tool versions come from
+# uv.lock (ruff) and mise.toml (actionlint, shellcheck).
+# Install: pre-commit install --hook-type pre-commit --hook-type commit-msg
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0 # 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c
+    hooks:
+      - id: check-yaml
+      - id: check-json
+      - id: detect-private-key
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --locked ruff check
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format --check
+        entry: uv run --locked ruff format --check
+        language: system
+        types: [python]
+      - id: actionlint
+        name: actionlint
+        entry: mise exec -- actionlint
+        language: system
+        files: ^(\.github/workflows|examples/github)/.*\.ya?ml$
+      - id: shellcheck
+        name: shellcheck
+        entry: mise exec -- shellcheck
+        language: system
+        files: ^scripts/.*\.sh$
+      - id: no-ai-attribution
+        name: reject AI attribution trailers
+        entry: python3 scripts/check-commit-msg.py
+        language: system
+        stages: [commit-msg]

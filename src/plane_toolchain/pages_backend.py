@@ -21,17 +21,21 @@ LIST_FIELDS = (
 )
 
 
+class PageInputError(ValueError):
+    """Fixed, client-safe validation message."""
+
+
 def creation_payload(data, sanitise, convert):
     """Validate and convert a complete new document before any database write."""
     if set(data) - {"name", "description_html", "access"}:
-        raise ValueError("Only name, description_html and access are supported")
+        raise PageInputError("Only name, description_html and access are supported")
     name = data.get("name")
     body = data.get("description_html")
     access = data.get("access", 1)
     if not isinstance(name, str) or not name.strip() or len(name) > 255:
-        raise ValueError("Expected a non-empty page name of at most 255 characters")
+        raise PageInputError("Expected a non-empty page name of at most 255 characters")
     if not isinstance(body, str) or len(body.encode()) > 1_000_000 or access not in (0, 1):
-        raise ValueError("Invalid page body or access")
+        raise PageInputError("Invalid page body or access")
     clean = sanitise(body)
     converted = convert(clean)
     if (
@@ -39,7 +43,7 @@ def creation_payload(data, sanitise, convert):
         or not isinstance(converted.get("description_binary"), str)
         or not converted["description_binary"]
     ):
-        raise ValueError("Live service did not return a complete document")
+        raise PageInputError("Live service did not return a complete document")
     return dict(
         name=name,
         access=access,
@@ -134,8 +138,10 @@ def routes():
 
             try:
                 data = creation_payload(request.data, sanitise, convert)
-            except ValueError as error:
+            except PageInputError as error:
                 raise ValidationError(str(error)) from None
+            except ValueError:
+                raise ValidationError("Invalid page input") from None
             binary = PageBinaryUpdateSerializer(
                 data={
                     key: data[key]

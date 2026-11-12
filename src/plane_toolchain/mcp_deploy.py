@@ -15,8 +15,8 @@ from plane_toolchain.remote import docker, program
 
 def git_tracked(root):
     """Return whether git tracks the host entry point; never raise."""
-    result = subprocess.run(  # noqa: S603,S607
-        ["git", "-C", str(root), "ls-files", "--error-unmatch", "server.py"],
+    result = subprocess.run(  # noqa: S603 - fixed git argv
+        ["git", "-C", str(root), "ls-files", "--error-unmatch", "server.py"],  # noqa: S607 - git on PATH
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
