@@ -1,0 +1,24 @@
+tests/test_workspace_rename_receipt.py
+  s_2913fb743b94c4::t_0a5411945a3a14 1-166
+  s_2913fb743b94c4::t_0d02de05b7284e 167-184
+src/plane_toolchain/workspace_rename.py
+  s_2913fb743b94c4::t_0a3f399b44b4a1 1-109,111-113,121-168
+  s_2913fb743b94c4::t_ff1874724ac01e 110,114-120
+  s_2913fb743b94c4::t_de2f4dabab99e9 169-179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "7987b161b45bb44a7219d625a8db2536075c5a38",
+  "prompts": {},
+  "sessions": {
+    "s_2913fb743b94c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b7b5da91-6cd3-4516-b410-f2bad19bef49",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
