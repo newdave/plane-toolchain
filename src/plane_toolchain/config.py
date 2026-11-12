@@ -16,7 +16,10 @@ def set_enabled(path: Path, enabled: bool, *, restore: bool = True):
     if not path.exists() and (path.parent.parent / ".deploy/env").exists():
         raise ValueError("Refusing to shadow legacy .deploy/env; migrate to config/local.env first")
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = path.read_text() if path.exists() else ""
+    try:
+        text = path.read_text() if path.exists() else ""
+    except (OSError, UnicodeDecodeError) as error:
+        raise ValueError(f"Cannot read local configuration: {error}") from error
     # Keep the first activation baseline: repeated apply/revert must remain idempotent.
     backup = path.parent.parent / ".agent-state/plane/enable-backup.json"
     if backup.is_symlink() or backup.parent.is_symlink():
@@ -42,7 +45,12 @@ def set_enabled(path: Path, enabled: bool, *, restore: bool = True):
             raise ValueError("Invalid Plane activation backup")
         enabled = saved["enabled"]
     text = re.sub(r"(?m)^\s*(?:export\s+)?PLANE_ENABLED=.*(?:\n|$)", "", text)
-    text = text.rstrip("\n") + "\nPLANE_ENABLED=" + str(enabled).lower() + "\n"
+    text = (
+        (text.rstrip("\n") + "\n" if text.strip() else "")
+        + "PLANE_ENABLED="
+        + str(enabled).lower()
+        + "\n"
+    )
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=".plane-")
     try:
         with os.fdopen(fd, "w") as output:

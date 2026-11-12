@@ -1,5 +1,7 @@
 """Activation remains reversible and does not overwrite unrelated local settings."""
 
+import os
+
 import pytest
 
 from plane_toolchain import session
@@ -51,8 +53,6 @@ def test_enable_still_rejects_invalid_value(tmp_path):
 
 
 def test_interrupted_backup_leaves_no_partial_file(tmp_path, monkeypatch):
-    import os
-
     path = tmp_path / "config/local.env"
     path.parent.mkdir()
     path.write_text("PLANE_ENABLED=true\n")
@@ -72,4 +72,12 @@ def test_interrupted_backup_leaves_no_partial_file(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "replace", real)
     set_enabled(path, True)
     set_enabled(path, False)
-    assert session.switch(tmp_path, {}) == "enabled"
+    assert path.read_text() == "PLANE_ENABLED=true\n"
+
+
+def test_unreadable_config_raises_clean_error(tmp_path):
+    path = tmp_path / "config/local.env"
+    path.parent.mkdir()
+    path.write_bytes(b"PLANE_ENABLED=\xff\xfe\n")
+    with pytest.raises(ValueError, match="Cannot read"):
+        set_enabled(path, True)
