@@ -72,7 +72,7 @@ def test_replacement_rejects_auto_removal_before_stopping_original():
         replacement({"HostConfig": {"AutoRemove": True}}, "derived", "http://live:3000", "digest")
 
 
-def _pages_view(monkeypatch, missing_project=False):
+def _pages_view(monkeypatch, missing_project=False, binary=None):
     """Build the Pages view from stubbed Django/Plane modules (they exist only in the CE image)."""
     import sys
     import types
@@ -170,7 +170,7 @@ def _pages_view(monkeypatch, missing_project=False):
     module("plane.app.permissions", ProjectPagePermission=Permission)
     module(
         "plane.app.serializers",
-        PageBinaryUpdateSerializer=None,
+        PageBinaryUpdateSerializer=binary,
         PageDetailSerializer=DetailSerializer,
         PageSerializer=None,
     )
@@ -235,3 +235,26 @@ def test_malformed_ids_are_404_not_500(monkeypatch, bad):
     else:
         with pytest.raises(http404):
             view.get(view.request, "w", "x", page_id="bad")
+
+
+def test_post_keeps_own_validation_messages_for_client(monkeypatch):
+    view, _, _ = _pages_view(monkeypatch)
+    view.request.data = {"name": "", "description_html": "x"}
+    with pytest.raises(ValueError, match="non-empty page name"):
+        view.post(view.request, "w", "x")
+
+
+def test_post_hides_internal_error_text_from_client(monkeypatch):
+    class Leaky:
+        def __init__(self, data):
+            pass
+
+        def is_valid(self, raise_exception=False):
+            raise ValueError("secret-token-123 at /srv/internal.py")
+
+    view, _, _ = _pages_view(monkeypatch, binary=Leaky)
+    view.request.data = {"name": "X", "description_html": "<p>x</p>"}
+    with pytest.raises(ValueError) as caught:
+        view.post(view.request, "w", "x")
+    assert str(caught.value) == "Invalid page input"
+    assert "secret-token-123" not in str(caught.value)
