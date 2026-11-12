@@ -34,7 +34,7 @@ These tasks change only `PLANE_ENABLED` in ignored `config/local.env`. They pres
 
 ## Codex and Claude
 
-The project includes `.codex/config.toml` and `.mcp.json`, both launching `scripts/plane-mcp.sh`. The bridge validates settings, then uses pinned `mcp-remote` to translate stdio into hosted HTTP. Run setup first and launch the client from this repository with the secret environment injected.
+The project includes `.codex/config.toml` and `.mcp.json`, both launching `scripts/plane-mcp.sh`. The bridge validates settings, then runs `mcp-remote` from the locked tree in `tools/mcp-remote` (exact version, integrity-checked `package-lock.json`, installed by `npm ci --ignore-scripts` under the pinned Node) to translate stdio into hosted HTTP. The bridge never uses `npx` or installs at runtime, and exits with a hint if the tree is missing. Run `mise run setup` first and launch the client from this repository with the secret environment injected.
 
 Both clients have project SessionStart hooks calling the same offline status reporter. Restart a session to load new hooks or MCP configuration. The bridge refuses remote access while disabled; existing client sessions may retain an established connection until restarted.
 

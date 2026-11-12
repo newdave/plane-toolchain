@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Reviewed Renovate config: pinned digests, uv/mise/mcp-remote updates, weekly grouped PRs.",
+  "description": "Reviewed Renovate config: pinned digests, uv/mise/npm (mcp-remote lockfile) updates, weekly grouped PRs.",
   "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
   "timezone": "Australia/Melbourne",
   "schedule": ["before 6am on monday"],
@@ -19,16 +19,6 @@
       "/(^|/)examples/github/[^/]+\\.ya?ml$/"
     ]
   },
-  "customManagers": [
-    {
-      "customType": "regex",
-      "description": "mcp-remote pinned in the npx invocation of scripts/plane-mcp.sh.",
-      "managerFilePatterns": ["/(^|/)scripts/plane-mcp\\.sh$/"],
-      "matchStrings": ["npx --yes mcp-remote@(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
-      "depNameTemplate": "mcp-remote",
-      "datasourceTemplate": "npm"
-    }
-  ],
   "packageRules": [
     {
       "description": "Group minor and patch updates per weekly run.",
