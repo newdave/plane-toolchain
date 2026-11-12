@@ -1,0 +1,23 @@
+docs/extensions.md
+  s_ce066174a8d2c7::t_f78e7ac308e4fb 41
+src/plane_toolchain/mcp_deploy.py
+  s_ce066174a8d2c7::t_f78e7ac308e4fb 52-57,152-153
+tests/test_mcp_deploy.py
+  s_ce066174a8d2c7::t_f78e7ac308e4fb 586-604
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "1c3335a36c02cbdaef69762f63a57c953c076928",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
