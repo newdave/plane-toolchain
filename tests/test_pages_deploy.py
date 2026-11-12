@@ -194,10 +194,110 @@ def test_revert_refuses_when_label_changed(applied, monkeypatch):
     assert applied.calls == [("inspect", "api"), ("inspect", BACKUP)]
 
 
-def test_revert_without_backup_fails_before_changes(host, monkeypatch):
+def test_revert_without_backup_and_with_label_fails_before_changes(applied, monkeypatch):
+    del applied.containers[BACKUP]
     with pytest.raises(subprocess.CalledProcessError):
-        remote("revert", host, monkeypatch)
-    assert host.calls == [("inspect", "api"), ("inspect", BACKUP)]
+        remote("revert", applied, monkeypatch)
+    assert applied.calls == [("inspect", "api"), ("inspect", BACKUP), ("inspect", BACKUP)]
+
+
+def test_repeat_revert_exits_zero_with_message(applied, monkeypatch, capsys):
+    remote("revert", applied, monkeypatch)
+    capsys.readouterr()
+    applied.calls.clear()
+    remote("revert", applied, monkeypatch)
+    assert capsys.readouterr().out == "Original API container already restored\n"
+    assert applied.calls == [("inspect", "api"), ("inspect", BACKUP)]
+    assert_original_restored(applied)
+
+
+def assert_derived_back(fake):
+    assert fake.containers["api"]["labels"]["terrainlink.pages.source"] == DIGEST
+    assert fake.containers["api"]["running"]
+    assert not fake.containers[BACKUP]["running"]
+    assert not [name for name in fake.containers if "pages-reverted" in name]
+
+
+@pytest.mark.parametrize("failure", ["start", "health"])
+def test_revert_failure_swaps_back_and_restarts_derived(applied, monkeypatch, failure):
+    if failure == "start":
+        applied.fail.append(("start", "api"))
+    else:
+        applied.containers[BACKUP]["healthy"] = False
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        remote("revert", applied, monkeypatch)
+    assert_derived_back(applied)
+    reverted = f"api-pages-reverted-{NOW}"
+    tail = [call for call in applied.calls if call[0] in ("stop", "rename", "start")][-4:]
+    assert tail == [
+        ("stop", "api"),
+        ("rename", "api", BACKUP),
+        ("rename", reverted, "api"),
+        ("start", "api"),
+    ]
+
+
+@pytest.mark.parametrize("step", [("stop", "api"), ("rename", "api"), ("rename", BACKUP)])
+def test_revert_early_failure_recovers_derived(applied, monkeypatch, step):
+    applied.fail.append(step)
+    with pytest.raises(subprocess.CalledProcessError):
+        remote("revert", applied, monkeypatch)
+    assert_derived_back(applied)
+
+
+@pytest.mark.parametrize(
+    "step", [("rename", "api", BACKUP), ("rename", f"api-pages-reverted-{NOW}", "api"), ("start",)]
+)
+def test_revert_recovery_failure_reraises_original_and_keeps_api_running(applied, step):
+    applied.containers[BACKUP]["healthy"] = False
+    if step == ("start",):
+        applied.fail += [("start", "api")] * 2  # revert start and recovery start both fail
+    else:
+        applied.fail.append(step)
+    with pytest.raises((ValueError, subprocess.CalledProcessError)) as caught:
+        deploy("revert", applied)
+    assert isinstance(caught.value.__context__, subprocess.CalledProcessError)
+    assert "do-not-print" not in repr(caught.value)
+    assert applied.containers["api"]["running"]
+    running = [n for n, c in applied.containers.items() if c["running"]]
+    assert len(running) == 1
+
+
+RECOVERY_STEPS = [("rename", "api", BACKUP), ("rename", f"api-pages-reverted-{NOW}", "api")]
+
+
+@pytest.mark.parametrize("step", [*RECOVERY_STEPS, ("start", "api")])
+def test_revert_recovery_step_failing_twice_still_leaves_one_running_api(applied, step):
+    applied.containers[BACKUP]["healthy"] = False
+    applied.fail += [step] * 2
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        deploy("revert", applied)
+    running = [n for n, c in applied.containers.items() if c["running"]]
+    assert running and "api" in running and len(running) == 1
+    assert not [n for n in applied.containers if n.endswith("-aside")]
+    assert BACKUP in applied.containers or not applied.containers["api"]["labels"].get(
+        "terrainlink.pages.source"
+    )
+
+
+def test_revert_parked_original_returns_to_backup_name(applied):
+    applied.containers[BACKUP]["healthy"] = False
+    # revert start fails, recovery rename fails, then the original start fails.
+    applied.fail += [("start", "api"), ("rename", "api", BACKUP), ("start", "api")]
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        deploy("revert", applied)
+    assert not [n for n in applied.containers if n.endswith("-aside")]
+    assert BACKUP in applied.containers
+    assert [n for n, c in applied.containers.items() if c["running"]] == ["api"]
+
+
+def test_revert_recovery_nothing_startable_reraises_original(applied):
+    applied.fail += [("start", "api")] * 4  # revert start, recovery, derived, original
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        deploy("revert", applied)
+    assert caught.value.__context__ is not None
+    assert not any(c["running"] for c in applied.containers.values())
+    assert "api" in applied.containers and BACKUP in applied.containers
 
 
 def test_check_verifies_label_and_health(applied, monkeypatch, capsys):
