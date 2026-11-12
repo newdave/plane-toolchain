@@ -216,7 +216,6 @@ def test_revert_restores_original_and_retains_derived_stopped(applied, monkeypat
         ("update", "--restart=unless-stopped", "api"),
         ("start", "api"),
         HEALTH,
-        PAGES,
     ]
     assert_original_restored(applied)
     assert not applied.containers[reverted]["running"]
@@ -230,6 +229,17 @@ def test_revert_refuses_when_label_changed(applied, monkeypatch):
     with pytest.raises(ValueError, match="API changed; refusing rollback"):
         remote("revert", applied, monkeypatch)
     assert applied.calls == [("inspect", "api"), ("inspect", BACKUP)]
+
+
+def test_revert_accepts_derived_from_older_source(applied, monkeypatch, capsys):
+    # A source upgrade changes the digest; the label still marks the container as ours.
+    applied.containers["api"]["labels"]["terrainlink.pages.source"] = "older-digest"
+    remote("revert", applied, monkeypatch)
+    assert capsys.readouterr().out == (
+        "Original API container restored; derived container retained stopped\n"
+    )
+    assert_original_restored(applied)
+    assert retained(applied) == {f"api-pages-reverted-{NOW}": "no"}
 
 
 def test_revert_without_backup_and_with_label_fails_before_changes(applied, monkeypatch):
@@ -270,12 +280,11 @@ def test_revert_finishes_interrupted_revert_with_derived_policy(interrupted, mon
     }
     remote("revert", interrupted, monkeypatch)
     assert capsys.readouterr().out == "Original API container restored\n"
-    assert interrupted.calls[-5:] == [
+    assert interrupted.calls[-4:] == [
         ("rename", BACKUP, "api"),
         ("update", "--restart=on-failure:3", "api"),
         ("start", "api"),
         HEALTH,
-        PAGES,
     ]
     assert_original_restored(interrupted)
     assert restart(interrupted, "api") == "on-failure"
@@ -486,7 +495,7 @@ def retired():
 def test_apply_reconciles_missing_api_with_default_policy_note(retired, monkeypatch, capsys):
     remote("apply", retired, monkeypatch)
     assert capsys.readouterr().out == NOTE + APPLIED
-    assert retired.calls[:8] == [
+    assert retired.calls[:7] == [
         ("inspect", "api"),
         ("inspect", BACKUP),
         ("inspect", BACKUP),
@@ -494,7 +503,6 @@ def test_apply_reconciles_missing_api_with_default_policy_note(retired, monkeypa
         ("update", "--restart=unless-stopped", "api"),
         ("start", "api"),
         HEALTH,
-        PAGES,
     ]
     assert_freshly_applied(retired, "unless-stopped")
     assert set(retired.containers) == {"api", BACKUP}
@@ -870,8 +878,8 @@ def test_main_rejects_invalid_live_url_without_echoing_it(monkeypatch, capsys, u
 
 
 def seams(fake):
-    def health(name):
-        pages_deploy.healthy(name, fake.probe, lambda seconds: None, attempts=3)
+    def health(name, pages=True):
+        pages_deploy.healthy(name, fake.probe, lambda seconds: None, attempts=3, pages=pages)
 
     return dict(docker=fake.docker, probe=fake.probe, create=fake.create, health=health)
 

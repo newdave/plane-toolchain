@@ -61,14 +61,17 @@ def source_label(container):
     return container["Config"].get("Labels", {}).get("terrainlink.pages.source")
 
 
-def healthy(name, probe, sleep, attempts=45):
-    """Wait for the API and the Pages route inside the container; raise when they never answer."""
+def healthy(name, probe, sleep, attempts=45, pages=True):
+    """Wait for the API, and the Pages route when pages, inside the container; raise on timeout.
+
+    The upstream original has no Pages route, so restoring it checks the API only.
+    """
     api = (
         "import urllib.request; "
         "urllib.request.urlopen('http://127.0.0.1:8000/api/instances/',timeout=3)"
     )
     # Unauthenticated dummy ids: 401/403 proves the route exists and auth is enforced.
-    pages = (
+    route = (
         "import sys, urllib.error, urllib.request\n"
         "try:\n"
         "    urllib.request.urlopen('http://127.0.0.1:8000/api/v1/workspaces/health-probe/projects/"
@@ -78,7 +81,9 @@ def healthy(name, probe, sleep, attempts=45):
         "sys.exit(1)"
     )
     for _ in range(attempts):
-        if probe("exec", name, "python", "-c", api) and probe("exec", name, "python", "-c", pages):
+        if probe("exec", name, "python", "-c", api) and (
+            not pages or probe("exec", name, "python", "-c", route)
+        ):
             return
         sleep(1)
     raise ValueError("API health check failed")
@@ -193,7 +198,7 @@ def finish_revert(name, backup, docker, probe, health):
     docker("rename", backup, name)
     probe("update", "--restart=" + policy, name)
     docker("start", name)
-    health(name)  # On failure the original stays running.
+    health(name, pages=False)  # On failure the original stays running.
     return "Original API container restored"
 
 
@@ -206,7 +211,8 @@ def revert(current, payload, docker, probe, health, now):
         if source_label(current) is None:
             return "Original API container already restored"
         docker("inspect", backup)  # Fail before any change when no rollback container exists.
-    if source_label(current) != payload["digest"]:
+    # Any source label marks our derived container, including one built from older source.
+    if source_label(current) is None:
         raise ValueError("API changed; refusing rollback")
     reverted = name + "-pages-reverted-" + str(int(now()))
     policy = restart_arg(current)  # Live (derived) policy; the backup's own inspect shows `no`.
@@ -221,7 +227,7 @@ def revert(current, payload, docker, probe, health, now):
         done.append("original")
         probe("update", "--restart=" + policy, name)
         docker("start", name)
-        health(name)
+        health(name, pages=False)
     except BaseException as error:
         try:
             if "original" in done:
@@ -283,7 +289,7 @@ def reconcile(current, name, backup, docker, probe, health, now):
     docker("rename", backup, name)
     probe("update", "--restart=" + policy, name)
     docker("start", name)
-    health(name)
+    health(name, pages=False)
 
 
 def apply(current, payload, docker, probe, create, health, now):
@@ -345,7 +351,8 @@ def deploy(payload, docker, probe, create, health, now):
     """Run one operation against the Docker host; return the operator message.
 
     docker(*args, **kw) -> bytes raises on failure; probe(*args) -> bool never raises;
-    create(name, body) raises unless created; health(name) raises unless healthy.
+    create(name, body) raises unless created; health(name, pages=True) raises unless healthy
+    (pages=False when the upstream original, which has no Pages route, is promoted).
     """
     operation = payload["operation"]
     try:
@@ -390,7 +397,7 @@ REMOTE = program(
         deploy,
     ],
     "say(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
-    "    lambda name: healthy(name, docker_ok, time.sleep), time.time))\n",
+    "    lambda name, pages=True: healthy(name, docker_ok, time.sleep, pages=pages), time.time))\n",
 )
 
 

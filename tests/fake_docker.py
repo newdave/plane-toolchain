@@ -36,7 +36,7 @@ class FakeDocker:
             "labels": dict(labels or {}),
             "running": running,
             "healthy": healthy,
-            "pages_status": 401,  # HTTP status the Pages probe URL answers with
+            "pages_status": None,  # Pages probe HTTP status; None: 401 if derived, else 404
             "health": None,  # None: no healthcheck; else a status such as "starting"
             "restart_counts": [0],  # one value consumed per inspect; last one repeats
             "restarting": False,
@@ -118,8 +118,12 @@ class FakeDocker:
             container = self.containers.get(rest[0])
             ok = bool(container and container["running"] and container["healthy"])
             if ok and "/ce-pages/" in rest[-1]:
-                # The probe script exits 0 only for 401/403.
-                ok = container.get("pages_status", 401) in (401, 403)
+                # The probe script exits 0 only for 401/403. Only a derived image (source
+                # label) serves the Pages route; the upstream original answers 404.
+                status = container.get("pages_status")
+                if status is None:
+                    status = 401 if "terrainlink.pages.source" in container["labels"] else 404
+                ok = status in (401, 403)
             return (0 if ok else 1), b""
         if command == "build":
             assert rest[0] == "-t" and rest[2] == "-"

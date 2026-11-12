@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Pages revert accepts a derived container built from older source, so an upgrade can run revert, then apply.
+- Restoring the original API (revert, reconcile) checks API health only: the upstream image has no Pages route, so the Pages probe made every revert roll back.
+
 ## [0.1.0] - 2026-11-12
 
 ### Added
