@@ -1,0 +1,64 @@
+tests/test_ce_tools.py
+  s_2913fb743b94c4::t_5440292becf5f9 27,36,41-67
+  s_2913fb743b94c4::t_fb563b786bba5b 68-69
+src/plane_toolchain/pages_backend.py
+  s_2913fb743b94c4::t_1052766213112e 131-133,135-137,139-147
+  s_2913fb743b94c4::t_1e455df2ab5156 4-5,8-9
+  s_2913fb743b94c4::t_655ddc3355a709 195-197
+  s_2913fb743b94c4::t_6622a01154eb9d 302-305,307-354
+  s_2913fb743b94c4::t_5d07d6eeec1972 34-40,43-49
+  s_2913fb743b94c4::t_35b7959861350f 71-75,91-130,134,138,148-171
+  s_2913fb743b94c4::t_eb16a02768dd48 361
+  s_2913fb743b94c4::t_5d50d133cf2a5f 306
+  s_2913fb743b94c4::t_7cf8f75e7e4712 176,178-179
+  s_2913fb743b94c4::t_fc79ce51bdfe04 209-240
+  s_2913fb743b94c4::t_8a2ea5e0013fae 10,50,172-173
+docs/extensions.md
+  s_2913fb743b94c4::t_475c08e70aa8ba 10
+  s_2913fb743b94c4::t_ba63bb99d4b3c6 16-28,30-39
+  s_2913fb743b94c4::t_21ee7467e911ae 73
+  s_2913fb743b94c4::t_e5ea38b45a1aed 29
+src/plane_toolchain/ce_tools.py
+  s_2913fb743b94c4::t_7999860c492167 69-83,87-88,90,95-103
+  s_2913fb743b94c4::t_089322168f420e 157,159,165-166
+  s_2913fb743b94c4::t_462b3cb0631eb1 177-180
+  s_d7c2df980df03a::t_a02c8d5be594f4 104-105
+tests/test_legacy_payloads.py
+  s_2913fb743b94c4::t_a6dd9f1c16d166 14-15,17-18
+tests/test_pages_backend.py
+  s_2913fb743b94c4::t_4f398b3e9954b0 139
+  s_2913fb743b94c4::t_93d9d69c0dc5a3 185
+  s_2913fb743b94c4::t_c6e1512f2dd1cb 277-358,362-515
+  s_2913fb743b94c4::t_1f8f3997bffbe4 359-361
+  s_2913fb743b94c4::t_c60af8f10f984b 516-519,525-543
+  s_2913fb743b94c4::t_e317eb20f22127 157-158,162-163
+  s_2913fb743b94c4::t_5d50d133cf2a5f 520-524
+CHANGELOG.md
+  s_2913fb743b94c4::t_baad8b5f978bb1 9-12
+AGENTS.md
+  s_2913fb743b94c4::t_8d6e8dd6a25482 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "67bb309a6d9b4fd9f95aa77205122b42b8ff6f3d",
+  "prompts": {},
+  "sessions": {
+    "s_2913fb743b94c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b7b5da91-6cd3-4516-b410-f2bad19bef49",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    },
+    "s_d7c2df980df03a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3f60d184-07b0-4679-be2b-2bb71113702f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
