@@ -1,0 +1,23 @@
+src/plane_toolchain/remote.py
+  s_ce066174a8d2c7::t_572687b9ee7919 1-31
+src/plane_toolchain/pages_deploy.py
+  s_ce066174a8d2c7::t_5a57e8801e8ed4 9-10,14,17,20-21,44-60,62-103,105-106,108-196
+tests/test_pages_deploy.py
+  s_ce066174a8d2c7::t_48097dd1e35158 268-328
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "61e9380e1be1d7695fcd97631bbd1e58ae5dc3fa",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": null
+    }
+  }
+}
