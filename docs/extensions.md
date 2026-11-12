@@ -40,7 +40,13 @@ mise run owner:plane-pages:revert
 
 A check fails when the installed source differs. The MCP helper refuses tracked or unexpected host entry points, preserves a backup and checks receipts before overwriting. The Pages helper builds a derived image from the running immutable image, preserves opaque Docker configuration and keeps the original container for rollback. It rejects auto-removal and static IP configurations requiring a specific migration. It checks backend HTTP health; verify authenticated MCP operations separately after applying.
 
-The extracted server payloads retain their original bytes, including comments, so existing deployment digests still match.
+The extracted server payloads retain their original bytes, including comments, so existing deployment digests still match, except as noted below.
+
+**PTC-13 migration note.** `ce_tools.py` changed (canonical UUIDs, SDK private-call guard, `FASTMCP_HOST`), so its payload digest changed. `pages_backend.py` is unchanged. A host with a pre-PTC-13 `ce_tools.py` receipt will report a source difference on `owner:plane-mcp-compat:check`; review, then re-apply. Receipt and backup names are unchanged, so revert still works.
+
+`ce_tools.py` is not version-pinned to the Plane SDK because the SDK lives in the hosted image. It calls private SDK methods (`relations._get`, `pages._get`, `pages._post`) and now raises a clear `RuntimeError` naming a missing method. Retest after upgrading the image. Project, work item and target IDs are canonicalised with `str(UUID(x))` (lowercase, hyphenated) before building paths.
+
+The MCP entry point binds to `FASTMCP_HOST` (bare host or address; default `0.0.0.0`, which the container needs to be reachable) and `FASTMCP_PORT` (default `8211`).
 
 Legacy `terrainlink` backup names, receipt names, image labels and backend module paths are intentionally preserved. Renaming them would break existing rollback state. Their presence is compatibility metadata, not a dependency on TerrainLink.
 
