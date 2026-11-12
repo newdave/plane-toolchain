@@ -1,0 +1,23 @@
+src/plane_toolchain/ce_tools.py
+  s_ce066174a8d2c7::t_dd27548ed14848 27-28,45
+tests/test_ce_tools.py
+  s_ce066174a8d2c7::t_495628e65aadc1 72-74,77-84
+tests/test_legacy_payloads.py
+  s_ce066174a8d2c7::t_24e52037a13442 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "40bfd5e3299f7636167e500dc9e8470c69b144ae",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
