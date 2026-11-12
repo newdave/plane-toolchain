@@ -1,6 +1,7 @@
 """Offline Plane status shared by Codex and Claude startup hooks."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -102,3 +103,25 @@ _plane_toolchain_prompt_remove
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_unreadable_file_reports_invalid_not_traceback(tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/local.env").write_bytes(b"PLANE_ENABLED=\xff\xfe\n")
+    assert plane_session.switch(tmp_path, {}) == "invalid"
+    assert "invalid" in plane_session.status(tmp_path, {})
+    assert plane_session.connection(tmp_path, {}) == {}
+
+
+def test_unreadable_file_by_permission_reports_invalid(tmp_path):
+    (tmp_path / "config").mkdir()
+    local = tmp_path / "config/local.env"
+    local.write_text("PLANE_ENABLED=true\n")
+    local.chmod(0)
+    try:
+        if os.access(local, os.R_OK):
+            pytest.skip("chmod 0 has no effect (running as root)")
+        assert plane_session.switch(tmp_path, {}) == "invalid"
+        assert plane_session.connection(tmp_path, {}) == {}
+    finally:
+        local.chmod(0o600)

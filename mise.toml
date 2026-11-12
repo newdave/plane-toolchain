@@ -2,6 +2,9 @@
 python = "3.12.12"
 node = "26"
 uv = "0.9.3"
+actionlint = "1.7.12"
+shellcheck = "0.11.0"
+"aqua:zizmorcore/zizmor" = "1.32.0"
 
 [hooks.enter]
 shell = "zsh"
@@ -15,10 +18,17 @@ script = '(( ! $+functions[_plane_toolchain_prompt_remove] )) || _plane_toolchai
 run = "uv sync --locked"
 [tasks.lint]
 run = ["uv run --locked ruff check .", "uv run --locked ruff format --check ."]
+[tasks."lint:ci"]
+run = [
+  "actionlint .github/workflows/*.yml examples/github/*.yml",
+  "zizmor --offline .github/workflows examples/github/*.yml",
+  "shellcheck scripts/*.sh",
+  "zsh -n scripts/plane-prompt.zsh",
+]
 [tasks.test]
 run = "uv run --locked pytest -q"
 [tasks.check]
-depends = ["lint", "test"]
+depends = ["lint", "lint:ci", "test"]
 [tasks."plane:enable"]
 run = "uv run --locked python -m plane_toolchain.config enable"
 [tasks."plane:disable"]

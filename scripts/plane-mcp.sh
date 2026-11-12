@@ -3,7 +3,8 @@
 set +x
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-export PLANE_ENABLED="$(python3 src/plane_toolchain/session.py status)"
+PLANE_ENABLED="$(python3 src/plane_toolchain/session.py status)"
+export PLANE_ENABLED
 case "$PLANE_ENABLED" in
   enabled) export PLANE_ENABLED=true ;;
   disabled) export PLANE_ENABLED=false ;;
@@ -28,6 +29,7 @@ if [[ -z "${PLANE_API_KEY:-}" && -f "$secrets" ]]; then
 fi
 uv run --locked python -m plane_toolchain.settings
 # mcp-remote expands headers from environment, keeping credentials out of argv.
+# shellcheck disable=SC2016  # literal ${VAR}: mcp-remote expands it, not the shell
 exec npx --yes mcp-remote@0.16.6 "$PLANE_MCP_URL" \
   --transport http-only --silent \
   --header 'Authorization:Bearer ${PLANE_API_KEY}' \
