@@ -47,6 +47,8 @@ run = "uv run --locked python -m plane_toolchain.mcp_deploy revert"
 run = "uv run --locked python -m plane_toolchain.mcp_deploy check"
 [tasks."owner:plane-pages:apply"]
 run = "uv run --locked python -m plane_toolchain.pages_deploy apply"
+[tasks."owner:plane-pages:build"]
+run = "uv run --locked python -m plane_toolchain.pages_deploy build"
 [tasks."owner:plane-pages:revert"]
 run = "uv run --locked python -m plane_toolchain.pages_deploy revert"
 [tasks."owner:plane-pages:check"]

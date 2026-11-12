@@ -94,6 +94,8 @@ class FakeDocker:
             ).encode()
         if command == "image":
             assert rest[0] == "inspect"
+            if rest[1] not in self.images:
+                return 1, b""
             return 0, json.dumps([{"RepoDigests": self.images[rest[1]]}]).encode()
         if command in ("stop", "start", "restart"):
             if rest[0] not in self.containers:
