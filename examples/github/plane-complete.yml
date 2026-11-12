@@ -18,11 +18,27 @@ concurrency:
   group: plane-complete-${{ inputs.workitem_id }}
   cancel-in-progress: false
 jobs:
+  preconditions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require trusted event, default branch and enablement
+        env:
+          PLANE_ENABLED: ${{ vars.PLANE_ENABLED }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+          DEPLOYMENT_VERIFIED: ${{ inputs.deployment_verified }}
+        run: |
+          [[ "$PLANE_ENABLED" == 'true' ]] || { echo '::error::PLANE_ENABLED is not true'; exit 1; }
+          case "$EVENT_NAME" in
+            workflow_dispatch|push|release|schedule) ;;
+            *) echo "::error::Untrusted event $EVENT_NAME; Plane writes refused"; exit 1 ;;
+          esac
+          [[ "$REF" == "$DEFAULT_REF" ]] || { echo '::error::Not the default branch'; exit 1; }
+          [[ "$DEPLOYMENT_VERIFIED" == 'true' ]] || { echo '::error::Deployment not verified'; exit 1; }
   complete:
-    if: >-
-      vars.PLANE_ENABLED == 'true' && inputs.deployment_verified &&
-      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
-      github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    needs: preconditions
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -41,10 +57,10 @@ jobs:
         run: |
           python3 -m venv .bootstrap
           .bootstrap/bin/pip install 'uv==0.9.3'
-          .bootstrap/bin/uv sync --locked
+          .bootstrap/bin/uv sync --locked --no-dev
       - name: Call Plane through MCP
         working-directory: .plane-toolchain
-        run: .bootstrap/bin/uv run --locked python examples/github/plane_event.py
+        run: .bootstrap/bin/uv run --locked --no-dev python examples/github/plane_event.py
         env:
           PLANE_ENABLED: 'true'
           PLANE_MCP_URL: ${{ vars.PLANE_MCP_URL }}

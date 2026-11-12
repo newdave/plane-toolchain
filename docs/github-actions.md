@@ -27,6 +27,12 @@ Store `PLANE_API_KEY` as an Actions secret. Use a dedicated Plane identity with 
 
 The workflows validate the toolchain revision before checkout and fetch that exact revision into `.plane-toolchain`. Dependencies come from its lockfile. They do not execute pull-request code. They grant only `contents: read` on GitHub; Plane writes use the separate Plane key.
 
+## Trusted events and failed preconditions
+
+Both write examples start with a secret-free `preconditions` job. The write job `needs:` it, so a refused run fails visibly (red, with an `::error::` message) instead of a skipped job reporting success. It fails unless `PLANE_ENABLED` is `true`, the event is allow-listed, and the ref is the default branch. The completion example also fails unless `deployment_verified` is `true`.
+
+Allowed events are `workflow_dispatch`, `push`, `release` and `schedule`. Everything else is refused, including `pull_request`, `pull_request_target`, `issue_comment`, `workflow_run` and `pull_request_review`. In a reusable workflow, `github.event_name` is the event of the calling workflow, so the allow-list checks the caller. `plane_event.py` repeats the same allow-list from `GITHUB_EVENT_NAME` and fails closed when it is missing. Jobs holding `PLANE_API_KEY` install with `uv sync --locked --no-dev`.
+
 ## Install or remove the examples
 
 From this checkout, install examples into a target checkout using paired owner tasks:
