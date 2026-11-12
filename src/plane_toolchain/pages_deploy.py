@@ -114,21 +114,31 @@ def check(current, payload, health):
     return "Pages image and API health verified"
 
 
-def restore_any(name, backup, reverted, probe):
+def restore_any(name, backup, reverted, probe, docker):
     """Best effort after failed recovery: leave exactly one started `name` container."""
     aside = reverted + "-aside"
-    if probe("inspect", name):
-        if probe("start", name):
-            return
-        if not probe("rename", name, aside):
-            return
-    for source in (reverted, backup):
-        if probe("inspect", source) and probe("rename", source, name):
+    try:
+        if probe("inspect", name):
             if probe("start", name):
                 return
-            probe("rename", name, source)
-    if probe("inspect", aside):
-        probe("rename", aside, name)
+            if not probe("rename", name, aside):
+                return
+        for source in (reverted, backup):
+            if probe("inspect", source) and probe("rename", source, name):
+                if probe("start", name):
+                    return
+                probe("rename", name, source)
+        if probe("inspect", aside):
+            probe("rename", aside, name)
+    finally:
+        # Return a parked container to its legacy name: derived -> reverted, original -> backup.
+        if probe("inspect", aside):
+            try:
+                home = reverted if source_label(json.loads(docker("inspect", aside))[0]) else backup
+                if not probe("inspect", home):
+                    probe("rename", aside, home)
+            except Exception:
+                pass
 
 
 def revert(current, payload, docker, probe, health, now):
@@ -160,7 +170,7 @@ def revert(current, payload, docker, probe, health, now):
                 docker("rename", reverted, name)
             docker("start", name)
         except Exception:
-            restore_any(name, backup, reverted, probe)
+            restore_any(name, backup, reverted, probe, docker)
             raise error  # Recovery error stays as __context__.
         raise
     return "Original API container restored; derived container retained stopped"

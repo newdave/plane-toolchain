@@ -274,6 +274,21 @@ def test_revert_recovery_step_failing_twice_still_leaves_one_running_api(applied
         deploy("revert", applied)
     running = [n for n, c in applied.containers.items() if c["running"]]
     assert running and "api" in running and len(running) == 1
+    assert not [n for n in applied.containers if n.endswith("-aside")]
+    assert BACKUP in applied.containers or not applied.containers["api"]["labels"].get(
+        "terrainlink.pages.source"
+    )
+
+
+def test_revert_parked_original_returns_to_backup_name(applied):
+    applied.containers[BACKUP]["healthy"] = False
+    # revert start fails, recovery rename fails, then the original start fails.
+    applied.fail += [("start", "api"), ("rename", "api", BACKUP), ("start", "api")]
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        deploy("revert", applied)
+    assert not [n for n in applied.containers if n.endswith("-aside")]
+    assert BACKUP in applied.containers
+    assert [n for n, c in applied.containers.items() if c["running"]] == ["api"]
 
 
 def test_revert_recovery_nothing_startable_reraises_original(applied):
