@@ -66,11 +66,11 @@ def test_private_sdk_call_guard_fails_clearly_when_method_missing():
 def test_bind_host_default_env_and_validation():
     from plane_toolchain.ce_tools import bind_host
 
-    assert bind_host({}) == "0.0.0.0"
+    assert bind_host({}) == "0.0.0.0"  # noqa: S104 - documented default
     assert bind_host({"FASTMCP_HOST": "127.0.0.1"}) == "127.0.0.1"
     assert bind_host({"FASTMCP_HOST": "mcp-host.local"}) == "mcp-host.local"
     for empty in ("", "  "):
-        assert bind_host({"FASTMCP_HOST": empty}) == "0.0.0.0"
+        assert bind_host({"FASTMCP_HOST": empty}) == "0.0.0.0"  # noqa: S104 - documented default
     for bad in ("http://x", "a b", "x/y"):
         with pytest.raises(ValueError):
             bind_host({"FASTMCP_HOST": bad})
