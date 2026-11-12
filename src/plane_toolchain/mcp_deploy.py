@@ -41,6 +41,25 @@ def rewrite(target, content):
         os.fsync(handle.fileno())
 
 
+def write_atomic(path, text):
+    """Write text next to path, fsync, then os.replace so readers see old or new, never partial."""
+    temporary = str(path) + ".tmp"
+    with open(temporary, "w") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def owned_digests(recorded):
+    """Digests of entry points this tool may overwrite: installed, plus previous if pending."""
+    digests = {recorded.get("installed")}
+    if recorded.get("pending"):
+        digests.add(recorded.get("previous"))
+    digests.discard(None)
+    return digests
+
+
 def plain_entry_point(content):
     """Return whether content is a bare upstream-style entry point (no defs or classes)."""
     try:
@@ -116,12 +135,19 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         if current != desired:
             raise ValueError("MCP compatibility entry point differs")
         return "MCP entry point verified"
-    recorded = json.loads(receipt.read_text()) if receipt.exists() else {}
+    old_receipt = receipt.read_text() if receipt.exists() else None
+    recorded = json.loads(old_receipt) if old_receipt is not None else {}
     if operation == "apply":
         if current == desired:
+            # Repair a missing, stale or pending receipt (e.g. after a killed deploy).
+            final = {"installed": sha256(desired)}
+            if backup.exists():
+                final["original"] = sha256(backup.read_bytes())
+                if recorded != final:
+                    write_atomic(receipt, json.dumps(final))
             return "MCP compatibility entry point already applied"
         if backup.exists():
-            if current != backup.read_bytes() and sha256(current) != recorded.get("installed"):
+            if current != backup.read_bytes() and sha256(current) not in owned_digests(recorded):
                 raise ValueError("Host entry point changed; preserve it and reconcile")
             if "original" in recorded and sha256(backup.read_bytes()) != recorded["original"]:
                 raise ValueError("Backup does not match the recorded original; reconcile")
@@ -142,7 +168,7 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         previous = backup.read_bytes()
         if current == previous:
             return "Original MCP entry point already restored"
-        if sha256(current) != recorded["installed"]:
+        if sha256(current) not in owned_digests(recorded):
             raise ValueError("Host entry point changed; refusing overwrite")
         content = previous
     else:
@@ -152,23 +178,44 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         def probe():
             return inspect_state(docker, data["container"])
 
+    def restore_receipt():
+        if old_receipt is not None:
+            write_atomic(receipt, old_receipt)
+        elif receipt.exists():
+            receipt.unlink()
+
     def restore():
-        """Put the previous bytes back, restart, and report whether MCP came back healthy."""
+        """Put the previous bytes and receipt back, restart; return whether MCP came back."""
         rewrite(target, current)
+        if operation == "apply":
+            restore_receipt()
         docker("restart", data["container"], check=False, stdout=subprocess.DEVNULL)
         return wait_healthy(probe, sleep)
 
+    if operation == "apply":
+        # Pending receipt first: a kill during restart or health wait stays recoverable, since
+        # revert and apply accept either the new or the previous digest while it is pending.
+        pending = {
+            "installed": sha256(content),
+            "previous": recorded.get("installed"),
+            "original": sha256(backup.read_bytes()),
+            "pending": True,
+        }
+        write_atomic(receipt, json.dumps(pending))
     # This file contains code only; Docker credentials and configuration stay untouched.
     try:
         rewrite(target, content)
     except BaseException:
         rewrite(target, current)
+        if operation == "apply":
+            restore_receipt()
         raise
     try:
         docker("restart", data["container"], stdout=subprocess.DEVNULL)
         healthy = wait_healthy(probe, sleep)
     except BaseException:
-        restore()
+        if not restore():
+            sys.stderr.write("MCP still unhealthy after rollback\n")
         raise
     if not healthy:
         if restore():
@@ -176,11 +223,9 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         raise RuntimeError(
             "MCP did not become healthy; previous entry point restored; MCP still unhealthy"
         )
-    # Receipt only after success, so a rolled-back deploy leaves the old receipt valid.
     if operation == "apply":
-        receipt.write_text(
-            json.dumps({"installed": sha256(content), "original": sha256(backup.read_bytes())})
-        )
+        final = {"installed": sha256(content), "original": sha256(backup.read_bytes())}
+        write_atomic(receipt, json.dumps(final))
     if target.read_bytes() != content:
         raise ValueError("Entry point write not verified")
     return "MCP entry point " + operation + " verified; verify authenticated MCP access separately"
@@ -193,6 +238,8 @@ REMOTE = program(
         git_tracked,
         sha256,
         rewrite,
+        write_atomic,
+        owned_digests,
         plain_entry_point,
         inspect_state,
         wait_healthy,

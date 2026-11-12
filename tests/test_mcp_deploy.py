@@ -424,3 +424,162 @@ def test_rollback_that_recovers_reports_restored_only(root):
     with pytest.raises(RuntimeError) as error:
         deploy("apply", root, fake, source=V2)
     assert str(error.value) == "MCP did not become healthy; previous entry point restored"
+
+
+# Interrupted deploys (SIGKILL, OOM, reboot) leave a pending receipt; recovery must still work.
+
+V3 = "print('v3')\n"
+
+
+def pending(installed, previous, original=ORIGINAL):
+    return json.dumps(
+        {
+            "installed": sha(installed),
+            "previous": previous,
+            "original": sha(original),
+            "pending": True,
+        }
+    )
+
+
+def watch_receipt(root, fake, source, seen):
+    receipt = root / "terrainlink-ce-receipt.json"
+    data = dict(operation="apply", directory=str(root), container="plane-mcp", source=source)
+    return mcp_deploy.deploy(
+        data,
+        fake.docker,
+        lambda path: False,
+        sleep=lambda seconds: seen.append(json.loads(receipt.read_text())),
+    )
+
+
+def test_pending_receipt_is_written_before_restart_and_final_after(root):
+    fake, _ = upgraded_host(root)
+    seen = []
+    watch_receipt(root, fake, V2, seen)
+    assert seen[0] == {
+        "installed": sha(V2.encode()),
+        "previous": sha(V1.encode()),
+        "original": sha(ORIGINAL),
+        "pending": True,
+    }
+    receipt = root / "terrainlink-ce-receipt.json"
+    assert json.loads(receipt.read_text()) == {
+        "installed": sha(V2.encode()),
+        "original": sha(ORIGINAL),
+    }
+    assert not (root / "terrainlink-ce-receipt.json.tmp").exists()
+
+
+def test_first_apply_pending_receipt_has_null_previous(root):
+    seen = []
+    watch_receipt(root, mcp_host(), DESIRED, seen)
+    assert seen[0]["previous"] is None and seen[0]["pending"] is True
+
+
+def stop_first_apply(root):
+    (root / "server.py.before-terrainlink-ce").write_bytes(ORIGINAL)
+    (root / "server.py").write_text(V1)
+    (root / "terrainlink-ce-receipt.json").write_text(pending(V1.encode(), None))
+
+
+def stop_upgrade(root, fake):
+    deploy("apply", root, fake, source=V1)
+    (root / "server.py").write_text(V2)
+    (root / "terrainlink-ce-receipt.json").write_text(pending(V2.encode(), sha(V1.encode())))
+
+
+def test_stopped_first_apply_can_revert(root):
+    stop_first_apply(root)
+    assert deploy("revert", root, mcp_host()).startswith("MCP entry point revert verified")
+    assert (root / "server.py").read_bytes() == ORIGINAL
+
+
+def test_stopped_first_apply_can_apply_again_and_repairs_receipt(root):
+    stop_first_apply(root)
+    fake = mcp_host()
+    message = deploy("apply", root, fake, source=V1)
+    assert message == "MCP compatibility entry point already applied"
+    assert json.loads((root / "terrainlink-ce-receipt.json").read_text()) == {
+        "installed": sha(V1.encode()),
+        "original": sha(ORIGINAL),
+    }
+    assert deploy("apply", root, fake, source=V2).startswith("MCP entry point apply verified")
+
+
+def test_stopped_first_apply_missing_receipt_is_repaired(root):
+    stop_first_apply(root)
+    (root / "terrainlink-ce-receipt.json").unlink()
+    deploy("apply", root, mcp_host(), source=V1)
+    assert (root / "terrainlink-ce-receipt.json").exists()
+
+
+def test_stopped_upgrade_can_revert(root):
+    fake = mcp_host()
+    stop_upgrade(root, fake)
+    assert deploy("revert", root, fake).startswith("MCP entry point revert verified")
+    assert (root / "server.py").read_bytes() == ORIGINAL
+
+
+def test_stopped_upgrade_can_apply_next_version(root):
+    fake = mcp_host()
+    stop_upgrade(root, fake)
+    assert deploy("apply", root, fake, source=V3).startswith("MCP entry point apply verified")
+    assert (root / "server.py").read_text() == V3
+
+
+def test_stopped_upgrade_before_rewrite_still_recovers(root):
+    # File still v1 while the pending receipt names v2: previous digest is accepted.
+    fake = mcp_host()
+    stop_upgrade(root, fake)
+    (root / "server.py").write_text(V1)
+    assert deploy("apply", root, fake, source=V3).startswith("MCP entry point apply verified")
+
+
+def test_pending_receipt_does_not_accept_foreign_file(root):
+    fake = mcp_host()
+    stop_upgrade(root, fake)
+    (root / "server.py").write_text("print('host edit')\n")
+    with pytest.raises(ValueError, match="refusing overwrite"):
+        deploy("revert", root, fake)
+    with pytest.raises(ValueError, match="preserve it and reconcile"):
+        deploy("apply", root, fake, source=V3)
+
+
+def interrupt(seconds):
+    raise KeyboardInterrupt
+
+
+def interrupted(root, fake, source):
+    data = dict(operation="apply", directory=str(root), container="plane-mcp", source=source)
+    with pytest.raises(KeyboardInterrupt):
+        mcp_deploy.deploy(data, fake.docker, lambda path: False, sleep=interrupt)
+
+
+def test_interrupt_during_health_wait_rolls_back_receipt_and_bytes(root):
+    fake, receipt = upgraded_host(root)
+    interrupted(root, fake, V2)
+    assert (root / "server.py").read_text() == V1
+    assert (root / "terrainlink-ce-receipt.json").read_bytes() == receipt
+
+
+def test_interrupt_on_first_apply_removes_pending_receipt(root):
+    interrupted(root, mcp_host(), V1)
+    assert (root / "server.py").read_bytes() == ORIGINAL
+    assert not (root / "terrainlink-ce-receipt.json").exists()
+
+
+def test_interrupt_with_unhealthy_rollback_notes_on_stderr(root, capsys):
+    fake = mcp_host()
+    fake.containers["plane-mcp"]["health"] = "starting"
+    calls = []
+
+    def sleep(seconds):
+        calls.append(seconds)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+
+    data = dict(operation="apply", directory=str(root), container="plane-mcp", source=V1)
+    with pytest.raises(KeyboardInterrupt):
+        mcp_deploy.deploy(data, fake.docker, lambda path: False, sleep=sleep)
+    assert "MCP still unhealthy after rollback" in capsys.readouterr().err
