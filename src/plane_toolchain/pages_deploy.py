@@ -169,9 +169,39 @@ def restore_any(name, backup, reverted, probe, docker, policy):
                 pass
 
 
+def finish_revert(name, backup, docker, probe, health):
+    """Complete a revert killed after `rename name -> reverted`: promote the original."""
+    held = json.loads(docker("inspect", backup))[0]  # Raises when the backup is missing.
+    if source_label(held) is not None:
+        docker("inspect", name)  # A labelled backup is a derived: not ours to promote; raise.
+    prefix = name + "-pages-reverted-"
+    try:  # Optional lookup: a failing `ps` falls through to the default policy.
+        listing = docker("ps", "-a", "--filter", "name=" + prefix, "--format", "{{.Names}}")
+    except subprocess.CalledProcessError:
+        listing = b""
+    parked = sorted(n for n in listing.decode().split() if n.startswith(prefix))
+    # Only the newest plain `<prefix><digits>` is the live derived; older ones may be stale.
+    plain = [n for n in parked if n[len(prefix) :].isdigit()]
+    policy = None
+    if plain:
+        candidate = restart_arg(json.loads(docker("inspect", plain[-1]))[0])
+        policy = None if candidate == "no" else candidate
+    if policy is None:
+        policy = held_policy(held)
+    for parked_name in parked:
+        probe("update", "--restart=no", parked_name)  # Never auto-start beside the API.
+    docker("rename", backup, name)
+    probe("update", "--restart=" + policy, name)
+    docker("start", name)
+    health(name)  # On failure the original stays running.
+    return "Original API container restored"
+
+
 def revert(current, payload, docker, probe, health, now):
     name = payload["container"]
     backup = backup_name(name)
+    if current is None:
+        return finish_revert(name, backup, docker, probe, health)
     if not probe("inspect", backup):
         if source_label(current) is None:
             return "Original API container already restored"
@@ -217,6 +247,20 @@ def failed_name(name, probe, now):
     return failed
 
 
+def held_policy(held):
+    """Policy for a promoted rollback container.
+
+    A policy other than `no` predates the retire update and is the live one; otherwise fall
+    back to Plane's compose default.
+    """
+    policy = restart_arg(held)
+    if policy == "no":
+        policy = "unless-stopped"
+        # Said at once: a later failure in this run must not hide the change.
+        say("Restart policy set to unless-stopped; adjust if your deployment differs")
+    return policy
+
+
 def reconcile(current, name, backup, docker, probe, health, now):
     """Undo a run that died mid-swap: return the original as running `name`, or refuse.
 
@@ -227,13 +271,7 @@ def reconcile(current, name, backup, docker, probe, health, now):
     if source_label(held) is not None:
         raise refuse
     if current is None:
-        # Died after the retire rename. A backup policy other than `no` predates the retire
-        # update and is the live one; otherwise fall back to Plane's compose default.
-        policy = restart_arg(held)
-        if policy == "no":
-            policy = "unless-stopped"
-            # Said at once: a later failure in this run must not hide the change.
-            say("Restart policy set to unless-stopped; adjust if your deployment differs")
+        policy = held_policy(held)
     elif source_label(current) is not None and not current["State"].get("Running"):
         # Derived created but never started: retire it as a failed apply.
         policy = restart_arg(current)  # Copied from the original before its retirement.
@@ -313,8 +351,10 @@ def deploy(payload, docker, probe, create, health, now):
     try:
         current = json.loads(docker("inspect", payload["container"]))[0]
     except subprocess.CalledProcessError:
-        # A missing API with a rollback container is a half-finished apply; apply reconciles.
-        if operation != "apply" or not probe("inspect", backup_name(payload["container"])):
+        # A missing API with a rollback container is a half-finished apply or revert.
+        if operation not in ("apply", "revert") or not probe(
+            "inspect", backup_name(payload["container"])
+        ):
             raise
         current = None
     if operation == "check":
@@ -338,7 +378,17 @@ REMOTE = program(
         build_context,
         docker_create,
     ]
-    + [check, restore_any, revert, failed_name, reconcile, apply, deploy],
+    + [
+        check,
+        restore_any,
+        held_policy,
+        finish_revert,
+        revert,
+        failed_name,
+        reconcile,
+        apply,
+        deploy,
+    ],
     "say(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
     "    lambda name: healthy(name, docker_ok, time.sleep), time.time))\n",
 )
