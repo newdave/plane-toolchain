@@ -51,8 +51,8 @@ short outage during the rename is acceptable (owner decision).
 - Plane-side work (validation, rewrites, cache) runs inside the API container through
   `docker exec <api> python manage.py shell`, so it uses Plane's own models and settings.
   The shipped Django snippet is fixed source in this repo, like `pages_backend.py`.
-- Saltbox: reuse the PTC-23 detection. Stopping and starting services on a Saltbox host must
-  go through the same path PTC-23 chooses; nothing here may change container definitions.
+- Saltbox: nothing here may change container definitions. Services are stopped and started
+  with `docker stop` and `docker start` (see "Builder check resolutions", item 1).
 
 ## What the research found (Plane CE v1.4.3)
 
@@ -63,12 +63,11 @@ short outage during the rename is acceptable (owner decision).
   `^[a-zA-Z0-9_-]+$`.
 - Foreign keys and `last_workspace_id` use UUIDs. Asset keys are `f"{workspace.id}/..."`
   (`app/views/asset/v2.py:390,619,845`). No files move.
-- The slug is stored as text in:
-  - Work item and Page `description_html`, and in the editor document
-    `description_binary` (`db/models/issue.py:140`, `db/models/page.py:33`). Work item
-    embeds store `workspace_identifier="<slug>"`.
-  - Comment HTML.
-  - Notification `data` JSON (`workspace_slug`, `bgtasks/notification_task.py:421,496,549`).
+- The slug is stored as text in work item and Page `description_html`, and in the editor
+  document `description_binary` (`db/models/issue.py:140`, `db/models/page.py:33`). Work
+  item embeds store `workspace_identifier="<slug>"`.
+- It is also stored in comment HTML, and in notification `data` JSON (`workspace_slug`,
+  `bgtasks/notification_task.py:421,496,549`).
 - Cache keys include the request path (`utils/cache.py:14-40`). Cached payloads of
   `/api/workspaces/` and `/api/users/me/workspaces/` contain the slug.
 - Routes resolve the workspace by slug only. There is no redirect.
@@ -158,7 +157,7 @@ Everything else stays unchanged, including other hosts and slugs that start with
 - How the Django snippet is shipped: a fixed module piped to `manage.py shell`, following
   the `pages_backend.py` pattern.
 - Receipt layout and its file name. It needs a neutral name (see ADR 0001).
-- An optional reverse-proxy redirect from `/OLD/*` to `/NEW/*`: documented as a manual step
+- An optional reverse-proxy redirect from `/OLD/...` to `/NEW/...`: documented as a manual step
   in `docs/extensions.md`, not automated. *My call.*
 - Tests: FakeDocker and a fake database or ORM layer for check, apply, revert and a kill at
   every apply step; matcher unit tests including prefix collisions and other hosts.
