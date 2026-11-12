@@ -1,0 +1,31 @@
+src/plane_toolchain/mcp_deploy.py
+  s_ce066174a8d2c7::t_e2199d3fb0ffbb 226
+  s_ce066174a8d2c7::t_48285f7daa4cc1 13
+  s_ce066174a8d2c7::t_7d1d057af9dcc3 256,262
+  s_ce066174a8d2c7::t_b4ccf5a30e0ce5 273
+src/plane_toolchain/remote.py
+  s_ce066174a8d2c7::t_b49b36fb947ec5 17-19
+  s_ce066174a8d2c7::t_873984816adf89 8-9,11-16,43-52,55-56,58-79
+tests/test_mcp_deploy.py
+  s_ce066174a8d2c7::t_36319730248b28 180-193,201-244
+  s_ce066174a8d2c7::t_623ee806f1cd8e 245-246
+tests/test_remote.py
+  s_ce066174a8d2c7::t_1d9616b202e12c 51-96
+  s_ce066174a8d2c7::t_607ca870b86658 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "9adcadf4400358240b1b10129a771b97064785a1",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
