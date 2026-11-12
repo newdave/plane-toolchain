@@ -1,0 +1,31 @@
+tests/test_config.py
+  s_ce066174a8d2c7::t_af73a6f86f9f25 5,75
+  s_ce066174a8d2c7::t_a957c5c567c95c 29-74
+tests/test_session.py
+  s_ce066174a8d2c7::t_af73a6f86f9f25 4,122
+  s_ce066174a8d2c7::t_a957c5c567c95c 106-121,123-126
+src/plane_toolchain/config.py
+  s_ce066174a8d2c7::t_44299cab62ed2d 25-26
+  s_ce066174a8d2c7::t_17ebe05f917adb 29-38
+  s_ce066174a8d2c7::t_78f4c6251b5817 10-11
+src/plane_toolchain/session.py
+  s_ce066174a8d2c7::t_c87234ff65f2fc 42-46
+  s_ce066174a8d2c7::t_42daf89f5931c8 52-56
+  s_ce066174a8d2c7::t_26244b44c7ffb6 15-25,27-30,36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "40b1360c1b02359dfa5a1c677722bbc3d78d3798",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
