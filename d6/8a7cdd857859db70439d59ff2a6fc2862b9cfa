@@ -1,0 +1,23 @@
+src/plane_toolchain/config.py
+  s_ce066174a8d2c7::t_d25e753f5ca96c 19-22,48-53
+tests/test_config.py
+  s_ce066174a8d2c7::t_d25e753f5ca96c 3-4,75-83
+tests/test_session.py
+  s_ce066174a8d2c7::t_d25e753f5ca96c 116,122-125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "d68a7cdd857859db70439d59ff2a6fc2862b9cfa",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
