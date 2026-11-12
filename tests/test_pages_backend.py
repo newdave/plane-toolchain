@@ -84,16 +84,13 @@ def _pages_view(monkeypatch, missing_project=False):
     class Http404(Exception):
         pass
 
+    class DjangoValidationError(Exception):
+        pass
+
     def module(name, **attrs):
         mod = types.ModuleType(name)
         mod.__dict__.update(attrs)
         monkeypatch.setitem(sys.modules, name, mod)
-
-    def get_object_or_404(model, **kwargs):
-        calls["lookup"] = kwargs
-        if missing_project:
-            raise Http404
-        return types.SimpleNamespace(guest_view_all_features=True)
 
     class Rows:
         def filter(self, *args, **kwargs):
@@ -108,6 +105,19 @@ def _pages_view(monkeypatch, missing_project=False):
         def values(self, *fields):
             calls["values"] = fields
             return [{"id": "p1"}]
+
+    class Project:
+        pass
+
+    def get_object_or_404(source, **kwargs):
+        calls.setdefault("lookups", []).append((source, kwargs))
+        if kwargs["id"] == "bad":
+            raise DjangoValidationError
+        if source is Project:
+            if missing_project:
+                raise Http404
+            return types.SimpleNamespace(guest_view_all_features=True)
+        return "page-row"
 
     class Q:
         def __init__(self, *args, **kwargs):
@@ -131,6 +141,10 @@ def _pages_view(monkeypatch, missing_project=False):
     class PageViewSet:
         permission_classes = [Permission]
 
+    class DetailSerializer:
+        def __init__(self, instance, many=False):
+            self.data = ("detail", instance)
+
     for name in (
         "requests",
         "django",
@@ -146,20 +160,25 @@ def _pages_view(monkeypatch, missing_project=False):
     module("django.db", transaction=None)
     module("django.urls", path=lambda *args, **kwargs: (args, kwargs))
     module("django.shortcuts", get_object_or_404=get_object_or_404)
+    module("django.http", Http404=Http404)
+    module(
+        "django.core",
+    )
+    module("django.core.exceptions", ValidationError=DjangoValidationError)
     module("django.db.models", Q=Q)
     module("plane.api.views.base", BaseAPIView=BaseAPIView)
     module("plane.app.permissions", ProjectPagePermission=Permission)
     module(
         "plane.app.serializers",
         PageBinaryUpdateSerializer=None,
-        PageDetailSerializer=None,
+        PageDetailSerializer=DetailSerializer,
         PageSerializer=None,
     )
     module("plane.app.views.page.base", PageViewSet=PageViewSet)
     module(
         "plane.db.models",
         Page=types.SimpleNamespace(objects=Rows()),
-        Project=object,
+        Project=Project,
         ProjectMember=types.SimpleNamespace(objects=Members()),
     )
     module("rest_framework.exceptions", APIException=Exception, ValidationError=ValueError)
@@ -178,17 +197,13 @@ def test_missing_or_archived_project_is_404_not_500(monkeypatch):
     view, calls, http404 = _pages_view(monkeypatch, missing_project=True)
     with pytest.raises(http404):
         view.get(view.request, "w", "x")
-    assert calls["lookup"]["archived_at__isnull"] is True
+    assert calls["lookups"][0][1]["archived_at__isnull"] is True
 
 
-def test_list_returns_light_fields_without_document_bodies(monkeypatch):
-    from plane_toolchain import pages_backend
-
+def test_list_requests_light_fields_and_returns_them_unchanged(monkeypatch):
     view, calls, _ = _pages_view(monkeypatch)
     response = view.get(view.request, "w", "x")
-    assert response.data == [{"id": "p1"}]
-    assert calls["values"] == pages_backend.LIST_FIELDS
-    assert set(pages_backend.LIST_FIELDS) >= {
+    assert calls["values"] == (
         "id",
         "name",
         "access",
@@ -198,5 +213,25 @@ def test_list_returns_light_fields_without_document_bodies(monkeypatch):
         "archived_at",
         "is_locked",
         "parent",
-    }
-    assert not [f for f in pages_backend.LIST_FIELDS if f.startswith("description")]
+    )
+    assert not [f for f in calls["values"] if f.startswith("description")]
+    assert response.data == [{"id": "p1"}]
+
+
+def test_retrieve_keeps_full_detail_serializer(monkeypatch):
+    view, calls, _ = _pages_view(monkeypatch)
+    response = view.get(view.request, "w", "x", page_id="y")
+    assert response.data == ("detail", "page-row")
+    assert "values" not in calls
+
+
+@pytest.mark.parametrize("bad", ["project", "page"])
+def test_malformed_ids_are_404_not_500(monkeypatch, bad):
+    view, _, http404 = _pages_view(monkeypatch)
+    if bad == "project":
+        view.kwargs["project_id"] = "bad"
+        with pytest.raises(http404):
+            view.get(view.request, "w", "bad")
+    else:
+        with pytest.raises(http404):
+            view.get(view.request, "w", "x", page_id="bad")

@@ -55,6 +55,8 @@ def routes():
 
     import requests
     from django.db import transaction
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    from django.http import Http404
     from django.shortcuts import get_object_or_404
     from django.urls import path
     from plane.api.views.base import BaseAPIView
@@ -70,14 +72,19 @@ def routes():
     from rest_framework.permissions import IsAuthenticated
     from rest_framework.response import Response
 
+    def found(source, **lookup):
+        """404 for absent rows and malformed ids; never a 500."""
+        try:
+            return get_object_or_404(source, **lookup)
+        except (DjangoValidationError, ValueError):
+            raise Http404 from None
+
     class Pages(BaseAPIView):
         permission_classes = [IsAuthenticated, ProjectPagePermission]
 
         def visible(self):
             slug, project_id = self.kwargs["slug"], self.kwargs["project_id"]
-            project = get_object_or_404(
-                Project, id=project_id, workspace__slug=slug, archived_at__isnull=True
-            )
+            project = found(Project, id=project_id, workspace__slug=slug, archived_at__isnull=True)
             guest = ProjectMember.objects.filter(
                 project=project, member=self.request.user, is_active=True, role=5
             ).exists()
@@ -96,7 +103,7 @@ def routes():
         def get(self, request, slug, project_id, page_id=None):
             rows = self.visible()
             if page_id:
-                return Response(PageDetailSerializer(get_object_or_404(rows, id=page_id)).data)
+                return Response(PageDetailSerializer(found(rows, id=page_id)).data)
             # Bound the explicit CE contract; no silent truncation or inferred cursor.
             rows = list(rows.values(*LIST_FIELDS)[:1001])
             if len(rows) > 1000:
