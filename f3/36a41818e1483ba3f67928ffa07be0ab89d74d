@@ -1,0 +1,24 @@
+src/plane_toolchain/mcp_deploy.py
+  s_ce066174a8d2c7::t_b3d8e0153c23b4 16-17
+src/plane_toolchain/remote.py
+  s_ce066174a8d2c7::t_f47845fce1c96a 25,27
+  s_ce066174a8d2c7::t_b3d8e0153c23b4 24,26
+tests/test_github_examples.py
+  s_ce066174a8d2c7::t_b3d8e0153c23b4 64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "f336a41818e1483ba3f67928ffa07be0ab89d74d",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
