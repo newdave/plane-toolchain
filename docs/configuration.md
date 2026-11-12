@@ -16,6 +16,8 @@ Inject these values into the process environment using your secret manager or CI
 
 The client needs the hosted MCP endpoint, not the Plane web URL. HTTP is allowed only for loopback development. Keys are never accepted in URL query strings or command arguments.
 
+The bridge reads the non-secret values (`PLANE_ENABLED`, `PLANE_MCP_URL`, `PLANE_WORKSPACE`, `PLANE_PROJECT`) from ignored `config/local.env` as literal text; exported values take precedence. If `PLANE_API_KEY` is not exported, the bridge decrypts it from optional SOPS-encrypted `config/plane.enc.env` and exports only that value to `mcp-remote`. Create it in the SOPS editor, adding a `PLANE_API_KEY=` line: `sops --age "$(age-keygen -y "$SOPS_AGE_KEY_FILE")" config/plane.enc.env`.
+
 `.env.example` contains fictional non-secret examples. It is not automatically sourced. Do not copy a real key into it, `config/local.env`, a task argument or a shell command. Use your existing encrypted environment loader. This repository does not create credentials or read another project's secret files.
 
 ## Enable and disable
