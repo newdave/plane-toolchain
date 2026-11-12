@@ -1,0 +1,24 @@
+tests/test_pages_deploy.py
+  s_ce066174a8d2c7::t_e20c37354e76c1 283,325-348
+  s_ce066174a8d2c7::t_329539f2f43408 349-350
+tests/fake_docker.py
+  s_ce066174a8d2c7::t_6694fb899577bb 6,90-91,93
+src/plane_toolchain/pages_deploy.py
+  s_ce066174a8d2c7::t_e20c37354e76c1 178-184,186-188,191-192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "b5e72ff1fb7356c3a99a625607b70e5639655bf4",
+  "prompts": {},
+  "sessions": {
+    "s_ce066174a8d2c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99d9474a-f044-4492-826e-716db949af6c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
