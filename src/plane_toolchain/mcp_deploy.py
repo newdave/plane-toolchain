@@ -31,7 +31,8 @@ def rewrite(target, content):
     """Overwrite target in place so the bind-mounted inode survives; flush and fsync.
 
     Not atomic: a crash between truncate and fsync leaves a partial file. The backup
-    (`server.py.before-terrainlink-ce`) then holds the recovery copy; restore it by hand.
+    (`server.py.before-terrainlink-ce`) holds the upstream original, not the previous
+    install: restore it by hand, or re-apply.
     """
     with open(target, "r+b") as handle:
         handle.truncate(0)
@@ -65,8 +66,13 @@ def inspect_state(docker, container):
     )
 
 
-def wait_healthy(probe, sleep, attempts=45):
-    """Poll until running, not restarting, healthy (if checked) and stable twice in a row."""
+def wait_healthy(probe, sleep, attempts=45, stable=5):
+    """Poll until running, not restarting, healthy and stable; True on success.
+
+    With a healthcheck, two consecutive healthy probes pass. Without one, good probes
+    must span `stable` seconds. A slow healthcheck (long interval or start_period) may
+    need more attempts than the default 45.
+    """
     baseline = None
     good = 0
     for attempt in range(attempts):
@@ -83,7 +89,7 @@ def wait_healthy(probe, sleep, attempts=45):
             return False
         ok = running and not restarting and health in (None, "healthy")
         good = good + 1 if ok else 0
-        if good >= 2:
+        if good >= (2 if health else stable + 1):
             return True
     return False
 
@@ -106,11 +112,11 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
     operation = data["operation"]
     desired = data["source"].encode()
     compile(desired, str(target), "exec")
-    recorded = json.loads(receipt.read_text()) if receipt.exists() else {}
     if operation == "check":
         if current != desired:
             raise ValueError("MCP compatibility entry point differs")
         return "MCP entry point verified"
+    recorded = json.loads(receipt.read_text()) if receipt.exists() else {}
     if operation == "apply":
         if current == desired:
             return "MCP compatibility entry point already applied"
@@ -141,18 +147,16 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         content = previous
     else:
         raise ValueError("Expected apply, revert or check")
-    if operation == "apply":
-        receipt.write_text(
-            json.dumps({"installed": sha256(content), "original": sha256(backup.read_bytes())})
-        )
     if probe is None:
 
         def probe():
             return inspect_state(docker, data["container"])
 
     def restore():
+        """Put the previous bytes back, restart, and report whether MCP came back healthy."""
         rewrite(target, current)
         docker("restart", data["container"], check=False, stdout=subprocess.DEVNULL)
+        return wait_healthy(probe, sleep)
 
     # This file contains code only; Docker credentials and configuration stay untouched.
     try:
@@ -167,8 +171,16 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         restore()
         raise
     if not healthy:
-        restore()
-        raise RuntimeError("MCP did not become healthy; previous entry point restored")
+        if restore():
+            raise RuntimeError("MCP did not become healthy; previous entry point restored")
+        raise RuntimeError(
+            "MCP did not become healthy; previous entry point restored; MCP still unhealthy"
+        )
+    # Receipt only after success, so a rolled-back deploy leaves the old receipt valid.
+    if operation == "apply":
+        receipt.write_text(
+            json.dumps({"installed": sha256(content), "original": sha256(backup.read_bytes())})
+        )
     if target.read_bytes() != content:
         raise ValueError("Entry point write not verified")
     return "MCP entry point " + operation + " verified; verify authenticated MCP access separately"

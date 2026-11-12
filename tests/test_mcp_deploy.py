@@ -54,7 +54,10 @@ def test_apply_backs_up_original_writes_receipt_and_restarts(root, monkeypatch, 
     assert backup.stat().st_mode & 0o777 == 0o640
     receipt = json.loads((root / "terrainlink-ce-receipt.json").read_text())
     assert receipt == {"installed": sha(DESIRED.encode()), "original": sha(ORIGINAL)}
-    assert fake.calls == [git_call(root), RESTART, INSPECT, ("sleep", 1), INSPECT]
+    expected = [git_call(root), RESTART, INSPECT]
+    for _ in range(5):
+        expected += [("sleep", 1), INSPECT]
+    assert fake.calls == expected
 
 
 def test_apply_is_idempotent(root, monkeypatch, capsys):
@@ -102,10 +105,10 @@ def test_apply_restart_failure_restores_previous_bytes(root, monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         remote("apply", root, fake, monkeypatch)
     assert (root / "server.py").read_bytes() == ORIGINAL
-    assert fake.calls == [git_call(root), RESTART, RESTART]
-    # Current behaviour: backup and receipt remain after a failed apply.
+    assert fake.calls[:3] == [git_call(root), RESTART, RESTART]
+    # The backup remains after a failed first apply; no receipt was written.
     assert (root / "server.py.before-terrainlink-ce").exists()
-    assert (root / "terrainlink-ce-receipt.json").exists()
+    assert not (root / "terrainlink-ce-receipt.json").exists()
 
 
 def test_revert_restores_original(root, monkeypatch, capsys):
@@ -116,7 +119,7 @@ def test_revert_restores_original(root, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out == "MCP entry point revert verified; verify authenticated MCP access separately\n"
     assert (root / "server.py").read_bytes() == ORIGINAL
-    assert RESTART in fake.calls[-5:]
+    assert RESTART in fake.calls
     remote("revert", root, fake, monkeypatch)
     assert capsys.readouterr().out == "Original MCP entry point already restored\n"
 
@@ -226,7 +229,7 @@ def test_seam_apply_revert_and_restart_rollback(root):
     with pytest.raises(subprocess.CalledProcessError):
         deploy("revert", root, fake)
     assert (root / "server.py").read_text() == DESIRED
-    assert fake.calls[-2:] == [RESTART, RESTART]
+    assert fake.calls.count(RESTART) >= 2
     assert deploy("revert", root, fake).startswith("MCP entry point revert verified")
     assert (root / "server.py").read_bytes() == ORIGINAL
 
@@ -243,22 +246,25 @@ def test_apply_timeout_restores_backup_bytes_and_inode(root, monkeypatch):
     assert "OPAQUE_SECRET" not in str(error.value)
     assert (root / "server.py").read_bytes() == ORIGINAL
     assert (root / "server.py").stat().st_ino == inode
-    assert fake.calls.count(INSPECT) == 45
-    assert fake.calls.count("nap") >= 44
-    assert fake.calls[-1] == RESTART and fake.calls.count(RESTART) == 2
+    assert fake.calls.count(INSPECT) == 90  # 45 before and 45 after the rollback restart
+    assert fake.calls.count(RESTART) == 2
+    assert "still unhealthy" in str(error.value)
     # Legacy receipt names survive a rolled-back apply.
     assert (root / "server.py.before-terrainlink-ce").read_bytes() == ORIGINAL
-    assert (root / "terrainlink-ce-receipt.json").exists()
+    assert not (root / "terrainlink-ce-receipt.json").exists()
 
 
 def test_apply_crash_loop_rolls_back(root):
+    inode = (root / "server.py").stat().st_ino
     fake = mcp_host()
     fake.containers["plane-mcp"]["restart_counts"] = [0, 1, 2, 3]
     with pytest.raises(RuntimeError, match="did not become healthy"):
         deploy("apply", root, fake)
     assert (root / "server.py").read_bytes() == ORIGINAL
-    assert fake.calls.count(INSPECT) < 45
-    assert fake.calls[-1] == RESTART
+    assert (root / "server.py").stat().st_ino == inode
+    assert fake.calls.count(INSPECT) < 90
+    assert fake.calls.count(RESTART) == 2
+    assert not (root / "terrainlink-ce-receipt.json").exists()
 
 
 def test_restarting_container_is_not_healthy(root):
@@ -354,3 +360,67 @@ def test_apply_refuses_backup_that_differs_from_recorded_original(root):
     (root / "server.py.before-terrainlink-ce").write_bytes(b"tampered\n")
     with pytest.raises(ValueError, match="Backup does not match"):
         deploy("apply", root, fake, source="print('newer')\n")
+
+
+V1 = "print('v1')\n"
+V2 = "print('v2')\n"
+
+
+def upgraded_host(root):
+    fake = mcp_host()
+    deploy("apply", root, fake, source=V1)
+    return fake, (root / "terrainlink-ce-receipt.json").read_bytes()
+
+
+def test_failed_upgrade_keeps_receipt_so_revert_and_reapply_work(root):
+    fake, receipt = upgraded_host(root)
+    fake.containers["plane-mcp"]["health"] = "starting"
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        deploy("apply", root, fake, source=V2)
+    assert (root / "server.py").read_text() == V1
+    assert (root / "terrainlink-ce-receipt.json").read_bytes() == receipt
+    fake.containers["plane-mcp"]["health"] = "healthy"
+    # Revert works from the rolled-back state...
+    assert deploy("revert", root, fake).startswith("MCP entry point revert verified")
+    assert (root / "server.py").read_bytes() == ORIGINAL
+    # ...and re-applying v2 succeeds, then records the new receipt.
+    assert deploy("apply", root, fake, source=V2).startswith("MCP entry point apply verified")
+    new = json.loads((root / "terrainlink-ce-receipt.json").read_text())
+    assert new["installed"] == sha(V2.encode())
+
+
+def test_failed_upgrade_then_reapply_without_revert(root):
+    fake, receipt = upgraded_host(root)
+    fake.containers["plane-mcp"]["health"] = "starting"
+    with pytest.raises(RuntimeError):
+        deploy("apply", root, fake, source=V2)
+    fake.containers["plane-mcp"]["health"] = "healthy"
+    assert deploy("apply", root, fake, source=V2).startswith("MCP entry point apply verified")
+
+
+def test_failed_upgrade_write_failure_keeps_receipt(root, monkeypatch):
+    fake, receipt = upgraded_host(root)
+    monkeypatch.setattr(mcp_deploy.os, "fsync", lambda fd: (_ for _ in ()).throw(OSError("disk")))
+    with pytest.raises(OSError):
+        deploy("apply", root, fake, source=V2)
+    assert (root / "terrainlink-ce-receipt.json").read_bytes() == receipt
+
+
+def test_check_ignores_corrupt_receipt(root):
+    (root / "server.py").write_text(DESIRED)
+    (root / "terrainlink-ce-receipt.json").write_text("not json")
+    assert deploy("check", root, mcp_host()) == "MCP entry point verified"
+
+
+def test_old_format_receipt_without_original_still_works(root):
+    fake, _ = upgraded_host(root)
+    (root / "terrainlink-ce-receipt.json").write_text(json.dumps({"installed": sha(V1.encode())}))
+    assert deploy("apply", root, fake, source=V2).startswith("MCP entry point apply verified")
+
+
+def test_rollback_that_recovers_reports_restored_only(root):
+    fake, _ = upgraded_host(root)
+    fake.containers["plane-mcp"]["restart_counts"] = [0, 1, 1]
+    with pytest.raises(RuntimeError) as error:
+        deploy("apply", root, fake, source=V2)
+    assert str(error.value) == "MCP did not become healthy; previous entry point restored"
