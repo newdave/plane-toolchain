@@ -114,18 +114,65 @@ def check(current, payload, health):
     return "Pages image and API health verified"
 
 
-def revert(current, payload, docker, health, now):
+def restore_any(name, backup, reverted, probe, docker):
+    """Best effort after failed recovery: leave exactly one started `name` container."""
+    aside = reverted + "-aside"
+    try:
+        if probe("inspect", name):
+            if probe("start", name):
+                return
+            if not probe("rename", name, aside):
+                return
+        for source in (reverted, backup):
+            if probe("inspect", source) and probe("rename", source, name):
+                if probe("start", name):
+                    return
+                probe("rename", name, source)
+        if probe("inspect", aside):
+            probe("rename", aside, name)
+    finally:
+        # Return a parked container to its legacy name: derived -> reverted, original -> backup.
+        if probe("inspect", aside):
+            try:
+                home = reverted if source_label(json.loads(docker("inspect", aside))[0]) else backup
+                if not probe("inspect", home):
+                    probe("rename", aside, home)
+            except Exception:  # noqa: S110 - best effort; the original error is re-raised
+                pass
+
+
+def revert(current, payload, docker, probe, health, now):
     name = payload["container"]
     backup = backup_name(name)
-    docker("inspect", backup)  # Fail before any change when no rollback container exists.
+    if not probe("inspect", backup):
+        if source_label(current) is None:
+            return "Original API container already restored"
+        docker("inspect", backup)  # Fail before any change when no rollback container exists.
     if source_label(current) != payload["digest"]:
         raise ValueError("API changed; refusing rollback")
-    # PTC-5: no recovery when a step after stop fails.
-    docker("stop", name)
-    docker("rename", name, name + "-pages-reverted-" + str(int(now())))
-    docker("rename", backup, name)
-    docker("start", name)
-    health(name)
+    reverted = name + "-pages-reverted-" + str(int(now()))
+    done = []  # Completed swap steps, so recovery undoes only what happened.
+    try:
+        done.append("stop")
+        docker("stop", name)
+        docker("rename", name, reverted)
+        done.append("derived")
+        docker("rename", backup, name)
+        done.append("original")
+        docker("start", name)
+        health(name)
+    except BaseException as error:
+        try:
+            if "original" in done:
+                docker("stop", name)
+                docker("rename", name, backup)
+            if "derived" in done:
+                docker("rename", reverted, name)
+            docker("start", name)
+        except Exception:
+            restore_any(name, backup, reverted, probe, docker)
+            raise error  # Recovery error stays as __context__.
+        raise
     return "Original API container restored; derived container retained stopped"
 
 
@@ -181,7 +228,7 @@ def deploy(payload, docker, probe, create, health, now):
     if operation == "check":
         return check(current, payload, health)
     if operation == "revert":
-        return revert(current, payload, docker, health, now)
+        return revert(current, payload, docker, probe, health, now)
     if operation != "apply":
         raise ValueError("Unknown operation")
     return apply(current, payload, docker, probe, create, health, now)
@@ -190,7 +237,7 @@ def deploy(payload, docker, probe, create, health, now):
 REMOTE = program(
     ["http.client", "io", "json", "socket", "subprocess", "sys", "tarfile", "time"],
     [docker, docker_ok, backup_name, source_label, healthy, build_context, docker_create]
-    + [check, revert, apply, deploy],
+    + [check, restore_any, revert, apply, deploy],
     "print(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
     "    lambda name: healthy(name, docker_ok, time.sleep), time.time))\n",
 )
