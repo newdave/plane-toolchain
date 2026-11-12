@@ -172,10 +172,11 @@ def test_apply_start_failure_retains_failed_derived_and_restores_original(host, 
     with pytest.raises(subprocess.CalledProcessError):
         remote("apply", host, monkeypatch)
     failed = f"api-pages-failed-{NOW}"
-    assert host.calls[-8:] == [
+    assert host.calls[-9:] == [
         ("start", "api"),
         ("inspect", "api"),
         ("stop", "api"),
+        ("inspect", failed),
         ("rename", "api", failed),
         ("update", "--restart=no", failed),
         ("rename", BACKUP, "api"),
@@ -419,10 +420,11 @@ def test_apply_reconciles_stopped_derived_as_failed_apply(retired, monkeypatch, 
     remote("apply", retired, monkeypatch)
     assert capsys.readouterr().out == APPLIED
     failed = f"api-pages-failed-{NOW}"
-    assert retired.calls[:9] == [
+    assert retired.calls[:10] == [
         ("inspect", "api"),
         ("inspect", BACKUP),
         ("inspect", BACKUP),
+        ("inspect", failed),
         ("rename", "api", failed),
         ("update", "--restart=no", failed),
         ("rename", BACKUP, "api"),
@@ -446,6 +448,21 @@ def test_apply_reconcile_promote_failure_stays_reconcilable(retired, capsys):
     assert deploy("apply", retired) == APPLIED.rstrip("\n")
     assert capsys.readouterr().out == NOTE
     assert_freshly_applied(retired, "unless-stopped")
+
+
+def test_reconcile_and_failing_apply_in_same_second_keep_both_failed(retired):
+    # now() is constant: reconcile (b) and the failed apply would pick the same name.
+    retired.add("api", labels={"terrainlink.pages.source": "old"}, running=False)
+    stale = retired.containers["api"]["id"]
+    retired.created_healthy = False
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", retired)
+    failed = f"api-pages-failed-{NOW}"
+    assert retired.containers[failed]["id"] == stale
+    assert retired.containers[failed + "-1"]["image"] == IMAGE
+    assert_original_restored(retired)
+    assert running(retired) == ["api"] and restart(retired, "api") == "unless-stopped"
+    assert set(retained(retired).values()) == {"no"}
 
 
 def test_reconcile_note_survives_a_later_apply_failure(retired, capsys):

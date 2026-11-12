@@ -209,6 +209,14 @@ def revert(current, payload, docker, probe, health, now):
     return "Original API container restored; derived container retained stopped"
 
 
+def failed_name(name, probe, now):
+    """Unused `-pages-failed-<ts>` name; one run can retire two containers in the same second."""
+    failed = name + "-pages-failed-" + str(int(now()))
+    while probe("inspect", failed):
+        failed += "-1"
+    return failed
+
+
 def reconcile(current, name, backup, docker, probe, health, now):
     """Undo a run that died mid-swap: return the original as running `name`, or refuse.
 
@@ -229,7 +237,7 @@ def reconcile(current, name, backup, docker, probe, health, now):
     elif source_label(current) is not None and not current["State"].get("Running"):
         # Derived created but never started: retire it as a failed apply.
         policy = restart_arg(current)  # Copied from the original before its retirement.
-        failed = name + "-pages-failed-" + str(int(now()))
+        failed = failed_name(name, probe, now)
         docker("rename", name, failed)
         probe("update", "--restart=no", failed)
     else:
@@ -285,7 +293,7 @@ def apply(current, payload, docker, probe, create, health, now):
     except BaseException:
         if probe("inspect", name):
             probe("stop", name)
-            failed = name + "-pages-failed-" + str(int(now()))
+            failed = failed_name(name, probe, now)
             docker("rename", name, failed)
             probe("update", "--restart=no", failed)
         docker("rename", backup, name)
@@ -330,7 +338,7 @@ REMOTE = program(
         build_context,
         docker_create,
     ]
-    + [check, restore_any, revert, reconcile, apply, deploy],
+    + [check, restore_any, revert, failed_name, reconcile, apply, deploy],
     "say(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
     "    lambda name: healthy(name, docker_ok, time.sleep), time.time))\n",
 )
