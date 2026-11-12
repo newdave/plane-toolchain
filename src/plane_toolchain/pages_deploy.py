@@ -175,17 +175,21 @@ def finish_revert(name, backup, docker, probe, health):
     if source_label(held) is not None:
         docker("inspect", name)  # A labelled backup is a derived: not ours to promote; raise.
     prefix = name + "-pages-reverted-"
-    parked = docker("ps", "-a", "--filter", "name=^" + prefix, "--format", "{{.Names}}")
+    try:  # Optional lookup: a failing `ps` falls through to the default policy.
+        listing = docker("ps", "-a", "--filter", "name=" + prefix, "--format", "{{.Names}}")
+    except subprocess.CalledProcessError:
+        listing = b""
+    parked = sorted(n for n in listing.decode().split() if n.startswith(prefix))
+    # Only the newest plain `<prefix><digits>` is the live derived; older ones may be stale.
+    plain = [n for n in parked if n[len(prefix) :].isdigit()]
     policy = None
-    for parked_name in sorted(parked.decode().split(), reverse=True):
-        # The live derived carried the deployment policy unless its retire update ran.
-        if parked_name.startswith(prefix) and probe("inspect", parked_name):
-            candidate = restart_arg(json.loads(docker("inspect", parked_name))[0])
-            if candidate != "no":
-                policy = candidate
-                break
+    if plain:
+        candidate = restart_arg(json.loads(docker("inspect", plain[-1]))[0])
+        policy = None if candidate == "no" else candidate
     if policy is None:
         policy = held_policy(held)
+    for parked_name in parked:
+        probe("update", "--restart=no", parked_name)  # Never auto-start beside the API.
     docker("rename", backup, name)
     probe("update", "--restart=" + policy, name)
     docker("start", name)

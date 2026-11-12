@@ -280,7 +280,7 @@ def test_revert_finishes_interrupted_revert_with_derived_policy(interrupted, mon
     assert_original_restored(interrupted)
     assert restart(interrupted, "api") == "on-failure"
     assert running(interrupted) == ["api"]
-    assert retained(interrupted) == {reverted: "on-failure"}  # Untouched, stopped.
+    assert retained(interrupted) == {reverted: "no"}  # Retired: never auto-starts.
 
 
 def test_interrupted_revert_after_retire_update_uses_default_with_note(
@@ -320,6 +320,32 @@ def test_interrupted_revert_health_failure_leaves_original_running(interrupted, 
         remote("revert", interrupted, monkeypatch)
     assert running(interrupted) == ["api"]
     assert interrupted.containers["api"]["labels"] == {"owner": "kept"}
+
+
+def test_interrupted_revert_survives_failing_ps(interrupted, monkeypatch, capsys):
+    interrupted.fail.append("ps")
+    remote("revert", interrupted, monkeypatch)
+    assert capsys.readouterr().out == NOTE + "Original API container restored\n"
+    assert restart(interrupted, "api") == "unless-stopped"
+    assert_original_restored(interrupted)
+
+
+def test_interrupted_revert_consults_only_newest_plain_reverted(interrupted, monkeypatch, capsys):
+    older, newest = f"api-pages-reverted-{NOW - 50}", f"api-pages-reverted-{NOW - 5}"
+    interrupted.add(older, labels={"terrainlink.pages.source": "x"}, running=False)
+    interrupted.add(newest + "-aside", running=False, RestartPolicy={"Name": "always"})
+    interrupted.containers[newest]["host_config"]["RestartPolicy"] = {"Name": "no"}
+    remote("revert", interrupted, monkeypatch)
+    assert capsys.readouterr().out == NOTE + "Original API container restored\n"
+    assert restart(interrupted, "api") == "unless-stopped"
+    assert set(retained(interrupted).values()) == {"no"}
+
+
+def test_interrupted_revert_ignores_decoy_names(interrupted, monkeypatch):
+    interrupted.add(f"xapi-pages-reverted-{NOW}", running=False, RestartPolicy={"Name": "always"})
+    remote("revert", interrupted, monkeypatch)
+    assert restart(interrupted, "api") == "unless-stopped"
+    assert restart(interrupted, f"xapi-pages-reverted-{NOW}") == "always"  # Not ours.
 
 
 def test_revert_missing_api_with_labelled_backup_still_raises(monkeypatch):
