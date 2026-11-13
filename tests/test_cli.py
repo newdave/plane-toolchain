@@ -225,3 +225,117 @@ def test_missing_key_is_configuration_error_without_connecting(tmp_path):
 def test_invalid_enabled_value_is_named(tmp_path):
     code, _, err = run(["task", "list"], Fake(), tmp_path, {**ENV, "PLANE_ENABLED": "maybe"})
     assert (code, err) == (3, "plane: Invalid PLANE_ENABLED\n")
+
+
+def test_task_update_sends_only_given_fields_and_rereads(tmp_path):
+    item = {"id": OTHER, "name": "New", "priority": "high"}
+    fake = Fake([{}, item])
+    argv = ["task", "update", OTHER, "--name", "New", "--priority", "high"]
+    code, out, _ = run(argv, fake, tmp_path)
+    assert code == 0
+    assert fake.calls == [
+        (
+            "workitem",
+            {
+                "action": "update",
+                "project_id": PROJECT,
+                "workitem_id": OTHER,
+                "name": "New",
+                "priority": "high",
+            },
+        ),
+        ("workitem", {"action": "retrieve", "project_id": PROJECT, "workitem_id": OTHER}),
+    ]
+    assert json.loads(out) == item
+
+
+def test_task_update_state_and_html_readback(tmp_path):
+    fake = Fake([{}, {"state": OTHER, "description_html": "<p>x</p>"}])
+    code, _, _ = run(["task", "update", OTHER, "--state", OTHER, "--html", "x"], fake, tmp_path)
+    assert code == 0
+    assert fake.calls[0][1]["description_html"] == "x"
+
+
+def test_task_update_without_fields_is_usage_error_without_connecting(tmp_path):
+    fake = Fake()
+    code, _, err = run(["task", "update", OTHER], fake, tmp_path)
+    assert (code, err) == (2, "plane: Nothing to update\n")
+    assert fake.entered == 0
+
+
+def test_task_update_readback_mismatch_exits_5(tmp_path):
+    fake = Fake([{}, {"name": "Other"}])
+    code, _, err = run(["task", "update", OTHER, "--name", "New"], fake, tmp_path)
+    assert code == 5
+    assert err.startswith("plane: write not confirmed")
+
+
+def test_comment_add_reads_file_and_confirms_by_listing(tmp_path):
+    path = tmp_path / "c.html"
+    path.write_text("<p>hi</p>", encoding="utf-8")
+    created = {"id": "c1"}
+    fake = Fake([created, {"results": [{"id": "c0"}, {"id": "c1"}]}])
+    code, out, _ = run(["comment", "add", OTHER, "--file", str(path)], fake, tmp_path)
+    assert code == 0
+    assert fake.calls == [
+        (
+            "workitem_comment",
+            {
+                "action": "create",
+                "project_id": PROJECT,
+                "workitem_id": OTHER,
+                "comment_html": "<p>hi</p>",
+            },
+        ),
+        ("workitem_comment", {"action": "list", "project_id": PROJECT, "workitem_id": OTHER}),
+    ]
+    assert json.loads(out) == created
+
+
+def test_comment_add_from_stdin(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO("<p>é</p>".encode())))
+    fake = Fake([{"id": "c1"}, [{"id": "c1"}]])
+    code, _, _ = run(["comment", "add", OTHER, "--file", "-"], fake, tmp_path)
+    assert code == 0
+    assert fake.calls[0][1]["comment_html"] == "<p>é</p>"
+
+
+def test_body_file_not_utf8_is_usage_error_without_connecting(tmp_path):
+    path = tmp_path / "bad"
+    path.write_bytes(b"\xff\xfe")
+    fake = Fake()
+    code, _, err = run(["comment", "add", OTHER, "--file", str(path)], fake, tmp_path)
+    assert (code, err) == (2, "plane: Cannot read --html or --file\n")
+    assert fake.entered == 0
+    missing = run(["comment", "add", OTHER, "--file", str(tmp_path / "none")], fake, tmp_path)
+    assert missing[0] == 2
+    assert fake.entered == 0
+
+
+def test_comment_add_requires_a_body_without_connecting(tmp_path):
+    fake = Fake()
+    assert run(["comment", "add", OTHER], fake, tmp_path)[0] == 2
+    assert fake.entered == 0
+
+
+def test_comment_add_missing_from_listing_exits_5(tmp_path):
+    fake = Fake([{"id": "c1"}, {"results": [{"id": "c0"}]}])
+    code, _, _ = run(["comment", "add", OTHER, "--html", "x"], fake, tmp_path)
+    assert code == 5
+
+
+def test_comment_list_calls_workitem_comment_list(tmp_path):
+    fake = Fake([[{"id": "c1"}]])
+    code, out, _ = run(["comment", "list", OTHER], fake, tmp_path)
+    assert code == 0
+    assert fake.calls == [
+        ("workitem_comment", {"action": "list", "project_id": PROJECT, "workitem_id": OTHER})
+    ]
+    assert json.loads(out) == [{"id": "c1"}]
+
+
+def test_writes_are_not_retried(tmp_path):
+    fake = Fake(error=RuntimeError("boom"))
+    code, _, _ = run(["task", "update", OTHER, "--name", "x"], fake, tmp_path)
+    assert code == 4
+    assert [c[1]["action"] for c in fake.calls] == ["update"]

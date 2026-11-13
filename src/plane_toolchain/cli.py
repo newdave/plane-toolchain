@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from plane_toolchain import cli_commands, session
-from plane_toolchain.cli_commands import UsageError
+from plane_toolchain.cli_commands import ReadbackError, UsageError
 from plane_toolchain.connection import connection
 from plane_toolchain.session import ROOT
 from plane_toolchain.settings import Settings
@@ -20,8 +20,13 @@ __all__ = ["ReadbackError", "UsageError", "environment", "execute", "main", "par
 FAILED = "Plane MCP request failed; remote outcome must be checked"
 
 
-class ReadbackError(Exception):
-    """A write was not confirmed by rereading; exit code 5."""
+PRIORITIES = ["urgent", "high", "medium", "low", "none"]
+
+
+def body(sub: argparse.ArgumentParser) -> None:
+    group = sub.add_mutually_exclusive_group()
+    group.add_argument("--html", default=None, help="HTML text")
+    group.add_argument("--file", default=None, help="file with HTML text, - for stdin")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -38,6 +43,22 @@ def parser() -> argparse.ArgumentParser:
     listing.add_argument("--cursor", default=None)
     show = task.add_parser("show", parents=[common], help="show one task")
     show.add_argument("ref", help="task UUID or identifier such as PTC-12")
+
+    update = task.add_parser("update", parents=[common], help="update a task")
+    update.add_argument("ref", help="task UUID or identifier such as PTC-12")
+    update.add_argument("--name", default=None)
+    update.add_argument("--state", default=None, help="state UUID")
+    update.add_argument("--priority", choices=PRIORITIES, default=None)
+    body(update)
+
+    comment = groups.add_parser("comment", help="comments").add_subparsers(
+        dest="action", required=True
+    )
+    comments = comment.add_parser("list", parents=[common], help="list comments")
+    comments.add_argument("ref", help="task UUID or identifier such as PTC-12")
+    added = comment.add_parser("add", parents=[common], help="add a comment")
+    added.add_argument("ref", help="task UUID or identifier such as PTC-12")
+    body(added)
     return root
 
 
