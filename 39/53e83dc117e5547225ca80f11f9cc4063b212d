@@ -1,0 +1,23 @@
+docs/project-install.md
+  s_f997234b8f2229::t_d70afc51b64a37 1-36
+CHANGELOG.md
+  s_f997234b8f2229::t_fcfb289842f65f 9-10,17
+README.md
+  s_f997234b8f2229::t_fcfb289842f65f 10,33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "3953e83dc117e5547225ca80f11f9cc4063b212d",
+  "prompts": {},
+  "sessions": {
+    "s_f997234b8f2229": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ea15c55-f8a8-46eb-98da-121c034fa13f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
