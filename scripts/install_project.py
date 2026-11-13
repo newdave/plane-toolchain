@@ -27,6 +27,24 @@ TEMPLATES = SOURCE / "templates/project"
 RECEIPT = ".plane/install.json"
 MARKER = "<!-- plane-toolchain:begin"
 BLOCK = (TEMPLATES / "AGENTS.md").read_text()
+# Plane block as installed by PTC-48, before the awaiting-decision rule. Installs made then
+# still carry it: revert accepts it, and apply reports it as outdated without rewriting it.
+LEGACY_BLOCK = (
+    "<!-- plane-toolchain:begin (managed by scripts/install_project.py; edit outside this block) -->\n"
+    "## Task management: Plane\n"
+    "\n"
+    "Plane is the authoritative system for this project's scope, acceptance criteria, dependencies and status.\n"
+    "\n"
+    "- Use the `plane` MCP server for every task read and write. Reread each write to verify it.\n"
+    "- Do not keep a parallel backlog in repository files, TODO comments or agent todo lists.\n"
+    '- Treat "tasks" or "the queue" as this project\'s Plane work items.\n'
+    "- Move a work item to In Progress only while it is actively worked on.\n"
+    "- Move it to Done only when its acceptance criteria are met. A merged PR alone is not Done.\n"
+    "- Store specs, plans and other planning narratives as project Pages, not repository files.\n"
+    "- Keep Plane endpoints, project IDs and credentials out of committed files. Non-secret values go in ignored `.plane/local.env`. The API key comes from the environment or SOPS-encrypted `.plane/plane.enc.env`.\n"
+    "- Check the local switch with `.plane/plane.sh status`. Change it with `.plane/plane.sh enable` or `disable`.\n"
+    "<!-- plane-toolchain:end -->\n"
+)
 SHIM = (TEMPLATES / "plane.sh").read_text()
 GITIGNORE = (
     "# Local Plane values, secrets and switch state; never commit them.\n"
@@ -100,9 +118,10 @@ def strip(text, block, created):
 
 
 def remove_block(text, created):
-    if BLOCK not in text:
-        raise Changed("Plane block changed since installation")
-    return strip(text, BLOCK, created)
+    for block in (BLOCK, LEGACY_BLOCK):
+        if block in text:
+            return strip(text, block, created)
+    raise Changed("Plane block changed since installation")
 
 
 def load(old):
@@ -267,8 +286,10 @@ def apply(target, values=None, toolchain=SOURCE):
     target = target.resolve(strict=True)
     receipt_path = guard(target, RECEIPT)
     if receipt_path.exists():
-        reverted(target, json.loads(receipt_path.read_text()))
+        receipt = json.loads(receipt_path.read_text())
+        reverted(target, receipt)
         print("Plane integration already installed")
+        outdated(target, receipt)
         return
     changes, entries = {}, {}
     for rel, kind in plan(target):
@@ -373,6 +394,7 @@ def label(target, env=None, client=None):
     if not receipt_path.is_file():
         raise ValueError("No installation receipt; run apply first")
     receipt = json.loads(receipt_path.read_text())
+    outdated(target, receipt)
     base, workspace, project, key = settings(target, os.environ if env is None else env)
     request = (client or http_client)(base, key)
     path = f"/api/v1/workspaces/{workspace}/projects/{project}/labels/"
@@ -395,6 +417,17 @@ def label(target, env=None, client=None):
         print(f"Created and verified label {LABEL['name']} ({existing['id']})")
     receipt["label"] = {"name": LABEL["name"], "id": existing["id"]}
     write(receipt_path, json.dumps(receipt, indent=2) + "\n")
+
+
+def outdated(target, receipt):
+    """Say so when an intact install still has the pre-rule block; never rewrite it."""
+    for rel, entry in receipt["entries"].items():
+        text = read(target / rel)
+        if entry["kind"] == "block" and BLOCK not in text and LEGACY_BLOCK in text:
+            print(
+                f"{rel}: Plane block predates the awaiting-decision rule. Revert, then apply "
+                "again to get the current block."
+            )
 
 
 def revert(target):

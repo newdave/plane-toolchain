@@ -297,3 +297,59 @@ def test_revert_keeps_label_and_drops_receipt(tmp_path):
     revert(tmp_path)
     assert not list(tmp_path.iterdir())
     assert [c for c in plane.calls if c[0] == "DELETE"] == []
+
+
+def legacy_install(path, files=None):
+    """Install, then swap in the PTC-48 block, as an earlier installer would have written."""
+    for rel, text in (files or {}).items():
+        (path / rel).write_text(text)
+    apply(path)
+    agents = path / "AGENTS.md"
+    assert installer["BLOCK"] in agents.read_text()
+    agents.write_text(agents.read_text().replace(installer["BLOCK"], installer["LEGACY_BLOCK"], 1))
+
+
+def test_legacy_block_lacks_rule_and_current_has_it():
+    assert "awaiting-decision" not in installer["LEGACY_BLOCK"]
+    assert "awaiting-decision" in installer["BLOCK"]
+
+
+def test_revert_restores_legacy_install_exactly(tmp_path):
+    legacy_install(tmp_path, {"AGENTS.md": "# Rules\n\nKeep tests green.\n"})
+    (tmp_path / ".plane/local.env").unlink()
+    revert(tmp_path)
+    assert snapshot(tmp_path) == {"AGENTS.md": "# Rules\n\nKeep tests green.\n"}
+
+
+def test_repeat_apply_on_legacy_install_reports_outdated_without_rewriting(tmp_path, capsys):
+    legacy_install(tmp_path)
+    before = snapshot(tmp_path)
+    apply(tmp_path)
+    assert snapshot(tmp_path) == before
+    out = capsys.readouterr().out
+    assert "already installed" in out and "predates the awaiting-decision rule" in out
+
+
+def test_label_reports_outdated_block(tmp_path, capsys):
+    labelled(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text().replace(installer["BLOCK"], installer["LEGACY_BLOCK"]))
+    installer["label"](tmp_path, ENV, FakePlane())
+    assert "predates the awaiting-decision rule" in capsys.readouterr().out
+
+
+def test_current_install_is_not_reported_outdated(tmp_path, capsys):
+    apply(tmp_path)
+    apply(tmp_path)
+    assert "predates" not in capsys.readouterr().out
+
+
+def test_edited_legacy_block_still_refused(tmp_path):
+    legacy_install(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text().replace("authoritative", "advisory"))
+    (tmp_path / ".plane/local.env").unlink()
+    with pytest.raises(ValueError, match="changed"):
+        revert(tmp_path)
+    with pytest.raises(ValueError, match="changed"):
+        apply(tmp_path)

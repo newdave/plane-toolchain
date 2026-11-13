@@ -41,7 +41,7 @@ It reads `PLANE_ENABLED`, `PLANE_WORKSPACE`, `PLANE_PROJECT` and `PLANE_API_URL`
 
 The step lists the project's labels over `/api/v1/workspaces/<workspace>/projects/<project>/labels/` and creates `awaiting-decision` (colour `#EF4444`) only if no label of that name exists, then rereads the list to verify it and records the label id under `label` in `.plane/install.json`. Repeating it creates nothing. A same-named label with a different colour or description is reported and left unchanged, with nothing recorded.
 
-Revert never deletes the label, because work items may still use it. It drops the receipt, including the label id, and the rule from the `AGENTS.md` block. Installations made before this rule existed have an older block, so revert refuses until that block is reconciled by hand.
+Revert never deletes the label, because work items may still use it. It drops the receipt, including the label id, and the rule from the `AGENTS.md` block. Installations made before this rule existed keep their older block unchanged: revert still restores them exactly, and repeating apply or running the label step reports the block as outdated. To get the current block, revert and apply again.
 
 ## Connection values
 
