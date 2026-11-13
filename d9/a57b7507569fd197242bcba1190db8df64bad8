@@ -1,0 +1,25 @@
+tests/test_project_install.py
+  s_066dd3ba2255bd::t_398e7baf40fcef 958-1001
+CHANGELOG.md
+  s_066dd3ba2255bd::t_f642a3e36ff61b 14
+scripts/install_project.py
+  s_066dd3ba2255bd::t_28cc3d16657b97 350,352-356,365,379,429,444,451-459,631-635,684-688,697
+docs/project-install.md
+  s_066dd3ba2255bd::t_f642a3e36ff61b 28-29,34-44,56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "d9a57b7507569fd197242bcba1190db8df64bad8",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
