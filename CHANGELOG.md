@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 
 - `install_project.py label` refuses HTTP redirects, so the Plane API key is never sent to another host or over plain http; it reports the redirect and asks for the final `PLANE_API_URL` (PTC-72).
+- `install_project.py apply` writes a pending receipt first, then the files, then the final receipt. If a write fails midway, `revert` undoes exactly what was written (files still as before are skipped; edited ones are refused) and a repeat `apply` finishes the install. `label` refuses an interrupted installation. Earlier receipts still revert (PTC-73).
 
 ## [0.2.1] - 2026-11-14
 

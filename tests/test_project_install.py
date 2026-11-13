@@ -731,6 +731,118 @@ def test_hint_accepts_export_prefix_and_whitespace(tmp_path, capsys):
     assert "Set PLANE_PROJECT in .plane/local.env" in out
 
 
+EXISTING = {
+    "AGENTS.md": "# Rules\n",
+    ".mcp.json": json.dumps({"mcpServers": {"other": {"command": "x"}}}, indent=2) + "\n",
+    ".claude/settings.json": json.dumps({"model": "opus"}, indent=2) + "\n",
+}
+
+
+def seed_project(path):
+    for rel, text in EXISTING.items():
+        (path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (path / rel).write_text(text)
+
+
+def failing_replace(monkeypatch, nth):
+    real, calls = os.replace, []
+
+    def replace(src, dst):
+        calls.append(dst)
+        if len(calls) == nth:
+            raise OSError("injected failure")
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    return calls
+
+
+def failure_points(tmp_path_factory, monkeypatch):
+    """Every write count at which apply fails; stops at the first that completes."""
+    points = []
+    for nth in range(1, 40):
+        probe = tmp_path_factory.mktemp("probe")
+        seed_project(probe)
+        with monkeypatch.context() as patch:
+            failing_replace(patch, nth)
+            try:
+                apply(probe)
+            except OSError:
+                points.append(nth)
+                continue
+        return points
+    raise AssertionError("apply never completed")
+
+
+def test_failure_points_cover_every_write(tmp_path_factory, monkeypatch):
+    assert len(failure_points(tmp_path_factory, monkeypatch)) >= 10
+
+
+@pytest.mark.parametrize("nth", range(1, 12))
+def test_revert_after_failed_apply_restores_the_project(tmp_path, monkeypatch, nth):
+    seed_project(tmp_path)
+    before = snapshot(tmp_path)
+    with monkeypatch.context() as patch:
+        failing_replace(patch, nth)
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    revert(tmp_path)
+    after = snapshot(tmp_path)
+    after.pop(".plane/local.env", None)  # ignored local values stay, by design
+    after.pop(".plane/.gitignore", None)
+    assert after == before
+
+
+@pytest.mark.parametrize("nth", range(1, 12))
+def test_repeat_apply_after_failed_apply_finishes_and_reverts_cleanly(
+    tmp_path, tmp_path_factory, monkeypatch, nth
+):
+    seed_project(tmp_path)
+    with monkeypatch.context() as patch:
+        failing_replace(patch, nth)
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    apply(tmp_path)
+    assert "pending" not in json.loads((tmp_path / ".plane/install.json").read_text())
+    clean = tmp_path_factory.mktemp("clean")
+    seed_project(clean)
+    apply(clean)
+    # Only the directories list may differ: a failed first write can leave .plane behind.
+    done, fresh = snapshot(tmp_path), snapshot(clean)
+    assert (
+        json.loads(done.pop(".plane/install.json"))["entries"]
+        == json.loads(fresh.pop(".plane/install.json"))["entries"]
+    )
+    assert done == fresh
+    revert(tmp_path)
+    (tmp_path / ".plane/local.env").unlink()
+    (tmp_path / ".plane/.gitignore").unlink(missing_ok=True)
+    assert snapshot(tmp_path) == EXISTING
+
+
+def test_revert_after_failed_apply_keeps_edits_made_since(tmp_path, monkeypatch):
+    seed_project(tmp_path)
+    with monkeypatch.context() as patch:
+        failing_replace(patch, 6)
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("# Rules\n\nMine, edited after the failure.\n")
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {"other": {"command": "y"}}}\n')
+    with pytest.raises(ValueError, match="changed"):
+        revert(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_text().endswith("edited after the failure.\n")
+    assert (tmp_path / ".mcp.json").read_text() == ('{"mcpServers": {"other": {"command": "y"}}}\n')
+
+
+def test_label_refuses_an_interrupted_installation(tmp_path, monkeypatch):
+    with monkeypatch.context() as patch:
+        failing_replace(patch, 4)
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    with pytest.raises(ValueError, match="interrupted"):
+        installer["label"](tmp_path, ENV, FakePlane())
+
+
 def serve(handler):
     server = http.server.HTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()

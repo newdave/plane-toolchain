@@ -278,6 +278,11 @@ def read(path):
     return path.read_text() if path.exists() else None
 
 
+def fingerprint(text):
+    """SHA-256 of a file's text, None for a missing file; records the state before apply."""
+    return None if text is None else hashlib.sha256(text.encode()).hexdigest()
+
+
 def write(path, text, mode=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".install-")
@@ -341,10 +346,13 @@ def reverted(target, receipt):
     if receipt.get("version") != 1 or not isinstance(entries, dict) or not entries:
         raise ValueError("Invalid installation receipt")
     result = {}
+    pending = receipt.get("pending") is True
     for rel, entry in entries.items():
         if entry.get("kind") not in KINDS:
             raise ValueError("Invalid installation receipt")
         text = read(guard(target, rel))
+        if pending and fingerprint(text) == entry.get("before", False):
+            continue  # interrupted apply never reached this file; nothing to undo
         if text is None:
             raise Changed(f"{rel}: removed since installation")
         try:
@@ -379,28 +387,49 @@ def missing_values(text):
 def apply(target, values=None, toolchain=SOURCE):
     target = target.resolve(strict=True)
     receipt_path = guard(target, RECEIPT)
+    resumed = None
     if receipt_path.exists():
         receipt = json.loads(receipt_path.read_text())
-        reverted(target, receipt)
-        print("Plane integration already installed")
-        outdated(target, receipt)
-        return
+        if receipt.get("pending") is not True:
+            reverted(target, receipt)
+            print("Plane integration already installed")
+            outdated(target, receipt)
+            return
+        resumed = receipt
+        print("Finishing an interrupted installation")
     changes, entries = {}, {}
-    for rel, kind in plan(target):
-        old = read(guard(target, rel))
-        try:
-            changes[rel] = KINDS[kind][0](old)
-        except (ValueError, tomllib.TOMLDecodeError) as error:
-            raise ValueError(f"{rel}: {error}") from None
-        entries[rel] = {"kind": kind, "created": old is None}
+    if resumed is None:
+        for rel, kind in plan(target):
+            old = read(guard(target, rel))
+            try:
+                changes[rel] = KINDS[kind][0](old)
+            except (ValueError, tomllib.TOMLDecodeError) as error:
+                raise ValueError(f"{rel}: {error}") from None
+            entries[rel] = {"kind": kind, "created": old is None, "before": fingerprint(old)}
+        created = [name for name in DIRECTORIES if not (target / name).exists()]
+    else:
+        # Files still as they were get their change; written ones must be intact.
+        entries, created = resumed["entries"], resumed.get("directories", [])
+        for rel, entry in entries.items():
+            old = read(guard(target, rel))
+            if fingerprint(old) == entry.get("before", False):
+                try:
+                    changes[rel] = KINDS[entry["kind"]][0](old)
+                except (ValueError, tomllib.TOMLDecodeError) as error:
+                    raise ValueError(f"{rel}: {error}") from None
+        reverted(target, resumed)
     local = guard(target, ".plane/local.env")
     seeded = None if local.exists() else local_env(toolchain, values or {})
-    created = [name for name in DIRECTORIES if not (target / name).exists()]
+    # The pending receipt goes first, so a crash or OSError midway leaves something revert
+    # (or a repeat apply) can finish from; the final receipt replaces it last.
+    receipt = {"version": 1, "directories": created, "entries": entries}
+    write(receipt_path, json.dumps({**receipt, "pending": True}, indent=2) + "\n")
     for rel, text in changes.items():
         write(target / rel, text)
     if seeded is not None:
         write(local, seeded, 0o600)
-    receipt = {"version": 1, "directories": created, "entries": entries}
+    for entry in entries.values():
+        entry.pop("before", None)
     write(receipt_path, json.dumps(receipt, indent=2) + "\n")
     print("Installed Plane integration; review the diff before committing.")
     print("Next: run 'mise run setup' in the toolchain.")
@@ -503,6 +532,8 @@ def label(target, env=None, client=None):
     if not receipt_path.is_file():
         raise ValueError("No installation receipt; run apply first")
     receipt = json.loads(receipt_path.read_text())
+    if receipt.get("pending") is True:
+        raise ValueError("Installation was interrupted; run apply again to finish it")
     outdated(target, receipt)
     base, workspace, project, key = settings(target, os.environ if env is None else env)
     request = (client or http_client)(base, key)
