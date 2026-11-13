@@ -45,7 +45,19 @@ def main_checkout(root: Path) -> Path | None:
         return None
     git_dir, _, common = result.stdout.strip().partition("\n")
     # Equal dirs: a main checkout, or a copy nested in an unrelated repo. Neither falls back.
-    return Path(common).parent if git_dir != common else None
+    if git_dir == common or Path(common).name != ".git":
+        return None
+    return Path(common).parent
+
+
+def shared_file(main: Path | None, rel: str) -> list[Path]:
+    """Return the main checkout's file as a layer only when it is a safe regular file."""
+    if main is None:
+        return []
+    path = main / rel
+    if path.is_symlink() or not path.is_file():
+        return []
+    return [path] if path.resolve().is_relative_to(main.resolve()) else []
 
 
 def local_layers(root: Path) -> list[Path]:
@@ -58,8 +70,7 @@ def local_layers(root: Path) -> list[Path]:
     legacy = root / ".deploy/env"
     if local.exists() or not legacy.exists():
         main = main_checkout(root)
-        shared = [main / "config/local.env"] if main is not None else []
-        return [*shared, local]
+        return [*shared_file(main, "config/local.env"), local]
     return [legacy]
 
 
@@ -72,7 +83,7 @@ def literal(root: Path, names: tuple[str, ...]) -> dict[str, str]:
     paths = (root / "config/defaults.env", root / ".env", *local_layers(root))
     # A project set up by scripts/install_project.py keeps its values only under .plane/.
     if (root / ".plane/plane.sh").is_file():
-        paths = (root / ".plane/local.env",)
+        paths = (*shared_file(main_checkout(root), ".plane/local.env"), root / ".plane/local.env")
     for path in paths:
         if path.is_file():
             values.update(assignments(path.read_text(), names))
@@ -111,6 +122,13 @@ def main() -> None:
         # NUL-separated so the bridge can export values without evaluating them.
         for name, value in connection(ROOT, os.environ).items():
             sys.stdout.write(f"{name}={value}\0")
+        return
+    if len(sys.argv) == 3 and sys.argv[1] == "main":
+        # Prints the main checkout path only, for the bridge; exits 1 when there is none.
+        found = main_checkout(Path(sys.argv[2]))
+        if found is None:
+            sys.exit(1)
+        print(found)
         return
     message = status(ROOT, os.environ)
     print(

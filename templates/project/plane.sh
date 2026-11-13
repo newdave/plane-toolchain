@@ -7,10 +7,27 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PLANE_CONFIG_ROOT="$root"
 # Exported PLANE_TOOLCHAIN wins; otherwise read the literal line from ignored .plane/local.env.
 toolchain="${PLANE_TOOLCHAIN:-}"
-if [[ -z "$toolchain" && -f "$root/.plane/local.env" ]]; then
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" == PLANE_TOOLCHAIN=* ]] && toolchain="${line#PLANE_TOOLCHAIN=}"
-  done <"$root/.plane/local.env"
+# In a linked worktree the main checkout's file is read first (in place, never copied);
+# the worktree's own file overrides it. Symlinks and a non-".git" common dir get no fallback.
+files=()
+if dirs="$(git -C "$root" rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)"; then
+  gitdir="${dirs%%$'\n'*}"
+  common="${dirs#*$'\n'}"
+  if [[ "$gitdir" != "$common" && "$(basename "$common")" == .git ]]; then
+    shared="$(dirname "$common")/.plane/local.env"
+    if [[ -f "$shared" && ! -L "$shared" ]]; then
+      real="$(cd -P "$(dirname "$shared")" && pwd)"
+      [[ "$real" == "$(cd -P "$(dirname "$common")" && pwd)/.plane" ]] && files+=("$shared")
+    fi
+  fi
+fi
+[[ -f "$root/.plane/local.env" ]] && files+=("$root/.plane/local.env")
+if [[ -z "$toolchain" ]]; then
+  for file in ${files[@]+"${files[@]}"}; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" == PLANE_TOOLCHAIN=* ]] && toolchain="${line#PLANE_TOOLCHAIN=}"
+    done <"$file"
+  done
 fi
 session="$toolchain/src/plane_toolchain/session.py"
 missing="plane-toolchain not found; set PLANE_TOOLCHAIN in .plane/local.env"

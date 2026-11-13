@@ -180,6 +180,64 @@ def test_disabled_hint_names_installed_shim():
         Settings.from_env({})
 
 
+KEY = "PLANE_API_KEY-fixture-value"
+GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.org"]
+
+
+def installed_worktree(tmp_path):
+    """An installed project whose .plane files are tracked or ignored as in real use."""
+    main = tmp_path / "proj"
+    main.mkdir()
+    subprocess.run([*GIT, "init", "-q", "-b", "main"], cwd=main, check=True, capture_output=True)  # noqa: S603
+    apply(main, {"PLANE_WORKSPACE": "shared"})
+    (main / ".plane/plane.enc.env").write_text(KEY)
+    subprocess.run([*GIT, "add", "."], cwd=main, check=True, capture_output=True)  # noqa: S603
+    subprocess.run([*GIT, "commit", "-qm", "i"], cwd=main, check=True, capture_output=True)  # noqa: S603
+    wt = tmp_path / "wt"
+    subprocess.run([*GIT, "worktree", "add", "-q", str(wt)], cwd=main, check=True)  # noqa: S603
+    return main, wt
+
+
+def test_installed_worktree_resolves_plane_files_from_main(tmp_path):
+    main, wt = installed_worktree(tmp_path)
+    assert not (wt / ".plane/local.env").exists()
+    assert plane_session.connection(wt, {}) == {"PLANE_WORKSPACE": "shared"}
+    (wt / ".plane").mkdir(exist_ok=True)
+    (wt / ".plane/local.env").write_text("PLANE_WORKSPACE=mine\n")
+    assert plane_session.connection(wt, {}) == {"PLANE_WORKSPACE": "mine"}
+    assert plane_session.main_checkout(wt).resolve() == main.resolve()
+
+
+def test_installed_worktree_symlinked_main_local_env_gets_no_fallback(tmp_path):
+    main, wt = installed_worktree(tmp_path)
+    real = tmp_path / "real.env"
+    real.write_text("PLANE_WORKSPACE=linked\n")
+    (main / ".plane/local.env").unlink()
+    (main / ".plane/local.env").symlink_to(real)
+    assert plane_session.connection(wt, {}) == {}
+
+
+def test_installed_worktree_shim_reads_toolchain_from_main(tmp_path):
+    main, wt = installed_worktree(tmp_path)
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash unavailable")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PLANE_")}
+    shim = str(wt / ".plane/plane.sh")
+    result = subprocess.run(  # noqa: S603 - fixed local shim
+        [bash, shim, "status"], env=env, capture_output=True, text=True, check=False
+    )
+    assert result.stdout.strip() == "disabled", result.stderr
+    assert not (wt / ".plane/local.env").exists()
+    # Without a main checkout value the shim cannot find the toolchain.
+    (main / ".plane/local.env").write_text("PLANE_WORKSPACE=x\n")
+    result = subprocess.run(  # noqa: S603 - fixed local shim
+        [bash, shim, "status"], env=env, capture_output=True, text=True, check=False
+    )
+    assert result.stdout.strip() == "invalid"
+    assert KEY not in result.stdout + result.stderr
+
+
 PROJECT = "11111111-1111-4111-8111-111111111111"
 LABEL = installer["LABEL"]
 ENV = {"PLANE_API_KEY": "fake-key", "PLANE_API_URL": "https://plane.example.test"}
@@ -353,3 +411,26 @@ def test_edited_legacy_block_still_refused(tmp_path):
         revert(tmp_path)
     with pytest.raises(ValueError, match="changed"):
         apply(tmp_path)
+
+
+def legacy_shim_install(path):
+    apply(path)
+    shim = path / ".plane/plane.sh"
+    assert shim.read_text() == installer["SHIM"]
+    shim.write_text(installer["LEGACY_SHIM"])
+    shim.chmod(0o755)
+
+
+def test_revert_restores_install_with_pre_worktree_shim(tmp_path):
+    legacy_shim_install(tmp_path)
+    (tmp_path / ".plane/local.env").unlink()
+    revert(tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
+def test_repeat_apply_on_pre_worktree_shim_reports_outdated_without_rewriting(tmp_path, capsys):
+    legacy_shim_install(tmp_path)
+    capsys.readouterr()
+    apply(tmp_path)
+    assert "predates the worktree fallback" in capsys.readouterr().out
+    assert (tmp_path / ".plane/plane.sh").read_text() == installer["LEGACY_SHIM"]

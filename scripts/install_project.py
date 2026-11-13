@@ -46,6 +46,9 @@ LEGACY_BLOCK = (
     "<!-- plane-toolchain:end -->\n"
 )
 SHIM = (TEMPLATES / "plane.sh").read_text()
+# Shim as installed by PTC-48, before the worktree fallback. Installs made then still carry it:
+# revert accepts it, and apply reports it as outdated without rewriting it.
+LEGACY_SHIM = (TEMPLATES / "plane.sh.legacy").read_text()
 GITIGNORE = (
     "# Local Plane values, secrets and switch state; never commit them.\n"
     "local.env\n*.enc.env\nenable-backup.json\n.plane-*\n.backup-*\n"
@@ -82,7 +85,7 @@ class Changed(ValueError):
     """An installed artefact no longer matches what the installer wrote."""
 
 
-def insert_file(content, *, reuse=False):
+def insert_file(content, *, reuse=False, also=()):
     def insert(old):
         # Revert keeps an identical .gitignore while ignored local files remain.
         if old is not None and not (reuse and old == content):
@@ -90,7 +93,7 @@ def insert_file(content, *, reuse=False):
         return content
 
     def remove(text, created):
-        if text != content:
+        if text != content and text not in also:
             raise Changed("changed since installation")
         return None
 
@@ -192,7 +195,7 @@ def remove_codex(text, created):
 
 
 KINDS = {
-    "shim": insert_file(SHIM),
+    "shim": insert_file(SHIM, also=(LEGACY_SHIM,)),
     "gitignore": insert_file(GITIGNORE, reuse=True),
     "include": insert_file("@AGENTS.md\n"),
     "block": (insert_block, remove_block),
@@ -427,6 +430,11 @@ def outdated(target, receipt):
             print(
                 f"{rel}: Plane block predates the awaiting-decision rule. Revert, then apply "
                 "again to get the current block."
+            )
+        if entry["kind"] == "shim" and text == LEGACY_SHIM:
+            print(
+                f"{rel}: shim predates the worktree fallback. Revert, then apply again "
+                "to get the current shim."
             )
 
 
