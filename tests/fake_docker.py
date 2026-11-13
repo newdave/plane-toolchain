@@ -237,6 +237,43 @@ class FakeDocker:
             return 0, f"celery\t{depth}\nother\t0\n".encode()
         return None
 
+    def kill_at(self, index, when):
+        """Simulate SIGKILL of the program around docker call number `index` (0-based).
+
+        Calls are counted across the CLI and the create-container API. `when` is "before" (the
+        call never happens) or "after" (it took effect, the program never saw the answer). Once
+        killed, nothing else reaches the host, so no handler can tidy up after the kill.
+        "fail" is no kill: call `index` fails once with the program alive (create: HTTP 409).
+        """
+        assert when in ("before", "after", "fail")
+        state = {"count": 0, "dead": False}
+
+        def armed(real):
+            def call(*args, **kw):
+                if state["dead"]:
+                    raise Killed("already dead")
+                number, state["count"] = state["count"], state["count"] + 1
+                if number == index and when == "before":
+                    state["dead"] = True
+                    raise Killed(f"before call {index}")
+                if number == index and when == "fail":
+                    state["failed"] = args
+                    if real == create:
+                        raise ValueError("Derived API container creation failed")
+                    return 1, b""
+                result = real(*args, **kw)
+                if number == index and when == "after":
+                    state["dead"] = True
+                    raise Killed(f"after call {index}")
+                return result
+
+            return call
+
+        create = self.create
+        self.execute = armed(self.execute)
+        self.create = armed(create)
+        return state
+
     def crash_at(self, label):
         self.crash_label = label
 

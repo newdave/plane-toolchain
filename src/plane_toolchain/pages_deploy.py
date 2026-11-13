@@ -350,11 +350,8 @@ def restore_any(name, backup, reverted, probe, docker, policy):
                 pass
 
 
-def finish_revert(name, backup, docker, probe, health):
-    """Complete a revert killed after `rename name -> reverted`: promote the original."""
-    held = json.loads(docker("inspect", backup))[0]  # Raises when the backup is missing.
-    if source_label(held) is not None:
-        docker("inspect", name)  # A labelled backup is a derived: not ours to promote; raise.
+def promotion_policy(held, name, docker, probe):
+    """Policy for the original about to run as `name`; keeps every parked derived off."""
     prefix = name + "-pages-reverted-"
     try:  # Optional lookup: a failing `ps` falls through to the default policy.
         listing = docker("ps", "-a", "--filter", "name=" + prefix, "--format", "{{.Names}}")
@@ -371,10 +368,28 @@ def finish_revert(name, backup, docker, probe, health):
         policy = held_policy(held)
     for parked_name in parked:
         set_restart(probe, "no", parked_name)  # Never auto-start beside the API.
+    return policy
+
+
+def finish_revert(name, backup, docker, probe, health):
+    """Complete a revert killed after `rename name -> reverted`: promote the original."""
+    held = json.loads(docker("inspect", backup))[0]  # Raises when the backup is missing.
+    if source_label(held) is not None:
+        docker("inspect", name)  # A labelled backup is a derived: not ours to promote; raise.
+    policy = promotion_policy(held, name, docker, probe)
     docker("rename", backup, name)
     set_restart(probe, policy, name)
     docker("start", name)
     health(name, pages=False)  # On failure the original stays running.
+    return "Original API container restored"
+
+
+def start_restored(current, name, docker, probe, health):
+    """Complete a revert killed after `rename backup -> name`: the original is not running."""
+    policy = promotion_policy(current, name, docker, probe)
+    set_restart(probe, policy, name)
+    docker("start", name)
+    health(name, pages=False)
     return "Original API container restored"
 
 
@@ -384,6 +399,8 @@ def revert(current, payload, backup, docker, probe, health, now):
         return finish_revert(name, backup, docker, probe, health)
     if not probe("inspect", backup):
         if source_label(current) is None:
+            if not current["State"].get("Running"):
+                return start_restored(current, name, docker, probe, health)
             return "Original API container already restored"
         docker("inspect", backup)  # Fail before any change when no rollback container exists.
     # Any source label marks our derived container, including one built from older source.
@@ -613,7 +630,9 @@ REMOTE = program(
         check,
         restore_any,
         held_policy,
+        promotion_policy,
         finish_revert,
+        start_restored,
         revert,
         failed_name,
         reconcile,
