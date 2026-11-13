@@ -70,6 +70,10 @@ mise run owner:plane-workspace-rename:revert
 
 The code is tested against fakes, not a real Plane. Verify these against a Plane CE v1.4.3 container before the first apply. Treat any mismatch as a blocker.
 
+`check` now probes the structural assumptions itself, read-only, through Django's `_meta`, and refuses (so apply refuses too) when one is wrong. For each model it checks the table name, that an unfiltered manager exists (`all_objects`, else the base manager) and that every field the snippet reads or writes exists with the expected kind: the link columns are text, the JSON columns are JSON stored as `jsonb`, the binary columns are binary, and `workspace_id` exists on every owned model (including `Page` and `Description`). Every mismatch is printed by model and field, never row content, for example `Model mismatch: page.workspace_id (missing)` or `Model mismatch: notification.data (db_type, expected jsonb, found json)`. A mismatch means the snippet was written for a different Plane: do not work around it, report it. The list below is what the probe cannot know.
+
+The owner should run `mise run owner:plane-workspace-rename:check` once against the real v1.4.3 deployment (or a copy) and record the result: the probe has only been run against fakes.
+
 - `EmailNotificationLog` exists (table `email_notification_logs`) and has no workspace column. The snippet attributes a row to the old workspace when its `data` names `workspace_slug` with the old slug. A reused old slug or a nested key could match unrelated logs, so prefer the top-level key.
 - `Description.workspace_id` exists (table `descriptions`), and comments link to a `Description` row.
 - The comment columns `comment_html`, `comment_json`, `comment_stripped` and `comment_binary` exist as the snippet expects.
@@ -95,6 +99,7 @@ What each refusal means:
 | Message | Meaning and action |
 | --- | --- |
 | `container not found for service <key>` | A container name is wrong. Set the matching `PLANE_*_CONTAINER`. |
+| `Model mismatch: <model>.<field> (<reason>)` | The Plane models differ from what the snippet assumes (reasons `missing`, `kind`, `db_type`, `table`, `manager`). See [Verify before any live run](#verify-before-any-live-run). |
 | `old_missing_or_deleted` | No live workspace has the old slug. |
 | `new_slug_invalid` | The new slug breaks the format, is over 48 characters, is restricted or is already taken (soft-deleted workspaces keep their slug as `<slug>__<epoch>`). The detail says which. |
 | `old_slug_taken`, `workspace_mismatch` | The slugs and the journalled workspace disagree. Find which workspace holds each slug before doing anything else. |

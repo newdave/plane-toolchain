@@ -701,6 +701,16 @@ def report(op, summary, events):
         elif kind == "error":
             detail = " (" + str(event["detail"]) + ")" if "detail" in event else ""
             say("Error: " + str(event.get("reason")) + (" at " + where if where else "") + detail)
+        elif kind == "mismatch":
+            name = str(event.get("model")) + (
+                "." + str(event["field"]) if event.get("field") else ""
+            )
+            found = (
+                f", expected {event.get('expected')}, found {event.get('found')}"
+                if "expected" in event
+                else ""
+            )
+            say(f"Model mismatch: {name} ({event.get('reason')}{found})")
         elif kind == "skip":
             say("Skipped " + where + " (" + str(event.get("reason")) + ")")
         elif kind == "unfixed":

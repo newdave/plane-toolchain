@@ -1,6 +1,7 @@
 """Hardening of the workspace rename host program (PTC-59 to PTC-63)."""
 
 import fcntl
+import json
 import os
 import shutil
 import signal
@@ -410,3 +411,145 @@ def test_kill_script_escalates_to_sigkill_and_reports_a_survivor(tmp_path, monke
 def test_kill_script_ignores_an_unreadable_environ(tmp_path, monkeypatch):
     (tmp_path / "4001").mkdir()  # a process that exited: no environ file
     assert run_killer(tmp_path, "abc", monkeypatch) == 0
+
+
+# --- PTC-62: probe the Plane CE model assumptions in check -------------------------------------
+
+
+def probe(orm):
+    from plane_toolchain import workspace_rename_backend as backend
+
+    events = []
+    ok = backend.run("probe", {}, orm, events.append, None)
+    return ok, events
+
+
+def mismatches(events):
+    return {(e["model"], e["field"], e["reason"]): e for e in events if e["event"] == "mismatch"}
+
+
+def test_probe_passes_when_every_assumption_holds():
+    from test_workspace_rename_backend import make_orm
+
+    ok, events = probe(make_orm())
+    assert ok and events == [{"event": "summary", "ok": True, "step": "probe"}]
+
+
+def test_probe_names_a_missing_field():
+    from test_workspace_rename_backend import make_orm
+
+    orm = make_orm()
+    orm.models["comment"].hidden.add("comment_json")
+    ok, events = probe(orm)
+    assert not ok
+    assert list(mismatches(events)) == [("comment", "comment_json", "missing")]
+    assert events[-1] == {"event": "summary", "ok": False, "step": "probe"}
+
+
+def test_probe_reports_every_mismatch_at_once():
+    from test_workspace_rename_backend import make_orm
+
+    orm = make_orm()
+    orm.models["page"].hidden.add("workspace_id")
+    orm.models["description"].hidden.add("description_stripped")
+    orm.models["workspace"].hidden.add("deleted_at")
+    ok, events = probe(orm)
+    assert not ok
+    assert set(mismatches(events)) == {
+        ("page", "workspace_id", "missing"),
+        ("description", "description_stripped", "missing"),
+        ("workspace", "deleted_at", "missing"),
+    }
+
+
+def test_probe_checks_json_columns_are_jsonb_and_binary_columns_are_binary():
+    from test_workspace_rename_backend import make_orm
+
+    orm = make_orm()
+    orm.models["notification"].types["data"] = ("json", "json")  # json, not jsonb
+    orm.models["issue"].types["description_binary"] = ("text", "text")
+    ok, events = probe(orm)
+    found = mismatches(events)
+    assert not ok
+    assert found[("notification", "data", "db_type")]["expected"] == "jsonb"
+    assert found[("notification", "data", "db_type")]["found"] == "json"
+    assert found[("issue", "description_binary", "kind")]["expected"] == "binary"
+    assert found[("issue", "description_binary", "kind")]["found"] == "text"
+
+
+def test_probe_checks_table_names_and_the_unfiltered_manager():
+    from test_workspace_rename_backend import make_orm
+
+    orm = make_orm()
+    orm.models["email_log"].db_table = "email_logs_renamed"
+    orm.models["comment"].no_manager = True
+    ok, events = probe(orm)
+    found = mismatches(events)
+    assert not ok
+    assert found[("email_log", "", "table")]["found"] == "email_logs_renamed"
+    assert ("comment", "", "manager") in found
+
+
+def test_probe_emits_names_only_never_row_content():
+    from test_workspace_rename_backend import PRIVATE, make_orm
+
+    orm = make_orm()
+    orm.models["issue"].hidden.add("description_json")
+    _, events = probe(orm)
+    assert PRIVATE not in json.dumps(events)
+
+
+def test_check_refuses_on_a_mismatch_before_planning_anything():
+    from test_workspace_rename_backend import make_orm, run_check
+
+    orm = make_orm()
+    orm.models["page"].hidden.add("workspace_id")
+    ok, events = run_check(orm)
+    assert not ok
+    assert not any(e["event"] == "plan" for e in events)
+    assert ("page", "workspace_id", "missing") in mismatches(events)
+    assert events[-1] == {"event": "summary", "ok": False}
+
+
+def test_check_and_apply_refuse_on_a_mismatch_and_say_which(host, capsys):
+    host.orm.models["page"].hidden.add("workspace_id")
+    with pytest.raises(RuntimeError, match="Refused"):
+        host.deploy("check")
+    assert "Model mismatch: page.workspace_id (missing)" in capsys.readouterr().out
+    with pytest.raises(RuntimeError, match="Refused"):
+        host.deploy()
+    assert not mutating(host.fake)
+    assert not (host.directory / "receipt.json").exists()
+
+
+def test_mismatch_report_shows_expected_and_found(host, capsys):
+    host.orm.models["notification"].types["data"] = ("json", "json")
+    with pytest.raises(RuntimeError, match="Refused"):
+        host.deploy("check")
+    out = capsys.readouterr().out
+    assert "Model mismatch: notification.data (db_type, expected jsonb, found json)" in out
+
+
+def test_probe_through_the_assembled_snippet_uses_the_django_meta_api(host):
+    summary, events = wr.run_snippet(
+        "plane-api",
+        wr.snippet_source(),
+        "probe",
+        {},
+        wr.secure_receipt_dir(host.directory),
+        host.fake.popen,
+    )
+    assert summary["ok"] is True
+    host.orm.models["issue"].hidden.add("description_binary")
+    summary, events = wr.run_snippet(
+        "plane-api",
+        wr.snippet_source(),
+        "probe",
+        {},
+        host.directory,
+        host.fake.popen,
+    )
+    assert summary["ok"] is False
+    assert [(e["model"], e["field"]) for e in events if e["event"] == "mismatch"] == [
+        ("issue", "description_binary")
+    ]
