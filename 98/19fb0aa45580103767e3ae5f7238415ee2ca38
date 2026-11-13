@@ -1,0 +1,26 @@
+tests/test_workspace_rename_cli.py
+  s_ede55e2c788ed0::t_ebd95e083b995c 96-97,150
+  s_ede55e2c788ed0::t_6fba566bb9d8a4 78-80,123,152-154
+  s_ede55e2c788ed0::t_f1cf8413ba821d 1-77,81-95,98-122,124-149,151,155-175
+src/plane_toolchain/workspace_rename.py
+  s_ede55e2c788ed0::t_dced8bcac6c147 1170,1172-1266
+  s_ede55e2c788ed0::t_8e7bb6bb60ff41 21
+mise.toml
+  s_ede55e2c788ed0::t_47a59855bbcab6 56-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "9819fb0aa45580103767e3ae5f7238415ee2ca38",
+  "prompts": {},
+  "sessions": {
+    "s_ede55e2c788ed0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0efdfaa0-8892-4410-bfde-2ef5da9736c1",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
