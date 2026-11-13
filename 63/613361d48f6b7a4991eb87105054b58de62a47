@@ -1,0 +1,19 @@
+CHANGELOG.md
+  s_ede55e2c788ed0::t_f575129fe0af12 18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "63613361d48f6b7a4991eb87105054b58de62a47",
+  "prompts": {},
+  "sessions": {
+    "s_ede55e2c788ed0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0efdfaa0-8892-4410-bfde-2ef5da9736c1",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
