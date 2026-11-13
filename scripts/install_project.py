@@ -51,20 +51,41 @@ SHIM = (TEMPLATES / "plane.sh").read_text()
 # revert accepts it, and apply reports it as outdated without rewriting it.
 LEGACY_SHIM = (TEMPLATES / "plane.sh.legacy").read_text()
 # SHA-256 of every shim version revert accepts besides the current template (exact bytes, no
-# normalisation, so an edited shim is still refused). TO ADD A VERSION: when plane.sh changes,
-# keep the outgoing template in the set (digest of its bytes plus the digest of its shfmt form)
-# and add fixtures under tests/fixtures. Forms made with `mise x shfmt@latest -- shfmt <file>`
-# (shfmt v3.14.1, defaults); test_project_install.py checks each digest against its fixture.
+# normalisation, so an edited shim is still refused). A target shfmt hook can reformat the
+# shim, so each accepted source is also covered in these shfmt v3.14.1 styles, generated in a
+# directory with no .editorconfig: `-i 0` (tabs, the defaults), `-i 2`, `-i 2 -ci`, `-i 4`.
+# Any other style is refused: `git checkout` (or reconcile by hand) .plane/plane.sh before
+# revert. TO ADD A VERSION: when plane.sh changes, keep the outgoing template in the set
+# (its bytes plus the four shfmt forms) with fixtures under tests/fixtures; the test checks
+# the set equals exactly the digests of the non-current fixture forms.
 KNOWN_SHIM_SHA256 = {
-    # templates/project/plane.sh.legacy: PTC-48 shim (also matched as LEGACY_SHIM text).
+    # plane.sh.legacy (PTC-48 shim; also matched as LEGACY_SHIM text), raw.
     "553f99744e23a956517c92da48625430921c7fda30f4b46ab8ec86c47cca9308",
-    # templates/project/plane.sh.legacy shfmt-formatted (PTC-48 shim reformatted by a target hook).
+    # plane.sh.legacy, shfmt -i 0.
+    "2f64f488538f08c4d1cf7f395e19923aa9f94f8e0e69c23726cd8d4ba2b4cbe8",
+    # plane.sh.legacy, shfmt -i 2.
     "915912c27ab6315ac4963a6da4737671b79330ec24da8eb1a5840e2cf57de867",
-    # templates/project/plane.sh.pre-shfmt: shim before PTC-54 (PTC-47 worktree fallback).
+    # plane.sh.legacy, shfmt -i 2 -ci.
+    "6a73817b925470f93e9fbb9442b8ed811d05e36dab3057b5d6f7af945c2bbeaf",
+    # plane.sh.legacy, shfmt -i 4.
+    "8b828c55a6399beda01812c860f08954300249c4420c1cbb105619e611c15e54",
+    # plane.sh.pre-shfmt (shim before PTC-54, PTC-47 worktree fallback), raw.
     "35124f25fcdf23a3c5b300915cf752161e4721201d2cdc19f1fae30be2c73710",
-    # templates/project/plane.sh.pre-venv: PTC-54 shim before the VIRTUAL_ENV clearing.
-    # It is shfmt-stable, so its shfmt form is the same bytes.
+    # plane.sh.pre-venv (PTC-54 shim before VIRTUAL_ENV clearing), raw. It is also the
+    # shfmt -i 2 form of plane.sh.pre-venv and of plane.sh.pre-shfmt (shfmt-stable).
     "ba068b6d1f6ad6b1e09c1e6d1e979587eda7ddc675bdfa9dd2d715ef079b97a9",
+    # plane.sh.pre-venv and plane.sh.pre-shfmt, shfmt -i 0 (same bytes from both).
+    "17285686487c6c95aec80260927f4ef7cedf74e1a8d078d5cd630127790eb05e",
+    # plane.sh.pre-venv and plane.sh.pre-shfmt, shfmt -i 2 -ci (same bytes from both).
+    "67c0a37573d63a7ad8a40bd0825a74287ff23b5d8305b78295fd19018aca3d51",
+    # plane.sh.pre-venv and plane.sh.pre-shfmt, shfmt -i 4 (same bytes from both).
+    "fccb403454719381d6e607105361d1feee74465063b67a2730172376b1be43db",
+    # plane.sh (current template), shfmt -i 0. Its raw and -i 2 form is SHIM itself.
+    "5ee180219ba62a63a99622bcf6ed63b1d59004114bd7ab5b7abf16a457b7ad97",
+    # plane.sh (current template), shfmt -i 2 -ci.
+    "3d333a638bc32443f40203e6d3e035de8aebc2205136890ee46dd030d2ceaf60",
+    # plane.sh (current template), shfmt -i 4.
+    "bf5d23d0062e49a0c79b817fa8f42d5a5ae8cb550f0b0ef62f87986badbdd598",
 }
 SETTING_NAMES = ("PLANE_MCP_URL", "PLANE_WORKSPACE", "PLANE_PROJECT")
 GITIGNORE = (
@@ -497,7 +518,7 @@ def label(target, env=None, client=None):
 
 
 def outdated(target, receipt):
-    """Say so when an intact install still has the pre-rule block; never rewrite it."""
+    """Say so when an intact install predates the current files; never rewrite anything."""
     for rel, entry in receipt["entries"].items():
         text = read(target / rel)
         if entry["kind"] == "block" and BLOCK not in text and LEGACY_BLOCK in text:
@@ -505,11 +526,20 @@ def outdated(target, receipt):
                 f"{rel}: Plane block predates the awaiting-decision rule. Revert, then apply "
                 "again to get the current block."
             )
-        if entry["kind"] == "shim" and text == LEGACY_SHIM:
-            print(
-                f"{rel}: shim predates the worktree fallback. Revert, then apply again "
-                "to get the current shim."
-            )
+        if entry["kind"] == "shim" and text != SHIM:
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            if text == LEGACY_SHIM or digest in KNOWN_SHIM_SHA256:
+                print(
+                    f"{rel}: shim is not the current version. Revert, then apply again "
+                    "to update this installation."
+                )
+        if rel == ".claude/settings.json" and entry["kind"] == "hooks-json":
+            servers = json.loads(text).get("enabledMcpjsonServers")
+            if not isinstance(servers, list) or "plane" not in servers:
+                print(
+                    f"{rel}: plane is not pre-approved in enabledMcpjsonServers. Revert, then "
+                    "apply again to update this installation."
+                )
 
 
 def revert(target):

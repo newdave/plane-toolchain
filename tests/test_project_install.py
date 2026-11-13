@@ -433,7 +433,7 @@ def test_repeat_apply_on_pre_worktree_shim_reports_outdated_without_rewriting(tm
     legacy_shim_install(tmp_path)
     capsys.readouterr()
     apply(tmp_path)
-    assert "predates the worktree fallback" in capsys.readouterr().out
+    assert "shim is not the current version" in capsys.readouterr().out
     assert (tmp_path / ".plane/plane.sh").read_text() == installer["LEGACY_SHIM"]
 
 
@@ -459,14 +459,14 @@ def test_revert_survives_prettier_style_json_and_shfmt_stable_shell(tmp_path, st
     assert not (tmp_path / ".plane/install.json").exists()
 
 
+SHFMT_STYLES = ("i0", "i2ci", "i4")
+SHIM_SOURCES = ("plane.sh", "plane.sh.pre-venv", "plane.sh.pre-shfmt", "plane.sh.legacy")
+# Every non-current form revert must accept: older templates, and each source in the shfmt
+# styles `-i 0`, `-i 2` (the .shfmt fixtures), `-i 2 -ci` and `-i 4`.
 SHIM_FORMS = [
-    "templates/project/plane.sh",
-    "templates/project/plane.sh.pre-venv",
-    "tests/fixtures/plane.sh.pre-venv.shfmt",
-    "templates/project/plane.sh.pre-shfmt",
-    "tests/fixtures/plane.sh.pre-shfmt.shfmt",
-    "templates/project/plane.sh.legacy",
-    "tests/fixtures/plane.sh.legacy.shfmt",
+    *(f"templates/project/{name}" for name in SHIM_SOURCES[1:]),
+    *(f"tests/fixtures/{name}.shfmt" for name in SHIM_SOURCES[1:]),
+    *(f"tests/fixtures/{name}.shfmt-{style}" for name in SHIM_SOURCES for style in SHFMT_STYLES),
 ]
 
 
@@ -489,11 +489,13 @@ def test_revert_refuses_one_character_edit_of_any_shim_form(tmp_path, form):
     assert snapshot(tmp_path) == before
 
 
-def test_known_shim_digests_match_fixtures():
-    digests = installer["KNOWN_SHIM_SHA256"]
-    for form in SHIM_FORMS:
-        data = (ROOT / form).read_bytes()
-        assert data == installer["SHIM"].encode() or hashlib.sha256(data).hexdigest() in digests
+def test_known_shim_digests_equal_non_current_forms():
+    current = hashlib.sha256(installer["SHIM"].encode()).hexdigest()
+    forms = {hashlib.sha256((ROOT / form).read_bytes()).hexdigest() for form in SHIM_FORMS}
+    assert installer["KNOWN_SHIM_SHA256"] == forms - {current}
+    # -i 2 of the current template is the shipped shim itself.
+    shipped = (ROOT / "tests/fixtures/plane.sh.shfmt").read_text()
+    assert shipped == installer["SHIM"]
 
 
 def test_revert_refuses_semantically_changed_json(tmp_path):
@@ -563,6 +565,51 @@ def test_settings_edited_after_apply_lose_only_plane(tmp_path):
     assert after == {"enabledMcpjsonServers": ["mine"], "model": "m"}
 
 
+def test_plane_removed_by_user_after_apply_is_not_readded_by_revert(tmp_path):
+    apply(tmp_path)
+    path = tmp_path / ".claude/settings.json"
+    data = json.loads(path.read_text())
+    data["enabledMcpjsonServers"] = ["mine"]
+    path.write_text(json.dumps(data))
+    revert(tmp_path)
+    assert json.loads(path.read_text()) == {"enabledMcpjsonServers": ["mine"]}
+
+
+def old_install(path):
+    """Install as made before PTC-55 and PTC-56: old shim, hooks-json receipt, no approval."""
+    apply(path)
+    receipt = path / ".plane/install.json"
+    data = json.loads(receipt.read_text())
+    data["entries"][".claude/settings.json"]["kind"] = "hooks-json"
+    receipt.write_text(json.dumps(data))
+    settings = path / ".claude/settings.json"
+    old = json.loads(settings.read_text())
+    del old["enabledMcpjsonServers"]
+    settings.write_text(json.dumps(old, indent=2) + "\n")
+    (path / ".plane/plane.sh").write_text(
+        (ROOT / "templates/project/plane.sh.pre-venv").read_text()
+    )
+
+
+def test_repeat_apply_on_old_install_names_both_updates_and_changes_nothing(tmp_path, capsys):
+    old_install(tmp_path)
+    capsys.readouterr()
+    before = snapshot(tmp_path)
+    apply(tmp_path)
+    out = capsys.readouterr().out
+    assert "plane.sh: shim is not the current version" in out
+    assert "settings.json: plane is not pre-approved" in out
+    assert out.count("Revert, then apply again to update this installation.") == 2
+    assert snapshot(tmp_path) == before
+
+
+def test_repeat_apply_on_current_install_has_no_update_notice(tmp_path, capsys):
+    apply(tmp_path)
+    capsys.readouterr()
+    apply(tmp_path)
+    assert "update this installation" not in capsys.readouterr().out
+
+
 def test_receipt_without_server_record_still_reverts(tmp_path):
     apply(tmp_path)
     receipt = tmp_path / ".plane/install.json"
@@ -614,7 +661,7 @@ def test_shim_clears_virtual_env_for_uv(tmp_path):
     assert out.read_text().strip() == "unset"
 
 
-def test_every_uv_run_clears_virtual_env():
+def test_every_uv_command_clears_virtual_env():
     mise = tomllib.loads((ROOT / "mise.toml").read_text())
     for name, task in mise["tasks"].items():
         runs = task.get("run", [])
@@ -630,9 +677,9 @@ def test_every_uv_run_clears_virtual_env():
             else:
                 raise AssertionError(f"{name}: unknown run shape {item!r}")
         for command in commands:
-            if "uv run" in command:
+            if "uv run" in command or "uv sync" in command:
                 unset = task.get("env", {}).get("VIRTUAL_ENV") is False
-                assert unset or "env -u VIRTUAL_ENV uv run" in command, name
+                assert unset or "env -u VIRTUAL_ENV uv " in command, name
     for line in (ROOT / "scripts/plane-mcp.sh").read_text().splitlines():
         if "uv run" in line:
             assert "env -u VIRTUAL_ENV uv run" in line

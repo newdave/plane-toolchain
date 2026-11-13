@@ -16,6 +16,7 @@ script = '(( ! $+functions[_plane_toolchain_prompt_remove] )) || _plane_toolchai
 
 [tasks.setup]
 run = ["uv sync --locked", "npm ci --ignore-scripts --no-audit --no-fund --prefix tools/mcp-remote"]
+env = { VIRTUAL_ENV = false }
 [tasks.lint]
 run = ["uv run --locked ruff check .", "uv run --locked ruff format --check ."]
 env = { VIRTUAL_ENV = false }
