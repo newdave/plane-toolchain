@@ -8,7 +8,7 @@ one running API container, no stranded aside or derived state and sane restart p
 
 import pytest
 from fake_docker import FakeDocker, Killed
-from test_pages_deploy import BACKUP, DIGEST, LABEL, remote, restart, retained, running
+from support_pages_deploy import BACKUP, DIGEST, LABEL, remote, restart, retained, running
 
 
 def fresh():
