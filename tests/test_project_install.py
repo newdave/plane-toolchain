@@ -178,3 +178,61 @@ def test_disabled_hint_names_installed_shim():
         Settings.from_env({"PLANE_CONFIG_ROOT": "/project"})
     with pytest.raises(ValueError, match="mise run plane:enable"):
         Settings.from_env({})
+
+
+KEY = "PLANE_API_KEY-fixture-value"
+GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.org"]
+
+
+def installed_worktree(tmp_path):
+    """An installed project whose .plane files are tracked or ignored as in real use."""
+    main = tmp_path / "proj"
+    main.mkdir()
+    subprocess.run([*GIT, "init", "-q", "-b", "main"], cwd=main, check=True, capture_output=True)  # noqa: S603
+    apply(main, {"PLANE_WORKSPACE": "shared"})
+    (main / ".plane/plane.enc.env").write_text(KEY)
+    subprocess.run([*GIT, "add", "."], cwd=main, check=True, capture_output=True)  # noqa: S603
+    subprocess.run([*GIT, "commit", "-qm", "i"], cwd=main, check=True, capture_output=True)  # noqa: S603
+    wt = tmp_path / "wt"
+    subprocess.run([*GIT, "worktree", "add", "-q", str(wt)], cwd=main, check=True)  # noqa: S603
+    return main, wt
+
+
+def test_installed_worktree_resolves_plane_files_from_main(tmp_path):
+    main, wt = installed_worktree(tmp_path)
+    assert not (wt / ".plane/local.env").exists()
+    assert plane_session.connection(wt, {}) == {"PLANE_WORKSPACE": "shared"}
+    (wt / ".plane").mkdir(exist_ok=True)
+    (wt / ".plane/local.env").write_text("PLANE_WORKSPACE=mine\n")
+    assert plane_session.connection(wt, {}) == {"PLANE_WORKSPACE": "mine"}
+    assert plane_session.main_checkout(wt).resolve() == main.resolve()
+
+
+def test_installed_worktree_symlinked_main_local_env_gets_no_fallback(tmp_path):
+    main, wt = installed_worktree(tmp_path)
+    real = tmp_path / "real.env"
+    real.write_text("PLANE_WORKSPACE=linked\n")
+    (main / ".plane/local.env").unlink()
+    (main / ".plane/local.env").symlink_to(real)
+    assert plane_session.connection(wt, {}) == {}
+
+
+def test_installed_worktree_shim_reads_toolchain_from_main(tmp_path):
+    main, wt = installed_worktree(tmp_path)
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash unavailable")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PLANE_")}
+    shim = str(wt / ".plane/plane.sh")
+    result = subprocess.run(  # noqa: S603 - fixed local shim
+        [bash, shim, "status"], env=env, capture_output=True, text=True, check=False
+    )
+    assert result.stdout.strip() == "disabled", result.stderr
+    assert not (wt / ".plane/local.env").exists()
+    # Without a main checkout value the shim cannot find the toolchain.
+    (main / ".plane/local.env").write_text("PLANE_WORKSPACE=x\n")
+    result = subprocess.run(  # noqa: S603 - fixed local shim
+        [bash, shim, "status"], env=env, capture_output=True, text=True, check=False
+    )
+    assert result.stdout.strip() == "invalid"
+    assert KEY not in result.stdout + result.stderr

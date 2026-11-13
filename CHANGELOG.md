@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Installed projects used from a linked git worktree read the main checkout's git-ignored `.plane/local.env` (merged per key, the worktree's own file wins) and `.plane/plane.enc.env`, in place and never copied. The shim also finds `PLANE_TOOLCHAIN` there. The bridge reuses the main checkout's `mcp-remote` only when `tools/mcp-remote/package-lock.json` has the same SHA-256 in both and the bin stays inside the main `node_modules`; otherwise it fails with the `mise run setup` hint. Symlinked main files and a common dir not named `.git` get no fallback (PTC-47).
 - The workspace rename Django snippet (`workspace_rename_backend.py`) has a read-only `check` that validates the slugs and reports every planned link rewrite per record and field, plus hits it will not fix, as JSON lines with ids, tables, columns and counts only (PTC-34).
 - Agents flag a task blocked on a human decision with a comment holding the question and options plus the `awaiting-decision` label, and remove the label when answered (PTC-51).
 - `owner:plane-pages:build` builds the derived Pages image from the upstream backend image (or `PLANE_BACKEND_IMAGE`) and prints its tag and source digest, without touching any container. Use it for Saltbox-managed hosts where the running API image is local (PTC-45).

@@ -66,7 +66,9 @@ def test_session_no_fallback_outside_git(tmp_path):
 def bridge(tmp_path):
     """Run the real script from a copy inside a temp checkout, with stub sops, uv and mcp-remote."""
 
-    def install(root):
+    def install(root, lock="lock-a"):
+        # The lockfile is tracked in a real checkout, so every worktree has its own.
+        write(root, "tools/mcp-remote/package-lock.json", lock)
         write(root, "scripts/plane-mcp.sh", (REPO / "scripts/plane-mcp.sh").read_text())
         dest = root / "src/plane_toolchain"
         dest.mkdir(parents=True, exist_ok=True)
@@ -80,13 +82,14 @@ def bridge(tmp_path):
     for name in ("sops", "uv"):
         (stubs / name).chmod(0o755)
 
-    def run(root):
+    def run(root, **extra):
         env = {
             "PATH": f"{stubs}:{os.environ['PATH']}",
             "HOME": str(tmp_path / "home"),
             "PLANE_ENABLED": "true",
             "PLANE_MCP_URL": "https://mcp.example.org/mcp",
             "PLANE_WORKSPACE": "demo",
+            **extra,
         }
         return subprocess.run(  # noqa: S603 - fixed argv
             ["bash", str(root / "scripts/plane-mcp.sh")],  # noqa: S607
@@ -96,7 +99,8 @@ def bridge(tmp_path):
             text=True,
         )
 
-    def stub_mcp_remote(root, tag):
+    def stub_mcp_remote(root, tag, lock="lock-a"):
+        write(root, "tools/mcp-remote/package-lock.json", lock)
         path = root / "tools/mcp-remote/node_modules/.bin/mcp-remote"
         write(root, "tools/mcp-remote/node_modules/.bin/mcp-remote", f'#!/bin/sh\necho "{tag}"\n')
         path.chmod(0o755)
@@ -198,3 +202,93 @@ def test_script_nested_copy_in_unrelated_repo_has_no_fallback(tmp_path, bridge):
     assert "SOPS_FILE" not in result.stderr
     assert "outer-bin" not in result.stdout
     assert "mcp-remote missing" in result.stderr
+
+
+def test_script_worktree_lockfile_mismatch_fails_closed(tmp_path, bridge):
+    install, run, stub = bridge
+    main = make_repo(tmp_path / "main")
+    stub(main, "main-bin")
+    wt = worktree(main)
+    install(wt, lock="lock-b")
+    result = run(wt)
+    assert result.returncode == 1
+    assert "mise run setup" in result.stderr
+    assert "main-bin" not in result.stdout
+
+
+def test_script_worktree_symlinked_main_files_get_no_fallback(tmp_path, bridge):
+    install, run, stub = bridge
+    main = make_repo(tmp_path / "main")
+    stub(main, "main-bin")
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    write(real, "key", "x")
+    (main / "config").mkdir()
+    (main / "config/plane.enc.env").symlink_to(real / "key")
+    # A bin that links outside main's node_modules is refused even with a matching lockfile.
+    bin_path = main / "tools/mcp-remote/node_modules/.bin/mcp-remote"
+    write(real, "evil", "#!/bin/sh\necho evil\n")
+    (real / "evil").chmod(0o755)
+    bin_path.unlink()
+    bin_path.symlink_to(real / "evil")
+    wt = worktree(main)
+    install(wt)
+    result = run(wt)
+    assert result.returncode == 1
+    assert "evil" not in result.stdout
+    assert "SOPS_FILE" not in result.stderr
+
+
+def test_script_worktree_accepts_symlinked_bin_inside_main(tmp_path, bridge):
+    install, run, stub = bridge
+    main = make_repo(tmp_path / "main")
+    stub(main, "main-bin")
+    bin_dir = main / "tools/mcp-remote/node_modules/.bin"
+    target = main / "tools/mcp-remote/node_modules/pkg/cli.sh"
+    write(main, "tools/mcp-remote/node_modules/pkg/cli.sh", "#!/bin/sh\necho linked\n")
+    target.chmod(0o755)
+    (bin_dir / "mcp-remote").unlink()
+    (bin_dir / "mcp-remote").symlink_to("../pkg/cli.sh")
+    wt = worktree(main)
+    install(wt)
+    result = run(wt)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "linked"
+
+
+def test_session_symlinked_main_file_and_odd_common_dir_get_no_fallback(tmp_path):
+    main = make_repo(tmp_path / "main")
+    other = tmp_path / "other.env"
+    other.write_text("PLANE_WORKSPACE=linked\n")
+    (main / "config").mkdir()
+    (main / "config/local.env").symlink_to(other)
+    assert plane_session.connection(worktree(main), {}) == {}
+    # A common dir not named .git (a bare repository) gives no main checkout.
+    bare = tmp_path / "bare.git"
+    git(tmp_path, "clone", "-q", "--bare", str(main), str(bare))
+    git(bare, "worktree", "add", "-q", str(tmp_path / "bwt"), "main")
+    assert plane_session.main_checkout(tmp_path / "bwt") is None
+
+
+def test_script_installed_worktree_reads_key_file_in_place(tmp_path, bridge):
+    install, run, stub = bridge
+    toolchain = make_repo(tmp_path / "toolchain")
+    install(toolchain)
+    stub(toolchain, "tool-bin")
+    project = make_repo(tmp_path / "proj")
+    write(project, ".plane/plane.enc.env", "fixture-key-file")
+    wt = worktree(project)
+    result = run(toolchain, PLANE_CONFIG_ROOT=str(wt))
+    assert result.returncode == 0, result.stderr
+    assert "main checkout" in result.stderr
+    used = [x for x in result.stderr.splitlines() if x.startswith("SOPS_FILE=")][0]
+    assert (
+        Path(used.removeprefix("SOPS_FILE=")).resolve()
+        == (project / ".plane/plane.enc.env").resolve()
+    )
+    assert not (wt / ".plane/plane.enc.env").exists()
+    assert "fixture" not in result.stdout + result.stderr.replace("fixture-key-file", "")
+    # A symlinked key file in the main checkout is not followed.
+    (project / ".plane/plane.enc.env").unlink()
+    (project / ".plane/plane.enc.env").symlink_to(tmp_path / "stubs/sops")
+    assert "SOPS_FILE" not in run(toolchain, PLANE_CONFIG_ROOT=str(wt)).stderr
