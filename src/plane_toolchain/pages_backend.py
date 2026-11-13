@@ -28,6 +28,7 @@ LIST_FIELDS = (
 
 # Client-facing text comes only from this table, never from an exception object.
 INPUT_ERRORS = {
+    "object": "Request body must be a JSON object",
     "fields": "Only name, description_html and access are supported",
     "name": "Expected a non-empty page name of at most 255 characters",
     "body": "Invalid page body or access",
@@ -66,6 +67,8 @@ class PageInputError(ValueError):
 
 def creation_payload(data, sanitise, convert):
     """Validate and convert a complete new document before any database write."""
+    if not isinstance(data, dict):
+        raise PageInputError("object")
     if set(data) - {"name", "description_html", "access"}:
         raise PageInputError("fields")
     name = data.get("name")
@@ -83,7 +86,8 @@ def converted_body(body, sanitise, convert):
     clean = sanitise(body)
     converted = convert(clean)
     if (
-        not isinstance(converted.get("description_json"), dict)
+        not isinstance(converted, dict)
+        or not isinstance(converted.get("description_json"), dict)
         or not isinstance(converted.get("description_binary"), str)
         or not converted["description_binary"]
     ):
@@ -97,6 +101,8 @@ def converted_body(body, sanitise, convert):
 
 def update_request(data):
     """Validate an update request; return (description_html, expected updated_at)."""
+    if not isinstance(data, dict):
+        raise PageInputError("object")
     if set(data) - {"description_html", "expected_updated_at", "force"}:
         raise PageInputError("update_fields")
     body = data.get("description_html")
@@ -259,7 +265,10 @@ def routes():
                 timeout=20,
             )
             response.raise_for_status()
-            return response.json()
+            converted = response.json()
+            if not isinstance(converted, dict):
+                raise ValueError("Live reply is not an object")
+            return converted
         except (requests.RequestException, ValueError, KeyError):
             error = APIException("Live document conversion unavailable; nothing written")
             error.status_code = 502

@@ -580,6 +580,74 @@ def test_patch_without_force_returns_fixed_message_before_lookup(monkeypatch):
     assert "lookups" not in calls
 
 
+NON_OBJECT_BODIES = [[], ["name"], None, "text", 7]
+
+
+@pytest.mark.parametrize("body", NON_OBJECT_BODIES)
+def test_pure_validators_reject_non_object_bodies_as_input_errors(body):
+    from plane_toolchain.pages_backend import PageInputError, update_request
+
+    with pytest.raises(PageInputError):
+        creation_payload(body, lambda v: v, lambda v: pytest.fail("Must not convert"))
+    with pytest.raises(PageInputError):
+        update_request(body)
+
+
+@pytest.mark.parametrize("body", NON_OBJECT_BODIES)
+def test_post_non_object_body_is_400_not_500(monkeypatch, body):
+    view, calls, _ = _pages_view(monkeypatch)
+    view.request.data = body
+    with pytest.raises(ValueError, match="JSON object"):
+        view.post(view.request, "w", "x")
+    assert "lookups" not in calls
+
+
+@pytest.mark.parametrize("body", NON_OBJECT_BODIES)
+def test_patch_non_object_body_is_400_not_500(monkeypatch, body):
+    view, calls, _ = _pages_view(monkeypatch)
+    view.request.data = body
+    with pytest.raises(ValueError, match="JSON object"):
+        view.patch(view.request, "w", "x", page_id="y")
+    assert "lookups" not in calls
+
+
+@pytest.mark.parametrize("reply", [[], None, "text", 7])
+def test_post_non_object_live_reply_is_a_conversion_failure(monkeypatch, reply):
+    class Valid:
+        def __init__(self, data):
+            self.data = data
+
+        def is_valid(self, raise_exception=False):
+            return True
+
+        @property
+        def validated_data(self):
+            return self.data
+
+    view, _, _ = _pages_view(monkeypatch, binary=Valid)
+    import sys
+
+    class Reply:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return reply
+
+    class RequestException(Exception):
+        pass
+
+    requests = sys.modules["requests"]
+    requests.RequestException = RequestException
+    requests.post = lambda *args, **kwargs: Reply()
+    monkeypatch.setenv("CE_PLANE_LIVE_URL", "http://live.example.com")
+    view.request.data = {"name": "X", "description_html": "<p>x</p>"}
+    with pytest.raises(Exception) as caught:
+        view.post(view.request, "w", "x")
+    assert str(caught.value) == "Live document conversion unavailable; nothing written"
+    assert caught.value.status_code == 502
+
+
 def test_detail_route_allows_get_and_patch_only(monkeypatch):
     from plane_toolchain import pages_backend
 

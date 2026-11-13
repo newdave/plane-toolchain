@@ -17,7 +17,8 @@ def test_server_payloads_match_existing_deployment_receipts():
         # PTC-19: digest changed (client messages from a fixed table; CodeQL stack-trace alerts).
         # PTC-44: digest changed (page update route, force_close via Redis); see docs/extensions.md.
         # PTC-29: digest changed (comment and docstring wording only).
-        "pages_backend.py": "03376b3dc996fa7300cefbb13cabe74750f4945c7f95f59d0544f2a128afa1d8",
+        # PTC-69: digest changed (non-object request bodies and Live replies are 400/502, not 500).
+        "pages_backend.py": "566f0e63991752f60f215ff9b356a27c11c6ce1edc843bc537aaacdc9ece34f9",
     }
     for name, digest in expected.items():
         assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest

@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Pages backend: a POST or PATCH body that is not a JSON object (list, null, string, number) now returns 400 "Request body must be a JSON object" instead of 500, and a Live conversion reply that is not a JSON object counts as a conversion failure (502, nothing written). The `pages_backend.py` payload digest changed: redeploy needed (`owner:plane-pages:revert`, then `apply`) (PTC-69).
+
 ## [0.2.1] - 2026-11-14
 
 ### Fixed
