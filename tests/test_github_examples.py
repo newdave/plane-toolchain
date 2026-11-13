@@ -245,3 +245,72 @@ def test_comment_for_a_longer_run_id_does_not_count_as_this_run():
 
     asyncio.run(publish(call, values))
     assert len(created) == 1
+
+
+def test_planted_temp_symlink_does_not_escape_the_target(tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep")
+    target = tmp_path / "target"
+    (target / ".github/workflows").mkdir(parents=True)
+    name = sorted(p.name for p in EXAMPLES.glob("*.yml"))[0]
+    (target / ".github/workflows" / f".{name}.tmp").symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink"):
+        install("apply", target)
+    assert outside.read_text() == "keep"
+
+
+def test_planted_receipt_temp_symlink_does_not_escape_the_target(tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep")
+    target = tmp_path / "target"
+    (target / ".agent-state/plane-toolchain").mkdir(parents=True)
+    (target / ".agent-state/plane-toolchain/.workflows.json.tmp").symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink"):
+        install("apply", target)
+    assert outside.read_text() == "keep"
+
+
+def test_stale_regular_temp_file_is_replaced(tmp_path):
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    name = sorted(p.name for p in EXAMPLES.glob("*.yml"))[0]
+    (tmp_path / ".github/workflows" / f".{name}.tmp").write_text("stale")
+    install("apply", tmp_path)
+    assert not list((tmp_path / ".github/workflows").glob(".*.tmp"))
+
+
+def test_place_refuses_to_overwrite_and_reports_missing_hard_links(tmp_path, monkeypatch):
+    place = installer["place"]
+    (tmp_path / "a.yml").write_text("mine")
+    with pytest.raises(ValueError, match="already exists"):
+        place(tmp_path, "a.yml", b"new")
+    assert (tmp_path / "a.yml").read_text() == "mine"
+
+    def no_links(*args):
+        raise OSError("unsupported")
+
+    monkeypatch.setitem(place.__globals__["os"].__dict__, "link", no_links)
+    with pytest.raises(ValueError, match="hard links"):
+        place(tmp_path, "b.yml", b"new")
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("sent", "stored"),
+    [
+        ("if a < b and c > d then stop", "<p>if a &lt; b and c &gt; d then stop</p>"),
+        ("a &amp; b", "<p>a &amp;  b</p>\n"),
+        ("<p>one</p><p>two</p>", "<p>one</p>\n<p>two</p>"),
+        ("<p>x <strong>y</strong></p>", "<p>x <b>y</b></p>"),
+        ("plain text", "<p>plain text</p>"),
+    ],
+)
+def test_body_text_matches_what_plane_stores(sent, stored):
+    from plane_toolchain.cli_commands import body_text
+
+    assert body_text(sent) == body_text(stored)
+
+
+def test_body_text_distinguishes_different_text():
+    from plane_toolchain.cli_commands import body_text
+
+    assert body_text("a < b") != body_text("a b")

@@ -79,8 +79,9 @@ async def publish(call, values):
 
 async def has_comment(call, arguments, evidence):
     """Return True if a comment on the task already links this workflow run."""
-    # Match the whole quoted href so run 12 never matches run 123.
-    needle = f'href="{html.escape(evidence)}"'
+    # Same containment test as the readback below, plus "not followed by a digit" so
+    # run 12 never matches run 123. Independent of how the server quotes attributes.
+    needle = re.compile(re.escape(evidence) + r"(?!\d)")
     cursor = None
     for _ in range(MAX_PAGES):
         request = dict(arguments, action="list", per_page=100)
@@ -89,7 +90,7 @@ async def has_comment(call, arguments, evidence):
         listing = await call("workitem_comment", request)
         rows = listing.get("results", []) if isinstance(listing, dict) else listing
         if any(
-            needle in str(row.get("comment_html", ""))
+            needle.search(str(row.get("comment_html", "")))
             for row in rows or []
             if isinstance(row, dict)
         ):

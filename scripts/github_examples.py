@@ -26,14 +26,27 @@ def contained(target, relative):
     return current
 
 
+def stage(temporary, data):
+    """Create temporary exclusively (never through a symlink) and write data to it."""
+    if temporary.is_symlink():
+        raise ValueError("Refusing symlinked installation paths")
+    temporary.unlink(missing_ok=True)  # a stale temp file from an interrupted run
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(temporary, flags, 0o644)
+    except OSError:
+        raise ValueError("Cannot create a temporary file safely") from None
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+
+
 def write_atomic(path, data):
     """Write data to path through a temporary sibling so a crash never leaves a partial file."""
     temporary = path.with_name(f".{path.name}.tmp")
     try:
-        with temporary.open("wb") as output:
-            output.write(data)
-            output.flush()
-            os.fsync(output.fileno())
+        stage(temporary, data)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -44,11 +57,15 @@ def place(destination, name, data):
     temporary = destination / f".{name}.tmp"
     final = destination / name
     try:
-        with temporary.open("wb") as output:
-            output.write(data)
-            output.flush()
-            os.fsync(output.fileno())
-        os.link(temporary, final)
+        stage(temporary, data)
+        try:
+            os.link(temporary, final)  # fails if final exists: no overwrite
+        except FileExistsError:
+            raise ValueError("Workflow file already exists; refusing overwrite") from None
+        except OSError:
+            raise ValueError(
+                "This filesystem does not support hard links; cannot install"
+            ) from None
     finally:
         temporary.unlink(missing_ok=True)
 

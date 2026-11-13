@@ -3,7 +3,7 @@
 import argparse
 import re
 import sys
-from html import unescape
+from html.parser import HTMLParser
 from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
@@ -61,10 +61,27 @@ async def resolve_task(
     return found_project, canonical(found["id"])
 
 
+class _Text(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
 def body_text(html: Any) -> str:
-    """Return the visible text of an HTML fragment with whitespace collapsed."""
-    text = re.sub(r"<[^>]*>", " ", str(html or ""))
-    return " ".join(unescape(text).split())
+    """Return the text nodes of an HTML fragment with whitespace collapsed.
+
+    A stray "<" that does not start a tag (as in "a < b") is escaped first so it
+    stays text, matching how Plane stores it (&lt;).
+    """
+    source = re.sub(r"<(?![A-Za-z/!?])", "&lt;", str(html or ""))
+    parser = _Text()
+    parser.feed(source)
+    parser.close()
+    # Tags separate words: join nodes with a space, then collapse.
+    return " ".join(" ".join(parser.parts).split())
 
 
 def read_body(namespace: argparse.Namespace, option: str) -> str:
