@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- CLI readback is stronger: `task update` compares the normalised body text instead of only checking it is non-empty, `page create` also checks the access level and a non-empty body, and a task identifier whose project differs from an explicit `--project` is a usage error (exit 2) instead of silently overriding it (PTC-77).
+
 ## [0.2.1] - 2026-11-14
 
 ### Fixed
