@@ -12,6 +12,7 @@ from uuid import UUID
 
 from plane_toolchain.connection import connection
 
+MAX_PAGES = 50
 TRUSTED_EVENTS = {"workflow_dispatch", "push", "release", "schedule"}
 
 
@@ -46,7 +47,9 @@ async def publish(call, values):
     if action == "check":
         await call("project", {"action": "retrieve", "project_id": project})
         return
-    await call("workitem", {"action": "retrieve", "project_id": project, "workitem_id": item})
+    task = await call(
+        "workitem", {"action": "retrieve", "project_id": project, "workitem_id": item}
+    )
     if state:
         target = await call(
             "state", {"action": "retrieve", "project_id": project, "state_id": state}
@@ -55,18 +58,49 @@ async def publish(call, values):
             raise ValueError("Configured state is not in the completed group")
     body = f'<p>GitHub {action} evidence: <a href="{html.escape(evidence)}">workflow run</a></p>'
     arguments = {"project_id": project, "workitem_id": item}
-    # No automatic retries: a timeout can mean the write succeeded remotely.
-    comment = await call("workitem_comment", dict(arguments, action="create", comment_html=body))
-    saved = await call(
-        "workitem_comment", dict(arguments, action="retrieve", comment_id=comment["id"])
-    )
-    if evidence not in saved.get("comment_html", ""):
-        raise ValueError("Comment readback did not confirm evidence; inspect Plane")
-    if state:
+    # Idempotent retry: a rerun of the same workflow run finds its own comment and state
+    # and does not repeat either write.
+    if not await has_comment(call, arguments, evidence):
+        # No automatic retries: a timeout can mean the write succeeded remotely.
+        comment = await call(
+            "workitem_comment", dict(arguments, action="create", comment_html=body)
+        )
+        saved = await call(
+            "workitem_comment", dict(arguments, action="retrieve", comment_id=comment["id"])
+        )
+        if evidence not in saved.get("comment_html", ""):
+            raise ValueError("Comment readback did not confirm evidence; inspect Plane")
+    if state and (task or {}).get("state") != state:
         await call("workitem", dict(arguments, action="update", state=state))
         saved = await call("workitem", dict(arguments, action="retrieve"))
         if saved.get("state") != state:
             raise ValueError("Task state readback did not confirm completion; inspect Plane")
+
+
+async def has_comment(call, arguments, evidence):
+    """Return True if a comment on the task already links this workflow run."""
+    # Same containment test as the readback below, plus "not followed by a digit" so
+    # run 12 never matches run 123. Independent of how the server quotes attributes.
+    needle = re.compile(re.escape(evidence) + r"(?!\d)")
+    cursor = None
+    for _ in range(MAX_PAGES):
+        request = dict(arguments, action="list", per_page=100)
+        if cursor:
+            request["cursor"] = cursor
+        listing = await call("workitem_comment", request)
+        rows = listing.get("results", []) if isinstance(listing, dict) else listing
+        if any(
+            needle.search(str(row.get("comment_html", "")))
+            for row in rows or []
+            if isinstance(row, dict)
+        ):
+            return True
+        if not (isinstance(listing, dict) and listing.get("next_page_results")):
+            return False
+        cursor = listing.get("next_cursor")
+        if not cursor:
+            return False
+    return False
 
 
 async def main():

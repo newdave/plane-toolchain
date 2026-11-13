@@ -19,3 +19,14 @@ Plane owns task scope, acceptance, dependencies and status. Keep task status ali
 The CE backend adapter is version-specific. Pure unit tests cover validation, normalisation, transport, local controls and deployment payload preservation; they do not replace a staged integration test against a new Plane image. Do not run host deployment tasks as part of ordinary development or CI.
 
 The Actions examples remain under `examples/github/` so they are not active by default. Keep credentials out of pull-request code and use immutable toolchain revisions.
+
+## Releases and the release dry run
+
+The `release` workflow runs when a `v*.*.*` tag is pushed. It requires the tag to be on the default branch and to match the `pyproject.toml` version, requires a `CHANGELOG.md` section for the version, and requires a successful `check` run from GitHub Actions on the tagged commit before it creates the release. Only the gate and release steps hold `GH_TOKEN`.
+
+Dry run on a scratch fork (never on the real repository):
+
+1. Fork, then enable Actions. Merge a version bump and its CHANGELOG section to the fork's default branch and wait for `check` to pass.
+2. Push the tag `vX.Y.Z`. Expect the release to be created with the notes and a `Pin:` line.
+3. Negative test: tag a commit whose `check` is red, still running or absent (for example a commit pushed with CI skipped). Expect the gate step to fail with "no successful 'check' run" and no release.
+4. If a tag is pushed before CI finishes, re-run the workflow once `check` has passed.

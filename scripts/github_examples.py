@@ -2,61 +2,128 @@
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
+
+RECEIPT = Path(".agent-state/plane-toolchain/workflows.json")
+WORKFLOWS = Path(".github/workflows")
 
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def contained(target, relative):
+    """Return target/relative after refusing a symlink in any component below target."""
+    current = target
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("Refusing symlinked installation paths")
+    if current.exists() and not current.resolve().is_relative_to(target):
+        raise ValueError("Refusing installation paths outside the target")
+    return current
+
+
+def stage(temporary, data):
+    """Create temporary exclusively (never through a symlink) and write data to it."""
+    if temporary.is_symlink():
+        raise ValueError("Refusing symlinked installation paths")
+    temporary.unlink(missing_ok=True)  # a stale temp file from an interrupted run
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(temporary, flags, 0o644)
+    except OSError:
+        raise ValueError("Cannot create a temporary file safely") from None
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+
+
+def write_atomic(path, data):
+    """Write data to path through a temporary sibling so a crash never leaves a partial file."""
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        stage(temporary, data)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def place(destination, name, data):
+    """Create destination/name from data, never replacing an existing file."""
+    temporary = destination / f".{name}.tmp"
+    final = destination / name
+    try:
+        stage(temporary, data)
+        try:
+            os.link(temporary, final)  # fails if final exists: no overwrite
+        except FileExistsError:
+            raise ValueError("Workflow file already exists; refusing overwrite") from None
+        except OSError:
+            raise ValueError(
+                "This filesystem does not support hard links; cannot install"
+            ) from None
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def install(operation, target):
     target = target.resolve(strict=True)
-    receipt = target / ".agent-state/plane-toolchain/workflows.json"
-    destination = target / ".github/workflows"
+    receipt = contained(target, RECEIPT)
+    destination = contained(target, WORKFLOWS)
     source = Path(__file__).resolve().parents[1] / "examples/github"
-    files = sorted(source.glob("*.yml"))
-    if receipt.is_symlink() or destination.is_symlink() or receipt.parent.is_symlink():
-        raise ValueError("Refusing symlinked installation paths")
+    files = {path.name: path for path in sorted(source.glob("*.yml"))}
+    current = {name: digest(path) for name, path in files.items()}
     if operation == "apply":
         if receipt.exists():
             saved = json.loads(receipt.read_text())
-            if all(
-                (destination / name).is_file() and digest(destination / name) == value
-                for name, value in saved.items()
-            ):
+            if saved != current:
+                raise ValueError(
+                    "Installed examples are outdated or differ from this checkout; "
+                    "revert, then apply again"
+                )
+            missing = [name for name in saved if not (destination / name).exists()]
+            for name in saved:
+                path = destination / name
+                if path.exists() and (path.is_symlink() or digest(path) != saved[name]):
+                    raise ValueError("Installed files changed; preserve and reconcile them")
+            if not missing:
                 print("Workflow examples already installed")
                 return
-            raise ValueError("Installed files changed; preserve and reconcile them")
+            for name in missing:
+                place(destination, name, files[name].read_bytes())
+            print("Completed an interrupted installation; review before committing")
+            return
         if any(
-            (destination / path.name).exists() or (destination / path.name).is_symlink()
-            for path in files
+            (destination / name).exists() or (destination / name).is_symlink() for name in files
         ):
             raise ValueError("Workflow file already exists; refusing overwrite")
         destination.mkdir(parents=True, exist_ok=True)
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        saved = {}
-        for path in files:
-            dest = destination / path.name
-            with dest.open("xb") as output:
-                output.write(path.read_bytes())
-            saved[path.name] = digest(dest)
-        receipt.write_text(json.dumps(saved, indent=2) + "\n")
+        # The receipt lists every file before any is placed, so an interrupted apply is
+        # visible and can be completed or reverted instead of leaving unrecorded files.
+        write_atomic(receipt, (json.dumps(current, indent=2) + "\n").encode())
+        for name, path in files.items():
+            place(destination, name, path.read_bytes())
         print("Installed three workflow examples; review before committing")
     elif operation == "revert":
         if not receipt.exists():
             print("No installation receipt; nothing removed")
             return
         saved = json.loads(receipt.read_text())
-        allowed = {path.name for path in files}
-        if not saved or set(saved) - allowed:
+        if not saved or set(saved) - set(files):
             raise ValueError("Invalid installation receipt")
         for name, value in saved.items():
             path = destination / name
+            if not path.exists() and not path.is_symlink():
+                continue  # an interrupted apply never placed this file
             if path.is_symlink() or not path.is_file() or digest(path) != value:
                 raise ValueError("Installed file changed; refusing removal")
         for name in saved:
-            (destination / name).unlink()
+            (destination / name).unlink(missing_ok=True)
         receipt.unlink()
         print("Removed unchanged workflow examples")
     else:

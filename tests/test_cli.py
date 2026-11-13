@@ -258,6 +258,32 @@ def test_task_update_state_and_html_readback(tmp_path):
     assert fake.calls[0][1]["description_html"] == "x"
 
 
+def test_task_update_body_mismatch_exits_5(tmp_path):
+    fake = Fake([{}, {"description_html": "<p>something else</p>"}])
+    code, _, _ = run(["task", "update", OTHER, "--html", "<p>x</p>"], fake, tmp_path)
+    assert code == 5
+
+
+def test_task_update_body_normalised_by_server_is_confirmed(tmp_path):
+    fake = Fake([{}, {"description_html": "<p>a &amp;  b</p>\n"}])
+    code, _, _ = run(["task", "update", OTHER, "--html", "a &amp; b"], fake, tmp_path)
+    assert code == 0
+
+
+def test_identifier_in_another_project_than_explicit_project_is_usage_error(tmp_path):
+    fake = Fake([{"id": W1, "project": OTHER}])
+    code, _, err = run(["--project", PROJECT, "task", "show", "PTC-12"], fake, tmp_path)
+    assert code == 2
+    assert "--project" in err
+    assert len(fake.calls) == 1
+
+
+def test_identifier_project_wins_over_default_project_only(tmp_path):
+    fake = Fake([{"id": W1, "project": OTHER}, {"id": W1}])
+    code, _, _ = run(["task", "show", "PTC-12"], fake, tmp_path)
+    assert code == 0
+
+
 def test_task_update_without_fields_is_usage_error_without_connecting(tmp_path):
     fake = Fake()
     code, _, err = run(["task", "update", OTHER], fake, tmp_path)
@@ -405,8 +431,11 @@ def relations(kind, *ids):
     }
 
 
+PLAN_PAGE = {"id": PAGE, "name": "Plan", "access": 1, "description_html": "<p>x</p>"}
+
+
 def test_page_create_private_by_default_and_rereads(tmp_path):
-    fake = Fake([{"id": PAGE, "name": "Plan"}, {"id": PAGE, "name": "Plan"}])
+    fake = Fake([{"id": PAGE, "name": "Plan"}, PLAN_PAGE])
     code, out, _ = run(["page", "create", "--name", "Plan", "--html", "<p>x</p>"], fake, tmp_path)
     assert code == 0
     assert fake.calls == [
@@ -426,8 +455,11 @@ def test_page_create_private_by_default_and_rereads(tmp_path):
 
 
 def test_page_create_public_flag(tmp_path):
-    fake = Fake([{"id": PAGE, "name": "Plan"}, {"id": PAGE, "name": "Plan"}])
-    run(["page", "create", "--name", "Plan", "--html", "<p>x</p>", "--public"], fake, tmp_path)
+    fake = Fake([{"id": PAGE, "name": "Plan"}, {**PLAN_PAGE, "access": 0}])
+    code, _, _ = run(
+        ["page", "create", "--name", "Plan", "--html", "<p>x</p>", "--public"], fake, tmp_path
+    )
+    assert code == 0
     assert fake.calls[0][1]["access"] == 0
 
 
@@ -436,6 +468,18 @@ def test_page_create_name_mismatch_exits_5(tmp_path):
     code, _, err = run(["page", "create", "--name", "Plan", "--html", "<p>x</p>"], fake, tmp_path)
     assert code == 5
     assert "readback" in err
+
+
+def test_page_create_access_mismatch_exits_5(tmp_path):
+    fake = Fake([{"id": PAGE, "name": "Plan"}, {**PLAN_PAGE, "access": 0}])
+    code, _, _ = run(["page", "create", "--name", "Plan", "--html", "<p>x</p>"], fake, tmp_path)
+    assert code == 5
+
+
+def test_page_create_empty_body_readback_exits_5(tmp_path):
+    fake = Fake([{"id": PAGE, "name": "Plan"}, {**PLAN_PAGE, "description_html": "<p></p>"}])
+    code, _, _ = run(["page", "create", "--name", "Plan", "--html", "<p>x</p>"], fake, tmp_path)
+    assert code == 5
 
 
 def test_page_list_and_show(tmp_path):
@@ -619,6 +663,6 @@ def test_interrupt_during_read_is_silent(tmp_path):
 def test_name_readback_ignores_surrounding_whitespace(tmp_path):
     fake = Fake([{}, {"name": "Plan"}])
     assert run(["task", "update", OTHER, "--name", " Plan "], fake, tmp_path)[0] == 0
-    fake = Fake([{"id": PAGE, "name": " Plan"}, {"id": PAGE, "name": "Plan "}])
+    fake = Fake([{"id": PAGE, "name": " Plan"}, {**PLAN_PAGE, "name": "Plan "}])
     code, _, _ = run(["page", "create", "--name", "Plan", "--html", "<p>x</p>"], fake, tmp_path)
     assert code == 0

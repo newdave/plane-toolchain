@@ -3,6 +3,7 @@
 import argparse
 import re
 import sys
+from html.parser import HTMLParser
 from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
@@ -39,8 +40,14 @@ def task_reference(ref: str) -> None:
         raise UsageError("Task must be a UUID or an identifier such as PTC-12")
 
 
-async def resolve_task(call: Call, project: str, ref: str) -> tuple[str, str]:
-    """Return (project_id, workitem_id) for a UUID or identifier reference."""
+async def resolve_task(
+    call: Call, project: str, ref: str, explicit: str | None = None
+) -> tuple[str, str]:
+    """Return (project_id, workitem_id) for a UUID or identifier reference.
+
+    An identifier carries its own project. If --project was given (explicit) and
+    names a different project, refuse instead of silently picking one.
+    """
     task_reference(ref)
     if is_uuid(ref):
         return canonical(project), canonical(ref)
@@ -48,7 +55,33 @@ async def resolve_task(call: Call, project: str, ref: str) -> tuple[str, str]:
         "workitem",
         {"action": "retrieve_by_identifier", "workitem_identifier": ref.upper()},
     )
-    return canonical(found["project"]), canonical(found["id"])
+    found_project = canonical(found["project"])
+    if explicit and canonical(explicit) != found_project:
+        raise UsageError("Task is not in the --project given")
+    return found_project, canonical(found["id"])
+
+
+class _Text(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
+def body_text(html: Any) -> str:
+    """Return the text nodes of an HTML fragment with whitespace collapsed.
+
+    A stray "<" that does not start a tag (as in "a < b") is escaped first so it
+    stays text, matching how Plane stores it (&lt;).
+    """
+    source = re.sub(r"<(?![A-Za-z/!?])", "&lt;", str(html or ""))
+    parser = _Text()
+    parser.feed(source)
+    parser.close()
+    # Tags separate words: join nodes with a space, then collapse.
+    return " ".join(" ".join(parser.parts).split())
 
 
 def read_body(namespace: argparse.Namespace, option: str) -> str:
@@ -124,7 +157,9 @@ async def task_list(call: Call, project: str, namespace: argparse.Namespace) -> 
 
 
 async def task_show(call: Call, project: str, namespace: argparse.Namespace) -> Any:
-    project_id, workitem_id = await resolve_task(call, project, namespace.ref)
+    project_id, workitem_id = await resolve_task(
+        call, project, namespace.ref, getattr(namespace, "project", None)
+    )
     return await call(
         "workitem",
         {"action": "retrieve", "project_id": project_id, "workitem_id": workitem_id},
@@ -132,7 +167,9 @@ async def task_show(call: Call, project: str, namespace: argparse.Namespace) -> 
 
 
 async def task_update(call: Call, project: str, namespace: argparse.Namespace) -> Any:
-    project_id, workitem_id = await resolve_task(call, project, namespace.ref)
+    project_id, workitem_id = await resolve_task(
+        call, project, namespace.ref, getattr(namespace, "project", None)
+    )
     sent: dict = {}
     for field in ("name", "state", "priority"):
         if getattr(namespace, field) is not None:
@@ -146,8 +183,8 @@ async def task_update(call: Call, project: str, namespace: argparse.Namespace) -
     item = await call("workitem", {"action": "retrieve", **ids})
     for field, value in sent.items():
         if field == "description_html":
-            # Plane may normalise HTML (e.g. wrap in <p>), so only require non-empty.
-            if not item.get(field):
+            # Plane may normalise HTML (e.g. wrap in <p>), so compare the text.
+            if body_text(item.get(field)) != body_text(value):
                 raise ReadbackError
         elif field == "priority" and value == "none":
             # Plane stores "no priority" as null.
@@ -162,7 +199,9 @@ async def task_update(call: Call, project: str, namespace: argparse.Namespace) -
 
 
 async def comment_list(call: Call, project: str, namespace: argparse.Namespace) -> Any:
-    project_id, workitem_id = await resolve_task(call, project, namespace.ref)
+    project_id, workitem_id = await resolve_task(
+        call, project, namespace.ref, getattr(namespace, "project", None)
+    )
     arguments: dict = {"action": "list", "project_id": project_id, "workitem_id": workitem_id}
     if namespace.per_page is not None:
         arguments["per_page"] = namespace.per_page
@@ -172,7 +211,9 @@ async def comment_list(call: Call, project: str, namespace: argparse.Namespace) 
 
 
 async def comment_add(call: Call, project: str, namespace: argparse.Namespace) -> Any:
-    project_id, workitem_id = await resolve_task(call, project, namespace.ref)
+    project_id, workitem_id = await resolve_task(
+        call, project, namespace.ref, getattr(namespace, "project", None)
+    )
     ids = {"project_id": project_id, "workitem_id": workitem_id}
     created = await call(
         "workitem_comment", {"action": "create", **ids, "comment_html": namespace.body}
@@ -208,6 +249,7 @@ async def page_show(call: Call, project: str, namespace: argparse.Namespace) -> 
 
 
 async def page_create(call: Call, project: str, namespace: argparse.Namespace) -> Any:
+    access = 0 if namespace.public else 1
     created = await call(
         "ce_page",
         {
@@ -215,7 +257,7 @@ async def page_create(call: Call, project: str, namespace: argparse.Namespace) -
             "project_id": project,
             "name": namespace.name,
             "description_html": namespace.body,
-            "access": 0 if namespace.public else 1,
+            "access": access,
         },
     )
     page_id = created.get("id") if isinstance(created, dict) else None
@@ -224,11 +266,15 @@ async def page_create(call: Call, project: str, namespace: argparse.Namespace) -
     page = await call("ce_page", {"action": "retrieve", "project_id": project, "page_id": page_id})
     if not isinstance(page, dict) or str(page.get("name") or "").strip() != namespace.name.strip():
         raise ReadbackError
+    if page.get("access") != access or not body_text(page.get("description_html")):
+        raise ReadbackError
     return page
 
 
 async def relation_list(call: Call, project: str, namespace: argparse.Namespace) -> Any:
-    project_id, workitem_id = await resolve_task(call, project, namespace.ref)
+    project_id, workitem_id = await resolve_task(
+        call, project, namespace.ref, getattr(namespace, "project", None)
+    )
     return await call(
         "ce_workitem_relation",
         {"action": "list", "project_id": project_id, "workitem_id": workitem_id},
@@ -236,8 +282,13 @@ async def relation_list(call: Call, project: str, namespace: argparse.Namespace)
 
 
 async def relation_add(call: Call, project: str, namespace: argparse.Namespace) -> Any:
-    project_id, workitem_id = await resolve_task(call, project, namespace.ref)
-    resolved = [await resolve_task(call, project, ref) for ref in namespace.others]
+    project_id, workitem_id = await resolve_task(
+        call, project, namespace.ref, getattr(namespace, "project", None)
+    )
+    resolved = [
+        await resolve_task(call, project, ref, getattr(namespace, "project", None))
+        for ref in namespace.others
+    ]
     targets = [target for _, target in resolved]
     if workitem_id in targets:
         raise UsageError("A task cannot be related to itself")

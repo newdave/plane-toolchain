@@ -1,0 +1,21 @@
+# Hash-pinned uv bootstrap for the example workflows (pip install --require-hashes).
+# Regenerate from the PyPI release file hashes when bumping uv; wheels only.
+uv==0.9.3 \
+    --hash=sha256:117c5921bcfdac04b88211ee830c6c7e412eaf93a34aa3ad4bb3230bc61646aa \
+    --hash=sha256:214bb2fb4d87a55e2ba2bc038a8b646a24ec66980528d2ed1e6e7d0612d246e1 \
+    --hash=sha256:2e75ce14c9375e7e99422d5383fb415e8f0eab9ebdcdfba45756749dee0c42b2 \
+    --hash=sha256:32694e64d6e4ea44b647866c4240659f3964b0317e98f539b73915dbcca7d973 \
+    --hash=sha256:36df7eb562b103e3263a03df1b04cee91ee52af88d005d07ee494137c7a5782a \
+    --hash=sha256:406ab1a8b313b4b3cf67ad747fb8713a0c0cf3d3daf11942b5a4e49f60882339 \
+    --hash=sha256:5092d8ac9d0ff7d158ac0d834b27b39b7f23fdbf71865ac8b8bdb55db6f3f5c5 \
+    --hash=sha256:55516bf85c44a00b948472ddda80d7c5cd9990e9b5c085dc5005da93f40266a7 \
+    --hash=sha256:596a982c5a061d58412824a2ebe2960b52db23f1b1658083ba9c0e7ae390308a \
+    --hash=sha256:71faefa9805ccf3f2db645ae27c9e719e47aaa8781e43dfa3760d993aadecb8c \
+    --hash=sha256:73ae4bbc7d555ba1738da08c64b55f21ab0ea0ff85636708cebaf460d98a440d \
+    --hash=sha256:73dbd91581a82e53bb4352243d7bc491cf78ac3ebb951d95bb8b7964e5ee0659 \
+    --hash=sha256:741e80c4230e1b9a5d0869aca2fb082b3832b251ef61537bc9278364b8e74df2 \
+    --hash=sha256:7a63c2514833f80a006feef9b8adce1380e06a7945ceb80928d43ac8693b4dd6 \
+    --hash=sha256:7b1b79dd435ade1de97c6f0b8b90811a6ccf1bd0bdd70f4d034a93696cf0d0a3 \
+    --hash=sha256:8844103e0b4074821fb2814abf30af59d66f33b6ca1bb2276dd37d4e5997c292 \
+    --hash=sha256:970ac8428678b92eddb990dc132d75e893234bb1b809e87b90a4acd96bb054e4 \
+    --hash=sha256:ccf4cd2e1907fb011764f6f4bc0e514c500e8d300288f04a4680400d5aa205ec
