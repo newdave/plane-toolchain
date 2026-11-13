@@ -115,9 +115,41 @@ class Table:
         self.streamed = 0
         self.pages = []
         self.fail_update = False
+        # Schema probe: any field the snippet names exists unless hidden, typed by its name
+        # (see FIELD_RULES) unless `types` overrides it; `no_manager` drops the unfiltered manager.
+        self.hidden, self.types, self.no_manager = set(), {}, False
         self.log = [] if log is None else log
         self.objects = Manager(self, False)
         self.all_objects = Manager(self, True)
+
+
+def field_rules(name):
+    """(kind, db_type) a Plane field of this name has, or None for a name Plane never uses."""
+    if name.endswith("_json") or name == "data":
+        return ("json", "jsonb")
+    if name.endswith("_binary"):
+        return ("binary", "bytea")
+    if name.endswith(("_html", "_stripped")) or name == "slug":
+        return ("text", "text")
+    if name == "deleted_at":
+        return ("other", "timestamp with time zone")
+    if name in ("workspace_id", "pk", "id"):
+        return ("other", "uuid")
+    return None
+
+
+def field_type(table, name):
+    """(kind, db_type) of a field on a fake table; None when it is hidden or unknown."""
+    if name in table.hidden:
+        return None
+    if name in table.types:
+        return table.types[name]
+    declared = {table.attnames.get(c, c): kind for c, kind in table.columns.items()}
+    if declared.get(name) == "json":
+        return ("json", "jsonb")
+    if declared.get(name) == "text":
+        return ("text", "text")
+    return field_rules(name)
 
 
 class FakeOrm:
@@ -135,6 +167,16 @@ class FakeOrm:
         self.settings = SimpleNamespace(WEB_URL=web_url)
         self.restricted_slugs = set(restricted)
         self.cache = {}
+
+    def describe(self, key, name):
+        found = field_type(self.models[key], name)
+        return None if found is None else {"kind": found[0], "db_type": found[1]}
+
+    def table_name(self, key):
+        return self.models[key].db_table
+
+    def has_manager(self, key):
+        return not self.models[key].no_manager
 
     def text_columns(self):
         return [
@@ -197,7 +239,7 @@ def django_modules(orm, live, api):
 
     `api["status"]` is what the API's /api/instances/ answers."""
     fields = types.ModuleType("django.db.models")
-    for name in ("JSONField", "TextField", "CharField"):
+    for name in ("JSONField", "TextField", "CharField", "BinaryField", "OtherField"):
         setattr(fields, name, type(name, (), {}))
 
     def model(table):
@@ -206,9 +248,26 @@ def django_modules(orm, live, api):
             field = getattr(fields, "JSONField" if kind == "json" else "TextField")()
             field.column, field.attname = column, table.attnames.get(column, column)
             concrete.append(field)
-        meta = SimpleNamespace(db_table=table.db_table, concrete_fields=concrete)
+        kinds = {"json": "JSONField", "text": "TextField", "binary": "BinaryField"}
+
+        def get_field(name):
+            found = field_type(table, name)
+            if found is None:
+                raise FieldDoesNotExist(name)
+            field = getattr(fields, kinds.get(found[0], "OtherField"))()
+            field.db_type = lambda connection, db_type=found[1]: db_type
+            return field
+
+        meta = SimpleNamespace(
+            db_table=table.db_table, concrete_fields=concrete, get_field=get_field
+        )
+        if table.no_manager:
+            return SimpleNamespace(_meta=meta)
         manager = table.all_objects
         return SimpleNamespace(all_objects=manager, _base_manager=manager, _meta=meta)
+
+    class FieldDoesNotExist(Exception):
+        pass
 
     models = {key: model(table) for key, table in orm.models.items()}
 
@@ -237,7 +296,8 @@ def django_modules(orm, live, api):
         "django.conf": {"settings": orm.settings},
         "django.core": {},
         "django.core.cache": {"cache": orm.cache},
-        "django.db": {},
+        "django.core.exceptions": {"FieldDoesNotExist": FieldDoesNotExist},
+        "django.db": {"connection": object()},
         "django.db.transaction": {"atomic": orm.atomic},
         "plane": {},
         "plane.db": {},

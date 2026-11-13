@@ -8,12 +8,31 @@ import signal
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 from urllib.parse import parse_qs, urlparse
 
 
 class Killed(BaseException):
     """Simulated process death: not an Exception, so no handler in the code under test eats it."""
+
+
+class Hung:
+    """Stdout of a snippet that never answers: reading blocks until its client is killed."""
+
+    def __init__(self, dead):
+        self.dead = dead
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.dead.wait(10)
+        raise StopIteration
+
+    def read(self, size=-1):
+        self.dead.wait(10)
+        return b""
 
 
 class FakeDocker:
@@ -36,6 +55,20 @@ class FakeDocker:
         self.on_manage_shell = None
         self.pg_dump = b"PGDMP-fake-dump"
         self.pg_dump_code = 0
+        self.pg_dump_stderr = b""
+        self.pg_restore_code = 0
+        self.pg_restore_out = b"; Archive created by pg_dump\n"
+        self.pg_restore_stderr = b""
+        self.restore_input = None  # the dump bytes `pg_restore -l` was fed on stdin
+        # In-container snippet processes, by PLANE_RENAME_RUN token. A hung op never answers; a
+        # snippet that outlives its killed client stays here until the kill script runs.
+        # immortal: the kill script cannot stop them.
+        self.procs = []
+        self.hang_ops = set()
+        self.snippet_outlives_client = False
+        self.immortal = False
+        self.kill_calls = []
+        self.db_size = 1000  # pg_database_size answer; None: the size query fails
         self.queue_depths = [0]
         self.celery_listed = True
         self.queue_probes = []
@@ -162,18 +195,37 @@ class FakeDocker:
 
     def route_rename_exec(self, rest, input):
         """Serve manage.py shell, pg_dump and the RabbitMQ queue probe; None for other execs."""
-        rest = list(rest)
-        while rest and rest[0].startswith("-"):  # exec flags such as -i
-            rest.pop(0)
+        rest, env = list(rest), {}
+        while rest and rest[0].startswith("-"):  # exec flags such as -i and -e NAME=value
+            if rest.pop(0) == "-e":
+                name, _, value = rest.pop(0).partition("=")
+                env[name] = value
         container = self.containers.get(rest[0]) if rest else None
         if container is None:
             return None
         if not container["running"]:
             return 1, b""
+        if rest[1:3] == ["python", "-c"] and "PLANE_RENAME_RUN" in rest[3]:
+            token = rest[4]  # the kill script: a full marker value, or "<dir id>:" to sweep
+            self.kill_calls.append(token)
+            if token.endswith(":") and any(not t.startswith(token) for t in self.procs):
+                return 2, b"foreign\n"
+            matches = lambda t: t.startswith(token)  # noqa: E731
+            if not self.immortal:
+                self.procs = [t for t in self.procs if not matches(t)]
+            alive = any(matches(t) for t in self.procs)
+            return (1, b"alive\n") if alive else (0, b"gone\n")
         if "manage.py" in rest and "shell" in rest:
             assert self.on_manage_shell is not None, "no manage.py shell handler set"
+            if self.snippet_outlives_client:
+                self.procs.append(env.get("PLANE_RENAME_RUN", ""))
             stdout, code = self.on_manage_shell((input or b"").decode())
             return code, stdout if isinstance(stdout, bytes) else stdout.encode()
+        if "pg_database_size" in rest[-1]:
+            return (1, b"") if self.db_size is None else (0, f"{self.db_size}\n".encode())
+        if "pg_restore" in rest:
+            self.restore_input = input
+            return self.pg_restore_code, self.pg_restore_out
         if rest[-1].startswith("pg_dump"):
             return self.pg_dump_code, self.pg_dump
         if "rabbitmqctl" in " ".join(rest) and "list_queues" in " ".join(rest):
@@ -220,13 +272,32 @@ class FakeDocker:
             def __init__(self):
                 self.stdin = Stdin() if kw.get("stdin") == subprocess.PIPE else None
                 self.returncode, self.result, self.killed = None, None, False
+                self.dead = threading.Event()
                 if self.stdin is None:
                     self.run()
 
             def run(self):
                 if self.result is None:
                     piped = bytes(self.stdin.data) if self.stdin is not None else None
+                    text = (piped or b"").decode()
+                    if "manage.py" in argv and any(f'"op": "{op}"' in text for op in fake.hang_ops):
+                        fake.calls.append(tuple(argv[1:]))
+                        token = next(
+                            (a.split("=", 1)[1] for a in argv if a.startswith("PLANE_RENAME_RUN=")),
+                            "",
+                        )
+                        fake.procs.append(token)
+                        self.result = (-9, Hung(self.dead))
+                        return self.result
+                    if piped is None and hasattr(kw.get("stdin"), "read"):
+                        piped = kw["stdin"].read()  # a file handed over as stdin
                     code, stdout = fake.execute(*argv[1:], input=piped)
+                    errors = kw.get("stderr")
+                    if hasattr(errors, "write"):  # stderr captured to a file
+                        joined = " ".join(argv)
+                        errors.write(
+                            fake.pg_dump_stderr if "pg_dump" in joined else fake.pg_restore_stderr
+                        )
                     self.result = (code, io.BytesIO(stdout))
                 return self.result
 
@@ -240,6 +311,7 @@ class FakeDocker:
 
             def kill(self):
                 self.killed = True
+                self.dead.set()
 
         return Process()
 

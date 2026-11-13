@@ -114,8 +114,12 @@ def test_drain_waits_until_queue_empty_or_60s_then_reports_remaining_without_pur
     assert wr.drain_queue(NAMES["mq"], fake.docker, clock, clock.sleep) == 4
     assert 60 <= clock.now < 70
     fake.calls.clear()
-    stop(fake)
-    assert "4 jobs still queued" in capsys.readouterr().out
+    with pytest.raises(RuntimeError, match="4 jobs still queued"):  # PTC-63: a refusal now
+        stop(fake)
+    assert fake.containers[NAMES["worker"]]["running"]  # nothing past beat was stopped
+    clock = Clock()
+    wr.stop_services(NAMES, fake.docker, clock, clock.sleep, fake.checkpoint, allow_undrained=True)
+    assert "4 jobs still queued; not purged" in capsys.readouterr().out
     assert not any(
         word in " ".join(c)
         for c in fake.calls
@@ -260,7 +264,7 @@ def test_shipped_program_stops_backs_up_and_starts(fake, tmp_path, monkeypatch):
         "start_services(names, docker)\n"
     )
     source = program(
-        {"hashlib", "json", "os", "pathlib", "stat", "subprocess", "time"},
+        wr.IMPORTS,
         [real_docker, *wr.SHIPPED],
         entry,
         {"DIR": str(directory), **wr.SHIPPED_CONSTANTS},
@@ -304,12 +308,12 @@ def test_backup_read_error_kills_and_waits_for_child(tmp_path):
     directory = receipt_dir(tmp_path)
     with pytest.raises(OSError, match="pipe broke"):
         wr.backup_database("plane-db", directory, lambda argv, **kw: Process())
-    assert events == ["kill", "wait"]
+    assert events[-2:] == ["kill", "wait"]  # the dump child; the size probe failed the same way
     assert not list(directory.glob("backup.dump*"))
 
 
 def test_shipped_program_defines_every_global_its_functions_reference():
-    imports = {"hashlib", "json", "os", "pathlib", "stat", "subprocess", "time"}
+    imports = wr.IMPORTS
     source = program(
         imports,
         [real_docker, *wr.SHIPPED],
@@ -828,7 +832,16 @@ def scripted(lines, directory):
         def kill(self):
             pass
 
-    return lambda argv, **kw: Process()
+    class Gone:  # the kill script's answer: nothing left running in the container
+        stdout = io.BytesIO(b"gone\n")
+
+        def wait(self):
+            return 0
+
+        def kill(self):
+            pass
+
+    return lambda argv, **kw: Gone() if "-c" in argv else Process()
 
 
 def test_journal_events_fsynced_before_next_line_and_never_printed(tmp_path, capsys):
@@ -873,7 +886,8 @@ def test_request_is_one_json_argument_line_before_the_snippet(host):
     host.deploy("check")
     assert host.shell.requests[0] == {"op": "check", "args": {"old": OLD, "new": NEW}}
     piped = [c for c in host.fake.calls if "manage.py" in c][0]
-    assert piped == ("exec", "-i", "plane-api", "python", "manage.py", "shell")
+    assert piped[:3] == ("exec", "-i", "-e") and piped[3].startswith("PLANE_RENAME_RUN=")
+    assert piped[4:] == ("plane-api", "python", "manage.py", "shell")
 
 
 @pytest.mark.parametrize("failure", ["celery_missing", "probe_fails", "stop_fails"])

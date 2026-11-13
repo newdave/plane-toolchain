@@ -182,3 +182,54 @@ def test_receipt_never_printed(home, capsys):
         wr.load_receipt(home, "acme", "bolt")
     out = capsys.readouterr()
     assert canary not in out.out + out.err + str(caught.value) + str(loose.value)
+
+
+def test_append_after_torn_final_line_keeps_every_record(home):
+    first = {"kind": "workspace", "id": "1", "slug": "acme"}
+    second = {"kind": "row", "table": "t", "id": "2", "fields": {}}
+    wr.append_journal(home, first)
+    with open(home / "records.jsonl", "ab") as handle:
+        handle.write(b'{"kind":"row","ta')
+    wr.append_journal(home, second)
+    assert wr.load_journal(home) == [first, second]
+    assert (home / "records.jsonl").read_bytes().endswith(b"\n")
+    wr.append_journal(home, first)
+    assert wr.load_journal(home) == [first, second, first]
+
+
+def test_append_after_torn_first_line_only(home):
+    wr.secure_receipt_dir(home)
+    (home / "records.jsonl").write_bytes(b'{"kind":"wor')
+    (home / "records.jsonl").chmod(0o600)
+    record = {"kind": "workspace", "id": "1", "slug": "acme"}
+    wr.append_journal(home, record)
+    assert wr.load_journal(home) == [record]
+
+
+def test_append_keeps_whole_record_missing_only_its_newline(home):
+    kept = {"kind": "workspace", "id": "1", "slug": "acme"}
+    new = {"kind": "row", "table": "t", "id": "2", "fields": {}}
+    wr.append_journal(home, kept)
+    path = home / "records.jsonl"
+    path.write_bytes(path.read_bytes().rstrip(b"\n"))
+    wr.append_journal(home, new)
+    assert wr.load_journal(home) == [kept, new]
+
+
+def test_append_repair_fsyncs_the_truncation(home, monkeypatch):
+    wr.append_journal(home, {"kind": "workspace", "id": "1", "slug": "acme"})
+    with open(home / "records.jsonl", "ab") as handle:
+        handle.write(b'{"kind":"row","ta')
+    calls = []
+    real = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (calls.append(fd), real(fd)))
+    wr.append_journal(home, {"kind": "row", "table": "t", "id": "2", "fields": {}})
+    assert len(calls) >= 2  # one after the repair, one after the new line
+
+
+def test_torn_tail_alone_still_loads(home):
+    record = {"kind": "workspace", "id": "1", "slug": "acme"}
+    wr.append_journal(home, record)
+    with open(home / "records.jsonl", "ab") as handle:
+        handle.write(b'{"kind":"row","ta')
+    assert wr.load_journal(home) == [record]
