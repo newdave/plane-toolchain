@@ -1207,3 +1207,147 @@ def test_snippet_main_carries_the_journal_inside_the_request():
     ns["_main"](json.loads(json.dumps(request)), lambda: orm, lambda args: None, lines.append)
     assert json.loads(lines[-1])["ok"] is True
     assert normal_snapshot(orm.snapshot()) == normal_snapshot(original)
+
+
+# --- health and flush_cache (T4) ---
+
+
+def run_health(orm, probe, old="old-slug", new="new-slug", **extra):
+    events = []
+    args = {"old": old, "new": new, **extra}
+    ok = snippet_namespace()["run"]("health", args, orm, events.append, None, probe)
+    return ok, events
+
+
+def checks(events):
+    return {e["check"]: e["ok"] for e in events if e["event"] == "health"}
+
+
+def renamed_orm():
+    orm = make_orm()
+    assert run_op("step_slug", orm)[0]
+    return orm
+
+
+def raise_oserror():
+    raise OSError("connection refused")
+
+
+@pytest.mark.parametrize(
+    "setup,probe,failed",
+    [
+        (renamed_orm, lambda: 200, set()),
+        (make_orm, lambda: 200, {"new_present", "old_absent"}),  # not renamed yet
+        (renamed_orm, lambda: 503, {"api"}),
+        (renamed_orm, raise_oserror, {"api"}),
+        (renamed_orm, None, {"api"}),
+    ],
+    ids=["healthy", "not_renamed", "api_503", "api_down", "no_probe"],
+)
+def test_health_requires_new_present_and_old_absent(setup, probe, failed):
+    orm = setup()
+    before, writes = orm.snapshot(), len(orm.log)
+    ok, events = run_health(orm, probe)
+    assert ok is (not failed)
+    assert checks(events) == {
+        name: name not in failed for name in ("api", "new_present", "old_absent")
+    }
+    assert events[-1] == {"event": "summary", "ok": not failed, "step": "health"}
+    assert orm.snapshot() == before and len(orm.log) == writes  # read-only: no update logged
+
+
+def test_health_fails_when_another_workspace_holds_old():
+    orm = renamed_orm()
+    orm.models["workspace"].rows.append({"id": "w9", "slug": "old-slug", "deleted_at": None})
+    ok, events = run_health(orm, lambda: 200)
+    assert not ok and checks(events)["old_absent"] is False
+
+
+def test_health_binds_new_to_the_given_workspace_id():
+    orm = renamed_orm()
+    ok, events = run_health(orm, lambda: 200, workspace_id="w1")
+    assert ok and checks(events)["workspace"] is True
+    ok, events = run_health(orm, lambda: 200, workspace_id="w2")
+    assert not ok and checks(events)["workspace"] is False
+
+
+def test_health_checks_a_revert_with_the_slugs_swapped():
+    orm = renamed_orm()
+    records = [json.loads(json.dumps(r)) for r in journal(run_op("step_slug", make_orm())[1])]
+    assert restore(orm, records)[0]
+    ok, _ = run_health(orm, lambda: 200, old="new-slug", new="old-slug", workspace_id="w1")
+    assert ok
+
+
+def test_snippet_api_probe_gets_instances_endpoint(monkeypatch):
+    gets = []
+
+    def get(url, timeout):
+        gets.append((url, timeout))
+        return types.SimpleNamespace(status_code=200)
+
+    monkeypatch.setitem(sys.modules, "requests", types.SimpleNamespace(get=get))
+    ns = snippet_namespace()
+    assert ns["_api_probe"]({})() == 200
+    assert gets == [("http://127.0.0.1:8000/api/instances/", 10)]
+    ns["_api_probe"]({"api_url": "http://api:8000/"})()
+    assert gets[-1][0] == "http://api:8000/api/instances/"
+
+
+def test_snippet_main_passes_the_api_probe_to_health():
+    ns, orm, lines, seen = snippet_namespace(), renamed_orm(), [], []
+
+    def probe_factory(args):
+        seen.append(args)
+        return lambda: 200
+
+    request = {"op": "health", "args": {"old": "old-slug", "new": "new-slug"}}
+    ns["_main"](request, lambda: orm, lambda args: None, lines.append, probe_factory)
+    assert json.loads(lines[-1]) == {"event": "summary", "ok": True, "step": "health"}
+    assert seen == [request["args"]]
+
+
+def run_flush(orm, **extra):
+    return run_op("flush_cache", orm, **extra)
+
+
+def test_flush_cache_clears_cache():
+    orm = make_orm()
+    orm.cache.update({"/api/workspaces/": "old-slug", "/api/users/me/workspaces/": "x"})
+    ok, events = run_flush(orm)
+    assert ok and orm.cache == {}
+    assert events == [
+        {
+            "event": "summary",
+            "ok": True,
+            "step": "cache",
+            "cleared": True,
+            "sessions_in_cache": False,
+        }
+    ]
+
+
+def test_flush_cache_dry_run_reports_session_cache_without_clearing():
+    orm = make_orm()
+    orm.cache["k"] = "v"
+    orm.settings.SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+    ok, events = run_flush(orm, dry_run=True)
+    assert ok and orm.cache == {"k": "v"}
+    assert events[-1]["cleared"] is False and events[-1]["sessions_in_cache"] is True
+    orm.settings.SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"  # db survives
+    assert run_flush(orm, dry_run=True)[1][-1]["sessions_in_cache"] is False
+
+
+def test_flush_cache_failure_ends_with_summary_false():
+    class Broken:
+        def clear(self):
+            raise ConnectionError("redis down")
+
+    orm = make_orm()
+    orm.cache = Broken()
+    ok, events = run_flush(orm)
+    assert not ok
+    assert events == [
+        {"event": "error", "reason": "cache_clear_failed", "detail": "ConnectionError"},
+        {"event": "summary", "ok": False, "step": "cache"},
+    ]

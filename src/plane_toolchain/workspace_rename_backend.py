@@ -8,7 +8,8 @@ the original values of a row about to be written, because the host must persist 
 
 `check` is read-only. The apply steps are `step_slug` (one transaction) and `step_rows` (one
 row at a time); each emits the journal line for a row before it writes that row, with queryset
-`.update()` only.
+`.update()` only. `restore` writes the journal (sent inside the request) back in one
+transaction and never calls Live. `health` is read-only; `flush_cache` clears the cache.
 """
 
 # Dependencies below exist in the Plane backend image, not in this project's environment.
@@ -622,20 +623,88 @@ def restore(args, orm, emit, convert=None):
     return True
 
 
+def health(args, orm, emit, convert=None, probe=None):
+    """Read-only: the API answers, NEW is held by a live workspace and OLD by none.
+
+    `probe()` returns the HTTP status of the API's /api/instances/. With `workspace_id`, NEW
+    must be held by exactly that id. For a revert, the host passes the slugs swapped. Every
+    check runs and is reported; any failure gives `summary ok:false`."""
+    old, new = args["old"], args["new"]
+    try:
+        api = probe is not None and probe() == 200
+    except Exception:  # unreachable or timed out: a failed check, never a crash
+        api = False
+    holders = _live_slugs(orm, new)
+    results = [
+        ("api", api),
+        ("new_present", bool(holders)),
+        ("old_absent", not _live_slugs(orm, old)),
+    ]
+    if args.get("workspace_id"):
+        results.append(("workspace", holders == [str(args["workspace_id"])]))
+    for name, ok in results:
+        emit({"event": "health", "check": name, "ok": ok})
+    ok = all(ok for _, ok in results)
+    emit({"event": "summary", "ok": ok, "step": "health"})
+    return ok
+
+
+def flush_cache(args, orm, emit, convert=None):
+    """Clear the whole Django cache (`cache.clear()`), not pattern deletes, during the outage.
+
+    `sessions_in_cache` tells the operator whether sign-ins are lost with it: only the pure
+    cache session engine keeps sessions there. `dry_run` reports it without clearing. The
+    engine name itself is never emitted."""
+    engine = str(getattr(orm.settings, "SESSION_ENGINE", ""))
+    summary = {"event": "summary", "ok": False, "step": "cache"}
+    cleared = not args.get("dry_run")
+    if cleared:
+        try:
+            orm.cache.clear()
+        except Exception as exc:  # report the type only
+            emit({"event": "error", "reason": "cache_clear_failed", "detail": type(exc).__name__})
+            emit(summary)
+            return False
+    sessions = engine.endswith("backends.cache")
+    emit({**summary, "ok": True, "cleared": cleared, "sessions_in_cache": sessions})
+    return True
+
+
 OPERATIONS = {
     "check": check,
     "step_slug": step_slug,
     "step_rows": step_rows,
     "restore": restore,
+    "health": health,
+    "flush_cache": flush_cache,
 }
 
 
-def run(op, args, orm, emit, convert):
-    """Run one operation and return its success. `convert(html, variant)` serves step_rows."""
+def run(op, args, orm, emit, convert, probe=None):
+    """Run one operation and return its success. `convert(html, variant)` serves step_rows;
+    `probe()` (the API status) serves health. No other operation receives the probe."""
     if op not in OPERATIONS:
         emit({"event": "error", "reason": "unknown_op"})
         return False
+    if op == "health":
+        return health(args, orm, emit, probe=probe)
     return OPERATIONS[op](args, orm, emit, convert)
+
+
+API_URL = "http://127.0.0.1:8000"  # ASSUMPTION: the API serves on port 8000 in its container
+
+
+def _api_probe(args):
+    """Return a probe for the API's /api/instances/ status. The payload `api_url` wins over
+    API_URL; the URL is never emitted. Raises on connection errors and after a 10 s timeout."""
+    endpoint = (args.get("api_url") or API_URL).rstrip("/") + "/api/instances/"
+
+    def probe():
+        import requests
+
+        return requests.get(endpoint, timeout=10).status_code
+
+    return probe
 
 
 def _live_convert(args):
@@ -716,17 +785,27 @@ def _django_orm():
     return orm
 
 
-def _main(request, orm_factory, convert_factory, out):
-    """Run one request, writing each event as one sorted-key JSON line through `out`."""
+def _main(request, orm_factory, convert_factory, out, probe_factory=None):
+    """Run one request, writing each event as one sorted-key JSON line through `out`.
+
+    The request carries everything an operation needs, including restore's journal, because
+    stdin is the program source under `manage.py shell`."""
     run(
         request["op"],
         request["args"],
         orm_factory(),
         lambda event: out(json.dumps(event, sort_keys=True)),
         convert_factory(request["args"]),
+        probe_factory(request["args"]) if probe_factory else None,
     )
 
 
 # The tail's exit status is always 0: the host must read the final `summary` event's `ok`.
 if "RENAME_REQUEST" in globals():  # the host prepends this only when piping to manage.py shell
-    _main(RENAME_REQUEST, _django_orm, _live_convert, lambda line: print(line, flush=True))
+    _main(
+        RENAME_REQUEST,
+        _django_orm,
+        _live_convert,
+        lambda line: print(line, flush=True),
+        _api_probe,
+    )
