@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The Pages deploy helper writes only neutral names: backup container `<name>-before-plane-toolchain-pages`, label `plane-toolchain.pages.source`, image tag `plane-toolchain-pages:<digest16>` and backend module `plane.api.plane_toolchain_pages`. It still reads the legacy names, so `check`, `revert` and `apply` accept hosts deployed earlier. It renames a legacy backup after a healthy re-apply and refuses to act when a legacy and a neutral backup both exist. Saltbox users set the neutral label after the next `owner:plane-pages:build` (PTC-27).
 - Legacy deploy names are centralised in `plane_toolchain/legacy.py`, with a test that rejects new references elsewhere. Behaviour is unchanged.
 
 ### Fixed

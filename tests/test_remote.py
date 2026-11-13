@@ -112,7 +112,7 @@ def test_remote_compiles_standalone_with_legacy_constants(module):
 
     source = {"pages_deploy": pages_deploy, "mcp_deploy": mcp_deploy}[module].REMOTE
     compile(source, "<string>", "exec")
-    assert "plane_toolchain" not in source
+    assert "import plane_toolchain" not in source and "from plane_toolchain" not in source
     names = legacy.PAGES if module == "pages_deploy" else legacy.MCP
     for name, value in names.items():
         assert f"{name} = {value!r}\n" in source
@@ -145,7 +145,7 @@ def test_unshipped_detects_reduced_constants_mapping():
     full = remote.program(["json"], [pages_deploy.source_label], "pass\n", legacy.PAGES)
     reduced = remote.program(["json"], [pages_deploy.source_label], "pass\n", {})
     assert unshipped(full) == set()
-    assert unshipped(reduced) == {"PAGES_LABEL"}
+    assert unshipped(reduced) == {"PAGES_LABEL", "NEUTRAL_PAGES_LABEL"}
 
 
 @pytest.mark.parametrize("module", ["pages_deploy", "mcp_deploy"])
