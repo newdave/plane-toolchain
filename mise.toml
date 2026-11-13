@@ -29,6 +29,8 @@ run = [
 run = "uv run --locked pytest -q"
 [tasks.check]
 depends = ["lint", "lint:ci", "test"]
+[tasks."plane:cli"]
+run = "uv run --locked python -m plane_toolchain.cli"
 [tasks."plane:enable"]
 run = "uv run --locked python -m plane_toolchain.config enable"
 [tasks."plane:disable"]

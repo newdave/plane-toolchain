@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import time
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -51,23 +52,24 @@ def decode(result) -> Any:
     return data
 
 
-def configuration() -> Settings:
+def configuration(env: Mapping[str, str] | None = None) -> Settings:
     """Validate connection values without exposing credentials."""
-    settings = Settings.from_env(os.environ)
+    settings = Settings.from_env(os.environ if env is None else env)
     return settings
 
 
 @asynccontextmanager
-async def connection():
+async def connection(env: Mapping[str, str] | None = None):
     """Yield an MCP tool caller; never log transport bodies or authentication."""
-    configuration()
+    env = os.environ if env is None else env
+    configuration(env)
     headers = {
-        "Authorization": "Bearer " + os.environ["PLANE_API_KEY"],
-        "x-workspace-slug": os.environ["PLANE_WORKSPACE"],
+        "Authorization": "Bearer " + env["PLANE_API_KEY"],
+        "x-workspace-slug": env["PLANE_WORKSPACE"],
     }
     async with (
         httpx2.AsyncClient(headers=headers, timeout=60) as http,
-        streamable_http_client(os.environ["PLANE_MCP_URL"], http_client=http) as streams,
+        streamable_http_client(env["PLANE_MCP_URL"], http_client=http) as streams,
         ClientSession(streams[0], streams[1]) as session,
     ):
         await session.initialize()
