@@ -1316,7 +1316,7 @@ def test_main_ssh_failure_and_interrupt_are_quiet(monkeypatch, capsys):
     with pytest.raises(SystemExit) as stop:
         pages_deploy.main()
     assert stop.value.code == 255
-    assert_no_leaks(capsys)
+    assert remote_module.SSH_FAILED in assert_no_leaks(capsys).err
     failing_ssh(monkeypatch, error=KeyboardInterrupt())
     with pytest.raises(SystemExit) as stop:
         pages_deploy.main()

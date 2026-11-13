@@ -9,7 +9,7 @@ import sys
 
 import pytest
 from fake_docker import FakeDocker, run_program
-from plane_toolchain import mcp_deploy
+from plane_toolchain import mcp_deploy, remote as remote_module
 from plane_toolchain.legacy import MCP_BACKUP_NAME, MCP_RECEIPT_NAME
 
 ORIGINAL = b"from plane_mcp import get_header_mcp\nget_header_mcp().run()\n"
@@ -791,7 +791,7 @@ def test_main_ssh_failure_and_interrupt_are_quiet(monkeypatch, capsys):
     with pytest.raises(SystemExit) as stop:
         mcp_deploy.main()
     assert stop.value.code == 255
-    assert_no_leaks(capsys)
+    assert remote_module.SSH_FAILED in assert_no_leaks(capsys).err
     failing_ssh(monkeypatch, error=KeyboardInterrupt())
     with pytest.raises(SystemExit) as stop:
         mcp_deploy.main()
@@ -801,3 +801,18 @@ def test_main_ssh_failure_and_interrupt_are_quiet(monkeypatch, capsys):
 
 def test_remote_entry_reports_unexpected_failure_without_traceback():
     assert "sys.excepthook = quiet_failure" in mcp_deploy.REMOTE
+
+
+def test_module_entry_prints_one_line_for_invalid_destination(monkeypatch, capsys):
+    import runpy
+
+    monkeypatch.setattr(sys, "argv", ["mcp_deploy", "check"])
+    monkeypatch.setenv("PLANE_MCP_SSH", "-oProxyCommand=x")
+    monkeypatch.setenv("PLANE_MCP_DIRECTORY", "/srv/mcp")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("Must not connect"))
+    with pytest.raises(SystemExit) as stop:
+        runpy.run_module("plane_toolchain.mcp_deploy", run_name="__main__")
+    assert stop.value.code == 1
+    seen = capsys.readouterr()
+    assert seen.err.count("\n") == 1 and "Traceback" not in seen.err
+    assert "ProxyCommand" not in seen.err

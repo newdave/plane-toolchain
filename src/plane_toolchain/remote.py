@@ -78,8 +78,15 @@ def ssh_argv(host, source):
 
 
 def quiet_failure(kind, failure, trace):
-    """Excepthook for the remote program: `Type: message` on stderr, never a traceback."""
-    say(kind.__name__ + ": " + str(failure), sys.stderr)
+    """Excepthook for the remote program: `Type: message (in function, line n)` on stderr.
+
+    Only the innermost frame of the program itself is named, never a path or a traceback.
+    """
+    import traceback
+
+    frames = [f for f in traceback.extract_tb(trace) if f.filename == "<string>"]
+    where = " (in " + frames[-1].name + ", line " + str(frames[-1].lineno) + ")" if frames else ""
+    say(kind.__name__ + ": " + str(failure) + where, sys.stderr)
 
 
 def guarded(entry):
@@ -91,7 +98,10 @@ def guarded(entry):
     return inspect.getsource(quiet_failure) + "sys.excepthook = quiet_failure\n\n" + entry
 
 
-SSH_FAILED = "SSH connection failed; check the host, network and key. Nothing was run."
+SSH_FAILED = (
+    "SSH connection failed or dropped (exit 255). The host program may have run; "
+    "check the host, PLANE_MCP_SSH and SSH keys before retrying."
+)
 REMOTE_FAILED = "Remote operation failed (exit {}); see the message above."
 INTERRUPTED = "Interrupted locally. The host program may still be running; check the host."
 
@@ -108,7 +118,7 @@ def run_remote(host, source, payload, check=True, interrupted=INTERRUPTED):
             ssh_argv(host, source), input=json.dumps(payload), text=True, check=check
         )
     except subprocess.CalledProcessError as failure:
-        code = failure.returncode or 1
+        code = failure.returncode if failure.returncode > 0 else 1
         say(SSH_FAILED if code == 255 else REMOTE_FAILED.format(code), sys.stderr)
         sys.exit(code)
     except KeyboardInterrupt:

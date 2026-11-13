@@ -299,4 +299,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        print(
+            "MCP deployment failed before or during SSH. No runtime configuration logged.",
+            file=sys.stderr,
+        )
+        sys.exit(1)

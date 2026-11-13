@@ -2,6 +2,7 @@
 
 import ast
 import inspect
+import re
 import signal
 import subprocess
 import sys
@@ -251,7 +252,9 @@ def test_guarded_entry_prints_type_and_message_not_traceback():
         [sys.executable, "-I", "-c", source], capture_output=True, text=True
     )
     assert done.returncode == 1
-    assert done.stderr == "ValueError: Legacy-named state: x\n"
+    assert re.fullmatch(
+        r"ValueError: Legacy-named state: x \(in <module>, line \d+\)\n", done.stderr
+    )
 
 
 def test_guarded_entry_leaves_exit_codes_alone():
@@ -260,3 +263,14 @@ def test_guarded_entry_leaves_exit_codes_alone():
         [sys.executable, "-I", "-c", source], capture_output=True, text=True
     )
     assert (done.returncode, done.stderr) == (3, "")
+
+
+def test_run_remote_signal_killed_ssh_exits_one(monkeypatch, capsys):
+    def run(argv, **kw):
+        raise subprocess.CalledProcessError(-9, argv)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(SystemExit) as stop:
+        remote.run_remote(HOST, PROGRAM_TEXT, {})
+    assert stop.value.code == 1
+    assert_quiet(capsys)

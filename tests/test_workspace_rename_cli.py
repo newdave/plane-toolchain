@@ -211,7 +211,7 @@ def test_main_ssh_failure_and_interrupt_are_quiet(run, monkeypatch, capsys):
     monkeypatch.setenv("PLANE_MCP_SSH", FAKE_HOST)
     failing_ssh(monkeypatch, code=255)
     assert call() == 255
-    assert_no_leaks(capsys)
+    assert remote.SSH_FAILED in assert_no_leaks(capsys).err
     failing_ssh(monkeypatch, error=KeyboardInterrupt())
     assert call() == 130
     assert workspace_rename.LOCAL_INTERRUPTED in capsys.readouterr().err
