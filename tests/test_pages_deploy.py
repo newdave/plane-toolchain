@@ -21,6 +21,14 @@ LEGACY_BACKUP = "api-before-terrainlink-pages"
 # Tripwire lookups: one exact-name listing, then an inspect of each listed container.
 PS = ("ps", "-a", "--filter", "name=api", "--format", "{{.Names}}")
 LOOKUP = [PS, ("inspect", "api")]
+RETAINED = (  # the post-run listing behind "retained containers: ..."
+    "ps",
+    "-a",
+    "--filter",
+    "name=^api(-before-plane-toolchain-pages|-pages-(reverted|failed)-)",
+    "--format",
+    "{{.Names}}",
+)
 HELD = ("inspect", BACKUP)  # the neutral backup label read, only when it is listed
 HEALTH = (
     "exec",
@@ -104,7 +112,7 @@ def test_build_derives_from_upstream_repo_digest_and_prints_tag_and_digest(
     [(tag, files)] = saltbox.builds
     assert tag == IMAGE and files["plane_pages.py"] == SOURCE.encode()
     assert files["Dockerfile"].decode().startswith("FROM " + UPSTREAM_DIGEST + "\n")
-    assert saltbox.streams[("build", "-t", IMAGE, "-")] == (subprocess.DEVNULL, subprocess.DEVNULL)
+    assert saltbox.streams[("build", "-t", IMAGE, "-")] == (subprocess.DEVNULL, subprocess.PIPE)
 
 
 def test_build_never_mutates_containers(saltbox, monkeypatch):
@@ -204,7 +212,8 @@ def assert_original_restored(fake):
 def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypatch, capsys):
     remote("apply", host, monkeypatch)
     assert capsys.readouterr().out == (
-        "Pages derived image applied; API healthy; original container retained for rollback\n"
+        "Pages derived image applied; API healthy; original container retained for rollback"
+        "; retained containers: " + BACKUP + REMIND + "\n"
     )
     assert host.calls == [
         *LOOKUP,
@@ -218,6 +227,7 @@ def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypat
         ("start", "api"),
         HEALTH,
         PAGES,
+        RETAINED,
     ]
     derived, original = host.containers["api"], host.containers[BACKUP]
     assert derived["image"] == IMAGE and derived["running"]
@@ -225,9 +235,10 @@ def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypat
     assert derived["env"] == ["OPAQUE_SECRET=do-not-print", "CE_PLANE_LIVE_URL=http://live:3000"]
     assert derived["host_config"] == {"RestartPolicy": {"Name": "unless-stopped"}}
     assert original["labels"] == {"owner": "kept"} and not original["running"]
-    # Build and health output never reach the SSH terminal.
+    # Build stdout and health output never reach the SSH terminal; build stderr is captured
+    # so a failure can show a bounded tail.
     quiet = (subprocess.DEVNULL, subprocess.DEVNULL)
-    assert host.streams[("build", "-t", IMAGE, "-")] == quiet
+    assert host.streams[("build", "-t", IMAGE, "-")] == (subprocess.DEVNULL, subprocess.PIPE)
     assert host.streams[HEALTH] == quiet
     assert host.streams[PAGES] == quiet
     [(tag, files)] = host.builds
@@ -322,7 +333,8 @@ def test_apply_health_failure_retains_failed_derived_and_restores_original(host,
 def test_revert_restores_original_and_retains_derived_stopped(applied, monkeypatch, capsys):
     remote("revert", applied, monkeypatch)
     assert capsys.readouterr().out == (
-        "Original API container restored; derived container retained stopped\n"
+        "Original API container restored; derived container retained stopped"
+        f"; retained containers: api-pages-reverted-{NOW}; run prune to remove retired ones\n"
     )
     reverted = f"api-pages-reverted-{NOW}"
     assert applied.calls == [
@@ -336,6 +348,7 @@ def test_revert_restores_original_and_retains_derived_stopped(applied, monkeypat
         ("update", "--restart=unless-stopped", "api"),
         ("start", "api"),
         HEALTH,
+        RETAINED,
     ]
     assert_original_restored(applied)
     assert not applied.containers[reverted]["running"]
@@ -356,7 +369,8 @@ def test_revert_accepts_derived_from_older_source(applied, monkeypatch, capsys):
     applied.containers["api"]["labels"][LABEL] = "older-digest"
     remote("revert", applied, monkeypatch)
     assert capsys.readouterr().out == (
-        "Original API container restored; derived container retained stopped\n"
+        "Original API container restored; derived container retained stopped"
+        f"; retained containers: api-pages-reverted-{NOW}; run prune to remove retired ones\n"
     )
     assert_original_restored(applied)
     assert retained(applied) == {f"api-pages-reverted-{NOW}": "no"}
@@ -591,7 +605,21 @@ def running(fake):
 
 
 NOTE = "Restart policy set to unless-stopped; adjust if your deployment differs\n"
-APPLIED = "Pages derived image applied; API healthy; original container retained for rollback\n"
+REMIND = "; run revert before any Compose or orchestrator update of this service"
+APPLIED = (
+    "Pages derived image applied; API healthy; original container retained for rollback"
+    "; retained containers: " + BACKUP + REMIND + "\n"
+)
+APPLIED_WITH_FAILED = (
+    "Pages derived image applied; API healthy; original container retained for rollback"
+    "; retained containers: "
+    + BACKUP
+    + ", api-pages-failed-"
+    + str(NOW)
+    + "; run prune to remove retired ones"
+    + REMIND
+    + "\n"
+)
 
 
 def assert_freshly_applied(fake, policy):
@@ -661,7 +689,7 @@ def test_apply_reconciles_stopped_derived_as_failed_apply(retired, monkeypatch, 
     )
     stale = retired.containers["api"]["id"]
     remote("apply", retired, monkeypatch)
-    assert capsys.readouterr().out == APPLIED
+    assert capsys.readouterr().out == APPLIED_WITH_FAILED
     failed = f"api-pages-failed-{NOW}"
     assert retired.calls[:12] == [
         *LOOKUP,
@@ -689,7 +717,7 @@ def test_apply_reconcile_promote_failure_stays_reconcilable(retired, capsys):
     # Now the missing-`api` layout: the next apply promotes the original.
     assert "api" not in retired.containers and BACKUP in retired.containers
     assert set(retained(retired).values()) == {"no"}
-    assert deploy("apply", retired) == APPLIED.rstrip("\n")
+    assert deploy("apply", retired) == APPLIED_WITH_FAILED.rstrip("\n")
     assert capsys.readouterr().out == NOTE
     assert_freshly_applied(retired, "unless-stopped")
 
@@ -756,7 +784,7 @@ def test_remote_ignores_hup_and_pipe_before_any_docker_call(host, monkeypatch, c
 
     monkeypatch.setattr(signal, "signal", lambda number, handler: host.calls.append(number))
     remote("apply", host, monkeypatch)
-    assert host.calls[:3] == [signal.SIGHUP, signal.SIGPIPE, PS]
+    assert host.calls[:4] == [signal.SIGHUP, signal.SIGPIPE, signal.SIGTERM, PS]
 
 
 def test_remote_finishes_apply_when_ssh_channel_is_gone(host, monkeypatch):
@@ -1010,7 +1038,7 @@ def deploy(operation, fake, later=0):
 
 def test_seam_apply_success(host):
     assert deploy("apply", host).startswith("Pages derived image applied")
-    assert host.streams[("build", "-t", IMAGE, "-")] == (subprocess.DEVNULL, subprocess.DEVNULL)
+    assert host.streams[("build", "-t", IMAGE, "-")] == (subprocess.DEVNULL, subprocess.PIPE)
     assert host.containers["api"]["labels"][LABEL] == DIGEST
     assert host.containers["api"]["running"]
     assert restart(host, BACKUP) == "no"
@@ -1326,3 +1354,360 @@ def test_main_ssh_failure_and_interrupt_are_quiet(monkeypatch, capsys):
 
 def test_remote_entry_reports_unexpected_failure_without_traceback():
     assert "sys.excepthook = quiet_failure" in pages_deploy.REMOTE
+
+
+# PTC-68: diagnostics and housekeeping.
+
+
+class FakeSocket:
+    """AF_UNIX socket stand-in serving one canned HTTP reply to the real http.client."""
+
+    instances = []
+
+    def __init__(self, *args):
+        self.timeout = "unset"
+        self.closed = False
+        self.sent = b""
+        self.reply = b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n"
+        self.connect_error = None
+        FakeSocket.instances.append(self)
+
+    def settimeout(self, seconds):
+        self.timeout = seconds
+
+    def connect(self, address):
+        if self.connect_error:
+            raise self.connect_error
+
+    def sendall(self, data):
+        self.sent += data
+
+    def makefile(self, *args, **kw):
+        import io
+
+        return io.BytesIO(self.reply)
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def sockets(monkeypatch):
+    import socket
+
+    FakeSocket.instances = []
+    monkeypatch.setattr(socket, "socket", FakeSocket)
+    return FakeSocket
+
+
+def test_docker_create_sets_a_timeout_and_closes_after_success(sockets):
+    pages_deploy.docker_create("api", {"Image": "x"})
+    [conn] = sockets.instances
+    assert isinstance(conn.timeout, (int, float)) and 0 < conn.timeout <= 60
+    assert conn.closed
+
+
+def test_docker_create_failure_names_the_http_status_and_still_closes(sockets, monkeypatch):
+    import socket
+
+    def refuse(*args):
+        conn = FakeSocket()
+        conn.reply = b"HTTP/1.1 409 Conflict\r\nContent-Length: 4\r\n\r\nname"
+        return conn
+
+    monkeypatch.setattr(socket, "socket", refuse)
+    with pytest.raises(ValueError, match=r"Derived API container creation failed \(HTTP 409\)"):
+        pages_deploy.docker_create("api", {"Image": "x", "Env": ["OPAQUE_SECRET=do-not-print"]})
+    [conn] = sockets.instances
+    assert conn.closed
+
+
+def test_docker_create_timeout_is_reported_by_kind_and_closes(sockets, monkeypatch):
+    import socket
+
+    def slow(*args):
+        conn = FakeSocket()
+        conn.connect_error = TimeoutError("timed out")
+        return conn
+
+    monkeypatch.setattr(socket, "socket", slow)
+    with pytest.raises(ValueError, match=r"creation failed \(TimeoutError\)") as error:
+        pages_deploy.docker_create("api", {"Image": "x"})
+    assert "/var/run" not in str(error.value)
+    assert sockets.instances[0].closed
+
+
+BUILD_NOISE = "\n".join("step %d" % n for n in range(40)) + "\nERROR: boom\n"
+
+
+def test_build_failure_reports_a_bounded_stderr_tail_without_config(saltbox, monkeypatch):
+    saltbox.error_output = BUILD_NOISE.encode()
+    saltbox.fail.append("build")
+    with pytest.raises(ValueError, match="Image build failed") as error:
+        build(saltbox, monkeypatch)
+    message = str(error.value)
+    assert "ERROR: boom" in message and "step 39" in message
+    assert "step 5" not in message and len(message) < 1200
+    assert "\n" not in message
+
+
+def test_derive_failure_in_apply_uses_the_same_build_helper_and_leaves_api_untouched(host):
+    host.error_output = b"ERROR: boom\n"
+    host.fail.append("build")
+    with pytest.raises(ValueError, match="Image build failed.*ERROR: boom"):
+        deploy("apply", host)
+    assert_original_restored(host)
+    assert not {call[0] for call in host.calls} & {"stop", "rename", "create"}
+
+
+def test_build_streams_stdout_to_devnull_and_captures_stderr(host):
+    deploy("apply", host)
+    assert host.streams[("build", "-t", IMAGE, "-")] == (subprocess.DEVNULL, subprocess.PIPE)
+
+
+def test_build_image_is_a_single_shipped_helper():
+    source = inspect.getsource(pages_deploy.derive) + inspect.getsource(pages_deploy.build)
+    assert source.count('"build"') == 0
+    assert pages_deploy.build_image.__name__ in pages_deploy.REMOTE
+
+
+def park_retired(fake):
+    for name in ("api-pages-reverted-1", "api-pages-failed-2", "api-pages-failed-2-1"):
+        fake.add(name, labels={LABEL: DIGEST}, running=False, RestartPolicy={"Name": "no"})
+
+
+def test_apply_and_revert_results_list_retained_container_names(host):
+    park_retired(host)
+    message = deploy("apply", host)
+    assert BACKUP in message
+    assert "api-pages-reverted-1" in message and "api-pages-failed-2-1" in message
+    assert "retained containers" in message
+    assert "OPAQUE_SECRET" not in message
+
+
+def test_revert_result_lists_retained_container_names(applied):
+    park_retired(applied)
+    message = deploy("revert", applied, later=5)
+    assert "api-pages-reverted-1" in message and "api-pages-failed-2" in message
+
+
+def prune(fake, confirm=False):
+    data = dict(payload("prune"), confirm=confirm)
+    return pages_deploy.deploy(data, now=lambda: NOW + 0.5, **seams(fake))
+
+
+def test_prune_is_a_dry_run_by_default(host):
+    park_retired(host)
+    before = set(host.containers)
+    message = prune(host)
+    assert set(host.containers) == before
+    assert "Dry run" in message and "PLANE_PAGES_PRUNE=yes" in message
+    assert "api-pages-reverted-1" in message and "api-pages-failed-2-1" in message
+    assert "rm" not in {call[0] for call in host.calls}
+
+
+def test_prune_with_confirmation_removes_only_stopped_labelled_retired_containers(host):
+    park_retired(host)
+    host.add("api-pages-failed-3", labels={LABEL: DIGEST}, running=True)
+    host.add(BACKUP, labels={LABEL: DIGEST}, running=False)
+    host.add("api-other-pages-failed-9", labels={LABEL: DIGEST}, running=False)
+    message = prune(host, confirm=True)
+    assert set(host.containers) == {"api", BACKUP, "api-pages-failed-3", "api-other-pages-failed-9"}
+    assert "Pruned: " in message and "api-pages-reverted-1" in message
+    assert "kept running: api-pages-failed-3" in message
+
+
+def test_prune_never_removes_an_unlabelled_aside_container(host):
+    # restore_any parks the unlabelled upstream original as `<reverted>-aside`.
+    host.add("api-pages-reverted-1-aside", running=False)
+    assert prune(host, confirm=True) == "No retired containers to prune"
+    assert "api-pages-reverted-1-aside" in host.containers
+
+
+def test_prune_never_removes_a_labelled_aside_container(host):
+    host.add("api-pages-reverted-1-aside", labels={LABEL: DIGEST}, running=False)
+    prune(host, confirm=True)
+    assert "api-pages-reverted-1-aside" in host.containers
+
+
+def test_prune_never_removes_an_unlabelled_failed_container(host):
+    host.add("api-pages-failed-5", running=False)
+    host.add("api-pages-reverted-6", running=False)
+    prune(host, confirm=True)
+    assert {"api-pages-failed-5", "api-pages-reverted-6"} <= set(host.containers)
+
+
+def test_prune_leaves_the_live_api_and_rollback_container(applied):
+    park_retired(applied)
+    prune(applied, confirm=True)
+    assert set(applied.containers) == {"api", BACKUP}
+    assert applied.containers["api"]["running"]
+    assert ("stop", "api") not in applied.calls and ("rm", "api") not in applied.calls
+
+
+def test_prune_with_nothing_retired_changes_nothing(host):
+    assert prune(host, confirm=True) == "No retired containers to prune"
+    assert not {call[0] for call in host.calls} & {"rm", "stop", "rename", "update"}
+
+
+def test_prune_reports_a_container_that_would_not_go(host):
+    park_retired(host)
+    host.fail.append(("rm", "api-pages-failed-2"))
+    message = prune(host, confirm=True)
+    assert "api-pages-failed-2" in message and "could not remove" in message
+    assert "api-pages-reverted-1" not in host.containers
+
+
+def test_prune_refuses_legacy_named_state(host):
+    host.add(LEGACY_BACKUP, running=False)
+    with pytest.raises(ValueError, match="Legacy-named state"):
+        prune(host, confirm=True)
+
+
+def test_main_prune_needs_no_live_url(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["pages_deploy", "prune"])
+    monkeypatch.setenv("PLANE_MCP_SSH", "owner@host")
+    monkeypatch.setenv("PLANE_API_CONTAINER", "plane-api_1")
+    monkeypatch.delenv("PLANE_LIVE_URL", raising=False)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kw: calls.append((args, kw)))
+    pages_deploy.main()
+    assert json.loads(calls[0][1]["input"]) == {
+        "operation": "prune",
+        "container": "plane-api_1",
+        "confirm": False,
+    }
+    monkeypatch.setenv("PLANE_PAGES_PRUNE", "yes")
+    pages_deploy.main()
+    assert json.loads(calls[1][1]["input"])["confirm"] is True
+
+
+def test_failed_restart_policy_update_warns_on_stderr(host, capsys):
+    host.fail.append(("update", "--restart=no", BACKUP))
+    deploy("apply", host)
+    err = capsys.readouterr().err
+    assert "Restart policy update failed" in err and BACKUP in err
+    assert "OPAQUE_SECRET" not in err
+
+
+def test_successful_restart_policy_updates_stay_silent(host, capsys):
+    deploy("apply", host)
+    assert capsys.readouterr().err == ""
+
+
+def test_health_wait_stops_at_the_time_budget(host):
+    host.containers["api"]["healthy"] = False
+    clock = iter(range(0, 10000, 40))
+    sleeps = []
+    with pytest.raises(ValueError, match="API health check failed"):
+        pages_deploy.healthy(
+            "api", host.probe, sleeps.append, attempts=45, budget=120, clock=lambda: next(clock)
+        )
+    assert 1 <= len(sleeps) < 10
+
+
+def test_health_wait_default_budget_is_bounded():
+    defaults = inspect.signature(pages_deploy.healthy).parameters
+    assert 0 < defaults["budget"].default <= 150
+
+
+def test_shipped_pages_and_mcp_programs_define_every_global_they_use():
+    import builtins
+    import symtable
+
+    from plane_toolchain import mcp_deploy
+
+    for source in (pages_deploy.REMOTE, mcp_deploy.REMOTE):
+        tree = ast.parse(source)
+        defined = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                defined |= {alias.asname or alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.Assign):
+                defined |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        top = symtable.symtable(source, "<program>", "exec")
+        used = set()
+        stack = [top]
+        while stack:
+            table = stack.pop()
+            stack.extend(table.get_children())
+            used |= {
+                s.get_name()
+                for s in table.get_symbols()
+                if s.is_global() and s.is_referenced() and table is not top
+            }
+        assert not used - defined - set(dir(builtins)), sorted(used - defined - set(dir(builtins)))
+
+
+# PTC-67: Compose labels. Decision (verified on Docker Compose v5.5.0, see docs/extensions.md):
+# Docker labels are immutable, so the retained original keeps its com.docker.compose.* labels
+# whatever we do. The derived container keeps the same ones, so a `compose up` converges on one
+# container per service (it removes the derived and starts the retained original) instead of
+# leaving two running. These tests pin the label sets so a change here is deliberate.
+
+COMPOSE = {
+    "com.docker.compose.project": "plane",
+    "com.docker.compose.service": "api",
+    "com.docker.compose.container-number": "1",
+    "com.docker.compose.config-hash": "abc123",
+    "com.docker.compose.version": "2.0",
+    "owner": "kept",
+}
+
+
+@pytest.fixture
+def composed():
+    fake = FakeDocker()
+    fake.add("api", labels=dict(COMPOSE))
+    return fake
+
+
+def test_apply_keeps_the_retained_original_labels_untouched(composed):
+    deploy("apply", composed)
+    assert composed.containers[BACKUP]["labels"] == COMPOSE
+
+
+def test_derived_carries_the_compose_labels_plus_exactly_the_source_label(composed):
+    deploy("apply", composed)
+    assert composed.containers["api"]["labels"] == {**COMPOSE, LABEL: DIGEST}
+
+
+def test_revert_keeps_every_label_set_unchanged(composed):
+    deploy("apply", composed)
+    deploy("revert", composed, later=5)
+    assert composed.containers["api"]["labels"] == COMPOSE
+    [parked] = [n for n in composed.containers if "-pages-reverted-" in n]
+    assert composed.containers[parked]["labels"] == {**COMPOSE, LABEL: DIGEST}
+
+
+def test_failed_apply_retires_a_failed_container_with_the_same_label_set(composed):
+    composed.created_healthy = False
+    with pytest.raises(ValueError):
+        deploy("apply", composed)
+    assert composed.containers["api"]["labels"] == COMPOSE
+    [failed] = [n for n in composed.containers if "-pages-failed-" in n]
+    assert composed.containers[failed]["labels"] == {**COMPOSE, LABEL: DIGEST}
+
+
+def test_replacement_adds_no_label_other_than_the_source_label():
+    original = FakeDocker()
+    original.add("api", labels=dict(COMPOSE))
+    body = pages_deploy.replacement(original.document("api"), IMAGE, "http://live:3000", DIGEST)
+    assert set(body["Labels"]) - set(COMPOSE) == {LABEL}
+    assert all(body["Labels"][key] == value for key, value in COMPOSE.items())
+
+
+def test_build_failure_hides_the_base_image_registry(host):
+    host.error_output = (
+        b"ERROR: failed to pull registry.example/plane-backend@sha256:abc\n"
+        b"manifest for registry.example/plane-backend unknown\n"
+    )
+    host.fail.append("build")
+    host.images["sha256:base"] = ["registry.example/plane-backend@sha256:abc"]
+    with pytest.raises(ValueError, match="Image build failed") as error:
+        deploy("apply", host)
+    assert "registry.example" not in str(error.value) and "<base image>" in str(error.value)
+
+
+def test_health_probe_exec_has_a_timeout_in_the_shipped_entry():
+    assert "timeout=20" in pages_deploy.REMOTE

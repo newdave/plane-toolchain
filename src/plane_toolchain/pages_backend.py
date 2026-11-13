@@ -7,7 +7,7 @@ precondition, after force-closing open editors through Live's Redis admin channe
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Dependencies below exist in the Plane backend image, not this toolchain's environment.
 # pyright: reportMissingImports=false
@@ -28,6 +28,7 @@ LIST_FIELDS = (
 
 # Client-facing text comes only from this table, never from an exception object.
 INPUT_ERRORS = {
+    "object": "Request body must be a JSON object",
     "fields": "Only name, description_html and access are supported",
     "name": "Expected a non-empty page name of at most 255 characters",
     "body": "Invalid page body or access",
@@ -39,19 +40,18 @@ INPUT_ERRORS = {
     "archived": "Page is archived; restore it before editing",
     "conflict": "Page changed since expected_updated_at; retrieve it and retry",
     "close": "Could not disconnect open editors through Live; nothing written",
-    "overwritten": "Edit was overwritten by an open editor; retry",
 }
 
 # Update error keys that are not plain 400 validation failures.
-UPDATE_STATUS = {"conflict": 409, "overwritten": 409, "close": 502}
+UPDATE_STATUS = {"conflict": 409, "close": 502}
 
 # Live (apps/live) subscribes to this channel; a document's name is its page id.
 ADMIN_CHANNEL = "hocuspocus:admin"
 # Live closes connections about 50 ms after the command, then stores pending edits.
 FORCE_CLOSE_WAIT_SECONDS = 1.0
-# After commit, watch one Live store debounce (10 s) plus margin for a late overwrite.
-LATE_STORE_WINDOW_SECONDS = 12.0
-LATE_STORE_POLL_SECONDS = 1.0
+# Live stores an open document after a 10 s debounce. The response tells the client to
+# compare the page again once that debounce plus margin has passed; the API never waits.
+LATE_STORE_WINDOW_SECONDS = 12
 # Plane's track_page_version keeps at most this many versions per page.
 VERSION_LIMIT = 20
 
@@ -66,6 +66,8 @@ class PageInputError(ValueError):
 
 def creation_payload(data, sanitise, convert):
     """Validate and convert a complete new document before any database write."""
+    if not isinstance(data, dict):
+        raise PageInputError("object")
     if set(data) - {"name", "description_html", "access"}:
         raise PageInputError("fields")
     name = data.get("name")
@@ -83,7 +85,8 @@ def converted_body(body, sanitise, convert):
     clean = sanitise(body)
     converted = convert(clean)
     if (
-        not isinstance(converted.get("description_json"), dict)
+        not isinstance(converted, dict)
+        or not isinstance(converted.get("description_json"), dict)
         or not isinstance(converted.get("description_binary"), str)
         or not converted["description_binary"]
     ):
@@ -97,6 +100,8 @@ def converted_body(body, sanitise, convert):
 
 def update_request(data):
     """Validate an update request; return (description_html, expected updated_at)."""
+    if not isinstance(data, dict):
+        raise PageInputError("object")
     if set(data) - {"description_html", "expected_updated_at", "force"}:
         raise PageInputError("update_fields")
     body = data.get("description_html")
@@ -171,20 +176,22 @@ def page_update(data, load, prepare, close_editors, wait, locked, version):
     return {"page": page, "old_html": old_html}
 
 
-def late_store(reread, written, wait):
-    """Raise "overwritten" if a late Live store replaces the committed body.
+def late_store_check(now, html):
+    """Readback hint: when and how the client detects a late Live store.
 
-    reread returns the stored description_binary, or None once the page is gone.
+    Live may still store an editor's older state after the commit. The API returns at
+    once instead of polling. A client waits `seconds` after the response, retrieves the
+    page and compares the SHA-256 of its description_html with html_sha256; a different
+    digest means Live replaced the body.
     """
-    waited = 0.0
-    while waited < LATE_STORE_WINDOW_SECONDS:
-        wait(LATE_STORE_POLL_SECONDS)
-        waited += LATE_STORE_POLL_SECONDS
-        current = reread()
-        if current is None:
-            return
-        if stored_bytes(current) != stored_bytes(written):
-            raise PageInputError("overwritten")
+    after = now + timedelta(seconds=LATE_STORE_WINDOW_SECONDS)
+    return {
+        "recheck_after": after.isoformat(),
+        "seconds": LATE_STORE_WINDOW_SECONDS,
+        "compare": "description_html",
+        "html_sha256": hashlib.sha256((html or "").encode()).hexdigest(),
+        "on_difference": "Live overwrote the update; retrieve the page and retry",
+    }
 
 
 def force_close_message(doc_id):
@@ -259,7 +266,10 @@ def routes():
                 timeout=20,
             )
             response.raise_for_status()
-            return response.json()
+            converted = response.json()
+            if not isinstance(converted, dict):
+                raise ValueError("Live reply is not an object")
+            return converted
         except (requests.RequestException, ValueError, KeyError):
             error = APIException("Live document conversion unavailable; nothing written")
             error.status_code = 502
@@ -366,10 +376,6 @@ def routes():
                 if stale:
                     PageVersion.objects.filter(id__in=stale).delete()
 
-            def reread():
-                rows = Page.objects.filter(pk=page_id).values_list("description_binary", flat=True)
-                return rows.first()
-
             def client_error(error):
                 message = INPUT_ERRORS.get(error.key, "Invalid page input")
                 if error.key in UPDATE_STATUS:
@@ -405,12 +411,12 @@ def routes():
             except Exception:
                 # The body is committed; a retry would only hit the precondition.
                 logging.getLogger(__name__).warning("Page transaction not queued: %s", page.id)
-            try:
-                # The write and its version stay; the caller learns Live replaced it.
-                late_store(reread, page.description_binary, time.sleep)
-            except PageInputError as error:
-                raise client_error(error) from None
-            return Response(PageDetailSerializer(page).data)
+            # No wait here: a sync worker must not be held for a Live debounce.
+            detail = dict(PageDetailSerializer(page).data)
+            detail["late_store_check"] = late_store_check(
+                datetime.now(timezone.utc), page.description_html
+            )
+            return Response(detail)
 
     # Import confirms this image uses the reviewed CE layout; fail startup on drift.
     if PageViewSet.permission_classes != [ProjectPagePermission]:

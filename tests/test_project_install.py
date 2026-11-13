@@ -1,11 +1,13 @@
 """Project installer adds Plane integration without overwriting another project's work."""
 
 import hashlib
+import http.server
 import json
 import os
 import runpy
 import shutil
 import subprocess
+import threading
 import tomllib
 from pathlib import Path
 
@@ -172,6 +174,46 @@ def test_shim_reports_status_and_tolerates_missing_toolchain(tmp_path):
     assert "invalid" in json.loads(missing.stdout)["systemMessage"]
     assert run("mcp", PLANE_TOOLCHAIN=str(tmp_path / "absent")).returncode == 1
     assert run("bogus").returncode == 2
+
+
+@pytest.mark.parametrize("quote", ['"', "'", ""])
+def test_shim_strips_quotes_around_plane_toolchain_like_the_bridge(tmp_path, quote):
+    apply(tmp_path)
+    toolchain = tmp_path / "tool chain"
+    (toolchain / "src/plane_toolchain").mkdir(parents=True)
+    shutil.copy(
+        ROOT / "src/plane_toolchain/session.py", toolchain / "src/plane_toolchain/session.py"
+    )
+    local = tmp_path / ".plane/local.env"
+    local.write_text(f"PLANE_TOOLCHAIN={quote}{toolchain}{quote}\nPLANE_ENABLED=false\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PLANE_")}
+    result = subprocess.run(  # noqa: S603 - fixed local shim
+        ["bash", str(tmp_path / ".plane/plane.sh"), "status"],  # noqa: S607
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.stdout.strip() == "disabled", result.stderr
+
+
+def test_shim_strips_quotes_from_an_exported_plane_toolchain(tmp_path):
+    apply(tmp_path)
+    toolchain = tmp_path / "tool"
+    (toolchain / "src/plane_toolchain").mkdir(parents=True)
+    shutil.copy(
+        ROOT / "src/plane_toolchain/session.py", toolchain / "src/plane_toolchain/session.py"
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PLANE_")}
+    env["PLANE_TOOLCHAIN"] = f'"{toolchain}"'
+    result = subprocess.run(  # noqa: S603 - fixed local shim
+        ["bash", str(tmp_path / ".plane/plane.sh"), "status"],  # noqa: S607
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.stdout.strip() == "disabled", result.stderr
 
 
 def test_disabled_hint_names_installed_shim():
@@ -460,7 +502,13 @@ def test_revert_survives_prettier_style_json_and_shfmt_stable_shell(tmp_path, st
 
 
 SHFMT_STYLES = ("i0", "i2ci", "i4")
-SHIM_SOURCES = ("plane.sh", "plane.sh.pre-venv", "plane.sh.pre-shfmt", "plane.sh.legacy")
+SHIM_SOURCES = (
+    "plane.sh",
+    "plane.sh.pre-quotes",
+    "plane.sh.pre-venv",
+    "plane.sh.pre-shfmt",
+    "plane.sh.legacy",
+)
 # Every non-current form revert must accept: older templates, and each source in the shfmt
 # styles `-i 0`, `-i 2` (the .shfmt fixtures), `-i 2 -ci` and `-i 4`.
 SHIM_FORMS = [
@@ -727,3 +775,354 @@ def test_hint_accepts_export_prefix_and_whitespace(tmp_path, capsys):
     )
     out = next_step(tmp_path, capsys, None)
     assert "Set PLANE_PROJECT in .plane/local.env" in out
+
+
+EXISTING = {
+    "AGENTS.md": "# Rules\n",
+    ".mcp.json": json.dumps({"mcpServers": {"other": {"command": "x"}}}, indent=2) + "\n",
+    ".claude/settings.json": json.dumps({"model": "opus"}, indent=2) + "\n",
+}
+
+
+def seed_project(path):
+    for rel, text in EXISTING.items():
+        (path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (path / rel).write_text(text)
+
+
+def failing_replace(monkeypatch, nth):
+    real, calls = os.replace, []
+
+    def replace(src, dst):
+        calls.append(dst)
+        if len(calls) == nth:
+            raise OSError("injected failure")
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    return calls
+
+
+def failure_points(tmp_path_factory, monkeypatch):
+    """Every write count at which apply fails; stops at the first that completes."""
+    points = []
+    for nth in range(1, 40):
+        probe = tmp_path_factory.mktemp("probe")
+        seed_project(probe)
+        with monkeypatch.context() as patch:
+            failing_replace(patch, nth)
+            try:
+                apply(probe)
+            except OSError:
+                points.append(nth)
+                continue
+        return points
+    raise AssertionError("apply never completed")
+
+
+def test_failure_points_cover_every_write(tmp_path_factory, monkeypatch):
+    assert len(failure_points(tmp_path_factory, monkeypatch)) >= 10
+
+
+@pytest.mark.parametrize("nth", range(1, 20))
+def test_revert_after_failed_apply_restores_the_project(tmp_path, monkeypatch, nth):
+    seed_project(tmp_path)
+    before = snapshot(tmp_path)
+    with monkeypatch.context() as patch:
+        failing_replace(patch, nth)
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    revert(tmp_path)
+    after = snapshot(tmp_path)
+    after.pop(".plane/local.env", None)  # ignored local values stay, by design
+    after.pop(".plane/.gitignore", None)
+    assert after == before
+
+
+@pytest.mark.parametrize("nth", range(1, 20))
+def test_repeat_apply_after_failed_apply_finishes_and_reverts_cleanly(
+    tmp_path, tmp_path_factory, monkeypatch, nth
+):
+    seed_project(tmp_path)
+    with monkeypatch.context() as patch:
+        failing_replace(patch, nth)
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    apply(tmp_path)
+    assert "pending" not in json.loads((tmp_path / ".plane/install.json").read_text())
+    clean = tmp_path_factory.mktemp("clean")
+    seed_project(clean)
+    apply(clean)
+    # Only the directories list may differ: a failed first write can leave .plane behind.
+    done, fresh = snapshot(tmp_path), snapshot(clean)
+    assert (
+        json.loads(done.pop(".plane/install.json"))["entries"]
+        == json.loads(fresh.pop(".plane/install.json"))["entries"]
+    )
+    assert done == fresh
+    revert(tmp_path)
+    (tmp_path / ".plane/local.env").unlink()
+    (tmp_path / ".plane/.gitignore").unlink(missing_ok=True)
+    assert snapshot(tmp_path) == EXISTING
+
+
+def test_revert_after_failed_apply_keeps_edits_made_since(tmp_path, monkeypatch):
+    seed_project(tmp_path)
+    with monkeypatch.context() as patch:
+        failing_replace(patch, 14)  # AGENTS.md and .mcp.json are written and marked done
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("# Rules\n\nMine, edited after the failure.\n")
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {"other": {"command": "y"}}}\n')
+    with pytest.raises(ValueError, match="changed"):
+        revert(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_text().endswith("edited after the failure.\n")
+    assert (tmp_path / ".mcp.json").read_text() == ('{"mcpServers": {"other": {"command": "y"}}}\n')
+
+
+def test_user_edit_of_a_file_apply_never_reached_does_not_block_revert_or_reapply(
+    tmp_path, monkeypatch
+):
+    seed_project(tmp_path)
+    with monkeypatch.context() as patch:
+        failing_replace(patch, 2)  # only the pending receipt is written
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    mine = "# Rules\n\nMine, edited after the failure.\n"
+    (tmp_path / "AGENTS.md").write_text(mine)
+    (tmp_path / "CLAUDE.md").write_text("# Mine\n")  # apply would have created it
+    revert(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_text() == mine
+    assert (tmp_path / "CLAUDE.md").read_text() == "# Mine\n"
+
+    with monkeypatch.context() as patch:
+        failing_replace(patch, 2)
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    apply(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_text().startswith(mine)
+    assert "plane-toolchain:begin" in (tmp_path / "AGENTS.md").read_text()
+    revert(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_text() == mine
+    assert (tmp_path / "CLAUDE.md").read_text() == "# Mine\n"
+
+
+def test_resume_notes_a_conflicting_pre_approval_choice(tmp_path, monkeypatch, capsys):
+    with monkeypatch.context() as patch:
+        failing_replace(patch, 4)
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    capsys.readouterr()
+    apply(tmp_path, preapprove=False)
+    assert "Keeping the recorded pre-approval choice (added)" in capsys.readouterr().out
+    assert settings_entry(tmp_path)["approval"] == "added"
+
+
+def test_label_refuses_an_interrupted_installation(tmp_path, monkeypatch):
+    with monkeypatch.context() as patch:
+        failing_replace(patch, 4)
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    with pytest.raises(ValueError, match="interrupted"):
+        installer["label"](tmp_path, ENV, FakePlane())
+
+
+def test_crlf_agents_md_keeps_its_line_endings_and_reverts_byte_for_byte(tmp_path):
+    original = b"# Rules\r\n\r\nKeep tests green.\r\n"
+    (tmp_path / "AGENTS.md").write_bytes(original)
+    apply(tmp_path)
+    text = (tmp_path / "AGENTS.md").read_bytes()
+    assert text.startswith(original)
+    assert b"\n" not in text.replace(b"\r\n", b"")  # no bare LF anywhere
+    revert(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_bytes() == original
+
+
+def test_crlf_without_final_newline_and_codex_config_keep_their_endings(tmp_path):
+    (tmp_path / "AGENTS.md").write_bytes(b"# Rules\r\nlast line")
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex/config.toml").write_bytes(b'model = "x"\r\n')
+    apply(tmp_path)
+    for rel in ("AGENTS.md", ".codex/config.toml"):
+        assert b"\n" not in (tmp_path / rel).read_bytes().replace(b"\r\n", b"")
+    revert(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_bytes() == b"# Rules\r\nlast line\r\n"
+    assert (tmp_path / ".codex/config.toml").read_bytes() == b'model = "x"\r\n'
+
+
+def test_non_ascii_text_survives_apply_and_revert(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("# Règles — café ✓\n", encoding="utf-8", newline="")
+    (tmp_path / ".mcp.json").write_text(
+        '{\n  "mcpServers": {"café": {"command": "naïve"}}\n}\n', encoding="utf-8"
+    )
+    apply(tmp_path)
+    assert "café" in (tmp_path / ".mcp.json").read_text(encoding="utf-8")
+    assert "\\u" not in (tmp_path / ".mcp.json").read_text(encoding="utf-8")
+    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8").startswith("# Règles — café ✓\n")
+    revert(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8") == "# Règles — café ✓\n"
+    assert json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8")) == {
+        "mcpServers": {"café": {"command": "naïve"}}
+    }
+    assert "\\u" not in (tmp_path / ".mcp.json").read_text(encoding="utf-8")
+
+
+def test_invalid_utf8_is_refused_with_a_message(tmp_path):
+    (tmp_path / "AGENTS.md").write_bytes(b"# Rules \xff\xfe\n")
+    with pytest.raises(ValueError, match=r"AGENTS\.md.*UTF-8"):
+        apply(tmp_path)
+    assert not (tmp_path / ".plane").exists()
+
+
+@pytest.mark.parametrize(
+    ("rel", "text", "message"),
+    [
+        (".mcp.json", '{"mcpServers": []}', "mcpServers"),
+        (".mcp.json", '{"mcpServers": "x"}', "mcpServers"),
+        (".claude/settings.json", '{"hooks": []}', "hooks"),
+        (".claude/settings.json", '{"hooks": {"SessionStart": {}}}', "SessionStart"),
+        (".codex/hooks.json", '{"hooks": "x"}', "hooks"),
+    ],
+)
+def test_wrongly_typed_json_values_are_refused_without_writing(tmp_path, rel, text, message):
+    (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / rel).write_text(text)
+    with pytest.raises(ValueError, match=message):
+        apply(tmp_path)
+    assert not (tmp_path / ".plane").exists()
+    assert (tmp_path / rel).read_text() == text
+
+
+def test_main_reports_wrongly_typed_json_instead_of_a_traceback(tmp_path):
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": []}')
+    with pytest.raises(SystemExit) as error:
+        installer["main"](["apply", str(tmp_path)])
+    assert "mcpServers" in str(error.value)
+
+
+def test_main_catches_unexpected_errors_in_one_line(tmp_path, monkeypatch):
+    apply(tmp_path)
+    (tmp_path / ".plane/install.json").write_text('{"version": 1, "entries": {"x": 3}}')
+    with pytest.raises(SystemExit) as error:
+        installer["main"](["revert", str(tmp_path)])
+    assert "\n" not in str(error.value)
+    assert not isinstance(error.value.code, int)
+
+
+def test_label_on_non_object_settings_reports_instead_of_crashing(tmp_path, capsys):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text('{"enabledMcpjsonServers": ["plane"]}')
+    labelled(tmp_path)
+    (tmp_path / ".claude/settings.json").write_text("[]")
+    installer["label"](tmp_path, ENV, FakePlane())
+    assert "cannot check the pre-approval" in capsys.readouterr().out
+
+
+def test_revert_refuses_wrongly_typed_json_after_apply(tmp_path):
+    apply(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": []}')
+    with pytest.raises(ValueError, match="changed"):
+        revert(tmp_path)
+
+
+@pytest.mark.parametrize("name", ["CLAUDE.md", "AGENTS.md"])
+def test_symlinked_instruction_file_gets_a_tailored_message(tmp_path, name):
+    (tmp_path / "real.md").write_text("# Real\n")
+    (tmp_path / name).symlink_to("real.md")
+    with pytest.raises(ValueError) as error:
+        apply(tmp_path)
+    message = str(error.value)
+    assert name in message and "symlink" in message
+    assert "plain file" in message and "run the installer again" in message
+    assert "@AGENTS.md" in message
+    assert (tmp_path / "real.md").read_text() == "# Real\n"
+    assert not (tmp_path / ".plane").exists()
+
+
+def settings_entry(path):
+    return receipt(path)["entries"][".claude/settings.json"]
+
+
+def test_receipt_records_that_apply_added_the_pre_approval(tmp_path):
+    apply(tmp_path)
+    assert settings_entry(tmp_path)["approval"] == "added"
+
+
+def test_receipt_records_an_existing_pre_approval_as_listed(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text('{"enabledMcpjsonServers": ["plane"]}')
+    apply(tmp_path)
+    assert settings_entry(tmp_path)["approval"] == "listed"
+
+
+def test_opt_out_installs_the_hook_without_pre_approving(tmp_path, capsys):
+    apply(tmp_path, preapprove=False)
+    data = json.loads((tmp_path / ".claude/settings.json").read_text())
+    assert "enabledMcpjsonServers" not in data
+    assert "plane.sh" in data["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert settings_entry(tmp_path)["approval"] == "declined"
+    capsys.readouterr()
+    apply(tmp_path, preapprove=False)
+    assert "pre-approved" not in capsys.readouterr().out  # no outdated notice
+    revert(tmp_path)
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_opt_out_flag_on_the_command_line(tmp_path):
+    installer["main"](["apply", str(tmp_path), "--no-preapprove"])
+    assert "enabledMcpjsonServers" not in (tmp_path / ".claude/settings.json").read_text()
+
+
+def test_opt_out_keeps_an_existing_entry_through_revert(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text('{"enabledMcpjsonServers": ["plane"]}')
+    apply(tmp_path, preapprove=False)
+    revert(tmp_path)
+    assert json.loads((tmp_path / ".claude/settings.json").read_text()) == {
+        "enabledMcpjsonServers": ["plane"]
+    }
+
+
+def serve(handler):
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@pytest.mark.parametrize("code", [301, 302, 307, 308])
+def test_label_http_client_never_sends_key_across_a_redirect(code):
+    seen = []
+
+    class Target(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("X-API-Key"))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        do_POST = do_GET
+
+        def log_message(self, *args):
+            pass
+
+    target = serve(Target)
+
+    class Origin(Target):
+        def do_GET(self):
+            self.send_response(code)
+            self.send_header("Location", f"http://127.0.0.1:{target.server_port}/stolen")
+            self.end_headers()
+
+        do_POST = do_GET
+
+    origin = serve(Origin)
+    try:
+        request = installer["http_client"](f"http://127.0.0.1:{origin.server_port}", "fake-key")
+        with pytest.raises(ValueError, match="redirect.*refusing"):
+            request("GET", "/api/v1/labels/")
+        with pytest.raises(ValueError, match="redirect"):
+            request("POST", "/api/v1/labels/", {"name": "x"})
+    finally:
+        origin.shutdown()
+        target.shutdown()
+    assert seen == []

@@ -19,6 +19,14 @@ def test_normalises_existing_ce_relation_response_without_losing_other_types():
     assert relation_result(data) == result
 
 
+def test_relation_rows_from_other_projects_keep_their_own_project_id():
+    # CE relations are workspace-wide: ids from other projects are listed, never filtered,
+    # and each carries its project_id so the caller can tell (documented in docs/extensions.md).
+    data = {"blocking": [{"issue_id": "far", "project_id": "other-project"}]}
+    result = relation_result(data)
+    assert result["dependencies"]["blocking"] == [{"id": "far", "project_id": "other-project"}]
+
+
 def test_invalid_relation_identity_fails_closed():
     with pytest.raises(ValueError):
         relation_result(SimpleNamespace(model_dump=lambda: {"blocked_by": [{}]}))
@@ -111,3 +119,63 @@ def test_canonical_uuid_rejects_non_string_with_value_error():
     for bad in (None, 5, b"x", []):
         with pytest.raises(ValueError):
             canonical_uuid(bad)
+
+
+def _confirm(result, pages, sleeps):
+    import asyncio
+
+    from plane_toolchain.ce_tools import confirm_late_store
+
+    async def retrieve():
+        return pages.pop(0)
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    return asyncio.run(confirm_late_store(result, retrieve, sleep))
+
+
+def _result(html="<p>new</p>"):
+    import hashlib
+
+    return {
+        "id": "page-1",
+        "late_store_check": {
+            "seconds": 12,
+            "html_sha256": hashlib.sha256(html.encode()).hexdigest(),
+        },
+    }
+
+
+def test_late_store_unchanged_after_waiting_the_hinted_seconds():
+    sleeps = []
+    out = _confirm(_result(), [{"description_html": "<p>new</p>"}], sleeps)
+    assert sleeps == [12]
+    assert out["late_store"] == "unchanged"
+    assert out["id"] == "page-1"
+
+
+def test_late_store_overwrite_fails_naming_only_the_page_id():
+    sleeps = []
+    with pytest.raises(RuntimeError) as caught:
+        _confirm(_result(), [{"description_html": "<p>live</p>"}], sleeps)
+    assert sleeps == [12]
+    assert "page-1" in str(caught.value)
+    assert "live" not in str(caught.value)
+
+
+def test_late_store_hint_missing_from_older_backend_passes_through():
+    sleeps = []
+    assert _confirm({"id": "p"}, [], sleeps) == {"id": "p"}
+    assert sleeps == []
+
+
+def test_late_store_wait_is_capped_and_invalid_hint_rejected():
+    sleeps = []
+    result = _result()
+    result["late_store_check"]["seconds"] = 3600
+    _confirm(result, [{"description_html": "<p>new</p>"}], sleeps)
+    assert sleeps == [60]
+    result["late_store_check"]["seconds"] = "12"
+    with pytest.raises(ValueError):
+        _confirm(result, [], [])

@@ -1,6 +1,8 @@
 """Example automation must fail closed before remote writes."""
 
 import asyncio
+import hashlib
+import json
 import re
 import runpy
 from pathlib import Path
@@ -139,3 +141,176 @@ def test_no_status_override_and_secrets_scoped(name):
         if job_name == "preconditions":
             assert "secrets." not in yaml.dump(job)
     assert "secrets." in yaml.dump(doc["jobs"])
+
+
+installer = runpy.run_path(str(Path(__file__).parents[1] / "scripts/github_examples.py"))
+install = installer["install"]
+EXAMPLES = Path(__file__).parents[1] / "examples/github"
+
+
+def test_install_apply_then_revert_round_trip(tmp_path, capsys):
+    install("apply", tmp_path)
+    assert sorted(p.name for p in (tmp_path / ".github/workflows").iterdir()) == sorted(
+        p.name for p in EXAMPLES.glob("*.yml")
+    )
+    install("apply", tmp_path)
+    assert "already installed" in capsys.readouterr().out
+    install("revert", tmp_path)
+    assert not list((tmp_path / ".github/workflows").iterdir())
+
+
+@pytest.mark.parametrize("parent", [".github", ".agent-state"])
+def test_symlinked_parent_is_refused_and_nothing_is_written(tmp_path, parent):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / parent).symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink"):
+        install("apply", target)
+    assert not list(outside.iterdir())
+
+
+def test_outdated_install_is_detected(tmp_path):
+    install("apply", tmp_path)
+    receipt = tmp_path / ".agent-state/plane-toolchain/workflows.json"
+    saved = json.loads(receipt.read_text())
+    name = sorted(saved)[0]
+    stale = b"name: older example\n"
+    (tmp_path / ".github/workflows" / name).write_bytes(stale)
+    saved[name] = hashlib.sha256(stale).hexdigest()
+    receipt.write_text(json.dumps(saved))
+    with pytest.raises(ValueError, match="outdated"):
+        install("apply", tmp_path)
+    install("revert", tmp_path)
+    install("apply", tmp_path)
+
+
+def test_interrupted_apply_is_completed_and_can_be_reverted(tmp_path):
+    install("apply", tmp_path)
+    workflows = tmp_path / ".github/workflows"
+    victim = sorted(workflows.iterdir())[0]
+    victim.unlink()
+    install("apply", tmp_path)
+    assert victim.is_file()
+    victim.unlink()
+    install("revert", tmp_path)
+    assert not list(workflows.iterdir())
+
+
+def test_retried_completion_does_not_repeat_comment_or_state_update():
+    state = {"state": "other"}
+    comments = []
+    calls = []
+
+    async def call(name, args):
+        calls.append((name, args["action"]))
+        if name == "state":
+            return {"group": "completed"}
+        if name == "workitem_comment":
+            if args["action"] == "create":
+                comments.append({"id": "c1", "comment_html": args["comment_html"]})
+                return {"id": "c1"}
+            if args["action"] == "list":
+                return {"results": list(comments)}
+            return comments[0]
+        if args["action"] == "update":
+            state["state"] = args["state"]
+            return {}
+        return dict(state)
+
+    values = inputs(ENV)
+    asyncio.run(publish(call, values))
+    asyncio.run(publish(call, values))
+    assert len(comments) == 1
+    assert calls.count(("workitem", "update")) == 1
+
+
+def test_comment_for_a_longer_run_id_does_not_count_as_this_run():
+    values = inputs(dict(ENV, GITHUB_RUN_ID="12"))
+    other = '<a href="https://github.com/example/demo/actions/runs/123">x</a>'
+    created = []
+
+    async def call(name, args):
+        if name == "state":
+            return {"group": "completed"}
+        if name == "workitem_comment" and args["action"] == "list":
+            return {"results": [{"comment_html": other}]}
+        if name == "workitem_comment" and args["action"] == "create":
+            created.append(args)
+            return {"id": "c"}
+        if name == "workitem_comment":
+            return {"comment_html": values[4]}
+        return {"state": values[3]}
+
+    asyncio.run(publish(call, values))
+    assert len(created) == 1
+
+
+def test_planted_temp_symlink_does_not_escape_the_target(tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep")
+    target = tmp_path / "target"
+    (target / ".github/workflows").mkdir(parents=True)
+    name = sorted(p.name for p in EXAMPLES.glob("*.yml"))[0]
+    (target / ".github/workflows" / f".{name}.tmp").symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink"):
+        install("apply", target)
+    assert outside.read_text() == "keep"
+
+
+def test_planted_receipt_temp_symlink_does_not_escape_the_target(tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep")
+    target = tmp_path / "target"
+    (target / ".agent-state/plane-toolchain").mkdir(parents=True)
+    (target / ".agent-state/plane-toolchain/.workflows.json.tmp").symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink"):
+        install("apply", target)
+    assert outside.read_text() == "keep"
+
+
+def test_stale_regular_temp_file_is_replaced(tmp_path):
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    name = sorted(p.name for p in EXAMPLES.glob("*.yml"))[0]
+    (tmp_path / ".github/workflows" / f".{name}.tmp").write_text("stale")
+    install("apply", tmp_path)
+    assert not list((tmp_path / ".github/workflows").glob(".*.tmp"))
+
+
+def test_place_refuses_to_overwrite_and_reports_missing_hard_links(tmp_path, monkeypatch):
+    place = installer["place"]
+    (tmp_path / "a.yml").write_text("mine")
+    with pytest.raises(ValueError, match="already exists"):
+        place(tmp_path, "a.yml", b"new")
+    assert (tmp_path / "a.yml").read_text() == "mine"
+
+    def no_links(*args):
+        raise OSError("unsupported")
+
+    monkeypatch.setitem(place.__globals__["os"].__dict__, "link", no_links)
+    with pytest.raises(ValueError, match="hard links"):
+        place(tmp_path, "b.yml", b"new")
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("sent", "stored"),
+    [
+        ("if a < b and c > d then stop", "<p>if a &lt; b and c &gt; d then stop</p>"),
+        ("a &amp; b", "<p>a &amp;  b</p>\n"),
+        ("<p>one</p><p>two</p>", "<p>one</p>\n<p>two</p>"),
+        ("<p>x <strong>y</strong></p>", "<p>x <b>y</b></p>"),
+        ("plain text", "<p>plain text</p>"),
+    ],
+)
+def test_body_text_matches_what_plane_stores(sent, stored):
+    from plane_toolchain.cli_commands import body_text
+
+    assert body_text(sent) == body_text(stored)
+
+
+def test_body_text_distinguishes_different_text():
+    from plane_toolchain.cli_commands import body_text
+
+    assert body_text("a < b") != body_text("a b")
