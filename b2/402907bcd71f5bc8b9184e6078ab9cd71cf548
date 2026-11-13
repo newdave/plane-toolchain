@@ -1,0 +1,38 @@
+examples/github/plane_event.py
+  s_066dd3ba2255bd::t_ccda22307e1cb9 82-84,93
+examples/github/plane-complete.yml
+  s_066dd3ba2255bd::t_ccda22307e1cb9 58
+.github/workflows/release.yml
+  s_066dd3ba2255bd::t_ccda22307e1cb9 8,39
+scripts/github_examples.py
+  s_066dd3ba2255bd::t_4b8ad0e363b96e 29-44,49,60-65
+  s_066dd3ba2255bd::t_78c108ba827e60 66-68
+src/plane_toolchain/cli_commands.py
+  s_066dd3ba2255bd::t_4b8ad0e363b96e 6,64-72,74-84
+tests/test_github_examples.py
+  s_066dd3ba2255bd::t_78c108ba827e60 248-316
+examples/github/plane-check.yml
+  s_066dd3ba2255bd::t_ccda22307e1cb9 25
+CONTRIBUTING.md
+  s_066dd3ba2255bd::t_78c108ba827e60 22-32
+CHANGELOG.md
+  s_066dd3ba2255bd::t_e5152795014ee4 14
+examples/github/plane-comment.yml
+  s_066dd3ba2255bd::t_ccda22307e1cb9 50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "b2402907bcd71f5bc8b9184e6078ab9cd71cf548",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
