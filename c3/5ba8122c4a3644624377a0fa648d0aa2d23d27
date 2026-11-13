@@ -1,0 +1,32 @@
+tests/test_workspace_rename_deploy.py
+  s_066dd3ba2255bd::t_e496b4d2df243e 307
+  s_066dd3ba2255bd::t_5b7eac32a476b7 263
+tests/fake_docker.py
+  s_066dd3ba2255bd::t_6533f19454f5c2 38-43,176-180,233-234,236-241
+src/plane_toolchain/workspace_rename.py
+  s_066dd3ba2255bd::t_5b7eac32a476b7 20,24,39-42,353-433,437-439,451,455-476,485-489,491,1311-1314,1342-1343,1352-1362
+  s_066dd3ba2255bd::t_86a6655731597c 1363
+docs/workspace-rename.md
+  s_066dd3ba2255bd::t_4a0cfa8b3b02d6 136
+CHANGELOG.md
+  s_066dd3ba2255bd::t_4a0cfa8b3b02d6 13
+tests/test_workspace_rename_hardening.py
+  s_066dd3ba2255bd::t_dfb84cb3bfc9d1 144
+  s_066dd3ba2255bd::t_37ab52b13b5ef0 110-143,145-210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "c35ba8122c4a3644624377a0fa648d0aa2d23d27",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
