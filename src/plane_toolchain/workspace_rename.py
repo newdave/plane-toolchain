@@ -392,6 +392,17 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def leftover_files(directory):
+    """Names of journals and backups in `directory`, current or rotated, sorted."""
+    return sorted(
+        name
+        for name in os.listdir(directory)
+        if name in ("records.jsonl", "backup.dump")
+        or (name.startswith("records-") and name.endswith(".jsonl"))
+        or (name.startswith("backup-") and name.endswith(".dump"))
+    )
+
+
 def journal_workspace(records):
     """The renamed workspace id from the journal's workspace record, or None. Two ids refuse."""
     ids = {r.get("id") for r in records if isinstance(r, dict) and r.get("kind") == "workspace"}
@@ -695,7 +706,20 @@ def deploy(data, seams):
         if operation == "apply" or os.path.lexists(directory):
             receipt = load_receipt(directory, old, new, uid)
         if receipt is not None and receipt.get("phase") != "apply":
+            if receipt.get("step") == "reverted":
+                raise RuntimeError(
+                    "this rename was reverted and the revert is complete; archive or move the "
+                    "receipt directory before a new apply"
+                )
             raise RuntimeError("receipt is in the revert phase; run revert")
+        if receipt is None and os.path.lexists(directory):
+            leftover = leftover_files(directory)
+            if leftover:
+                raise RuntimeError(
+                    "found " + ", ".join(leftover) + " without a receipt: a journal or backup "
+                    "from an earlier rename; move them or the receipt directory aside before a "
+                    "new apply"
+                )
         step = receipt["step"] if receipt else None
         if step == "complete":
             return "Rename already complete"
@@ -898,7 +922,7 @@ def revert(data, seams):
     names = service_names(data.get("services") or {})
     options = {key: data[key] for key in ("live_url", "api_url") if data.get(key)}
     applied, order = step_order("apply"), step_order("revert")
-    partial = None
+    partial, finished, notes = None, False, []
 
     def call(op, args):
         return snippet_ok(api, snippet, op, args, directory, popen, uid)
@@ -943,6 +967,12 @@ def revert(data, seams):
                 if not restore_needed:
                     say("The slug change never committed; no restore needed")
             else:
+                if slug_state(api, snippet, old, new, None, directory, popen, uid) != "original":
+                    raise RuntimeError(
+                        "slug state unknown: nothing was journalled, but OLD is not live or NEW "
+                        "is taken; check which workspace holds each slug, and restore "
+                        "backup.dump by hand as the last resort"
+                    )
                 say("Nothing was journalled; no restore needed")
     except RuntimeError as failure:
         text = str(failure)
@@ -966,11 +996,16 @@ def revert(data, seams):
         crash("after_restore")
         if summary is None:
             raise RuntimeError("restore gave no summary")
-        if summary.get("partial"):
-            partial = summary.get("skipped", 0)
-        elif summary.get("ok") is not True:
+        skipped = summary.get("skipped", 0) if summary.get("partial") else 0
+        if not skipped and summary.get("ok") is not True:
             raise RuntimeError("restore failed")
-        set_receipt_field(directory, "restore_partial", partial or 0, uid)
+        try:
+            set_receipt_field(directory, "restore_partial", skipped, uid)
+        except Exception as problem:  # noqa: BLE001 - a partial restore must still finish
+            if not skipped:
+                raise
+            notes.append("could not record restore_partial in the receipt: " + reason_of(problem))
+        partial = skipped or None
 
     def verify():
         if workspace_id:
@@ -994,7 +1029,7 @@ def revert(data, seams):
 
     def finish_partial():
         """Restart services and recheck after a partial restore; never returns."""
-        notes = []
+        nonlocal finished
         try:
             start_services(names, docker, crash)
         except Exception as problem:  # noqa: BLE001 - report it with the partial restore
@@ -1003,6 +1038,7 @@ def revert(data, seams):
             verify()
         except Exception as problem:  # noqa: BLE001
             notes.append("health check failed: " + reason_of(problem))
+        finished = True
         raise RuntimeError(
             f"Revert incomplete: the restore was partial ({partial} rows skipped, listed above "
             "by id); this is not a full revert. The slug and every other journalled row are "
@@ -1042,7 +1078,7 @@ def revert(data, seams):
                 finish_partial()
             advance(directory, target, uid)
         except Exception as failure:  # Killed and other BaseExceptions propagate untouched
-            if partial:
+            if finished:  # the report from finish_partial
                 raise
             failed(target, reason_of(failure))
         step = target
@@ -1084,6 +1120,7 @@ SHIPPED = (
     append_journal,
     load_journal,
     sha256_file,
+    leftover_files,
     journal_workspace,
     run_snippet,
     report,

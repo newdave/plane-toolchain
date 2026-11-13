@@ -1517,6 +1517,11 @@ def empty_journal_past_slug(host):
     (host.directory / "records.jsonl").rename(host.directory / "moved.jsonl")
 
 
+def empty_journal_old_gone(host):
+    wr.new_receipt(wr.secure_receipt_dir(host.directory), OLD, NEW)  # pending, no journal
+    host.orm.models["workspace"].rows[0]["slug"] = "third"  # OLD is not live any more
+
+
 def slug_elsewhere(host):
     host.deploy()
     host.orm.models["workspace"].rows[0]["slug"] = "third"
@@ -1534,6 +1539,7 @@ REVERT_REFUSALS = {
     "no_workspace_record": (no_workspace_record, "no workspace record"),
     "empty_journal_past_slug": (empty_journal_past_slug, "journal is empty"),
     "slug_state_unknown": (slug_elsewhere, "slug state unknown"),
+    "empty_journal_slug_unknown": (empty_journal_old_gone, "slug state unknown"),
 }
 
 
@@ -1777,3 +1783,60 @@ def test_revert_interrupt_gives_guidance_without_traceback(host, monkeypatch, ca
     assert run_remote(wr.REMOTE, host.payload("revert"), host, monkeypatch) == 1
     err = capsys.readouterr().err
     assert "Traceback" not in err and "interrupted" in err.lower() and "rerun revert" in err
+
+
+def test_apply_after_a_finished_revert_says_so_and_asks_to_archive_the_receipt(host):
+    host.deploy()
+    revert(host)
+    host.fake.calls.clear()
+    for operation in ("apply", "check"):
+        with pytest.raises(RuntimeError, match="revert is complete") as refused:
+            host.deploy(operation)
+        assert "move the receipt directory" in str(refused.value)
+    assert not mutating(host.fake) and host.receipt()["step"] == "reverted"
+
+
+@pytest.mark.parametrize("name", ["records.jsonl", "records-20261113T000000Z.jsonl", "backup.dump"])
+def test_apply_refuses_a_journal_or_backup_without_a_receipt(host, name):
+    directory = wr.secure_receipt_dir(host.directory)
+    (directory / name).write_bytes(b"left over")
+    (directory / name).chmod(0o600)
+    before = snapshot(host.orm)
+    for operation in ("apply", "check"):
+        with pytest.raises(RuntimeError, match="without a receipt") as refused:
+            host.deploy(operation)
+        assert name in str(refused.value) and "move" in str(refused.value)
+    assert not mutating(host.fake) and "step_slug" not in host.ops()
+    assert not (directory / "receipt.json").exists()
+    assert (directory / name).read_bytes() == b"left over"
+    assert snapshot(host.orm) == before
+
+
+def test_partial_restore_survives_a_failed_receipt_write(host, monkeypatch):
+    host.deploy()
+    host.orm.models["issue"].rows[0]["description_html"] = "<p>edited after the rename</p>"
+    real = wr.set_receipt_field
+
+    def failing(directory, name, value, uid=None):
+        if name == "restore_partial":
+            raise OSError("disk full")
+        return real(directory, name, value, uid)
+
+    monkeypatch.setattr(wr, "set_receipt_field", failing)
+    with pytest.raises(RuntimeError, match="Revert incomplete") as refused:
+        host.deploy("revert")
+    message = str(refused.value)
+    assert "not a full revert" in message and "restore_partial" in message
+    assert "rerun revert" in message
+    assert all(host.running().values())  # services are not left stopped
+    assert host.receipt()["step"] == "reverting"
+
+
+def test_flush_failure_after_a_partial_restore_leaves_guidance(host):
+    host.deploy()
+    host.orm.models["issue"].rows[0]["description_html"] = "<p>edited after the rename</p>"
+    sabotage(host, "flush_cache", "unrun")
+    with pytest.raises(RuntimeError, match="Revert stopped at restored") as refused:
+        host.deploy("revert")
+    assert "rerun revert" in str(refused.value)
+    assert host.receipt()["step"] == "reverting"
