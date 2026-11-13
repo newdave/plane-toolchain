@@ -1,0 +1,39 @@
+src/plane_toolchain/workspace_rename_backend.py
+  s_ede55e2c788ed0::t_bfd1f7ae2d9ecd 504-505,507-511,513-517
+  s_ede55e2c788ed0::t_9fe41dc3f17260 201
+  s_ede55e2c788ed0::t_71e0f2e099c2c9 4-11,18-20,24-25
+  s_ede55e2c788ed0::t_c41b6a19902f53 41-43,55-93
+  s_ede55e2c788ed0::t_270140e2ceaae0 177-178,182
+  s_ede55e2c788ed0::t_e4aa2533ac7639 217-296,303-411,415,419,423-445,447
+  s_ede55e2c788ed0::t_882530912b7087 483
+  s_ede55e2c788ed0::t_76af6c742849ff 297-302
+  s_ede55e2c788ed0::t_8c18b4d4fac411 126-128
+  s_ede55e2c788ed0::t_dae1cad044d3ac 130-131
+  s_ede55e2c788ed0::t_63ad7fb7ac33eb 412-414,446
+  s_ede55e2c788ed0::t_d95d90103c1b25 459
+tests/test_workspace_rename_backend.py
+  s_ede55e2c788ed0::t_a46c6927ed4de4 126
+  s_ede55e2c788ed0::t_9a68a9925b4608 332-340
+  s_ede55e2c788ed0::t_f9d7fc8f6e6fd4 362
+  s_ede55e2c788ed0::t_8d1e0f4405761b 2-3,7-9,11
+  s_ede55e2c788ed0::t_9b735ab1a1f131 45-47,74-77,91-92,118,131-138,180,186
+  s_ede55e2c788ed0::t_fb99539a20935f 357,360-361,363-368
+  s_ede55e2c788ed0::t_c49e341cbcf44c 373-514,516-785
+  s_ede55e2c788ed0::t_4129076d2ce87f 515
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "8781992c525507b09d0bc572cf0fe911c44e4dc5",
+  "prompts": {},
+  "sessions": {
+    "s_ede55e2c788ed0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0efdfaa0-8892-4410-bfde-2ef5da9736c1",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
