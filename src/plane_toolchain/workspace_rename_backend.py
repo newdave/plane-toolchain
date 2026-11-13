@@ -127,7 +127,7 @@ def _plan(orm, workspace_id, old, hosts, emit):
         names = [c for c, _ in columns]
         owner = () if key in UNOWNED else ("workspace_id",)
         rows = orm.models[key].all_objects.filter(**_scope(key, workspace_id))
-        rows = rows.values("pk", *owner, *names)
+        rows = rows.values("pk", *owner, *names).iterator()
         for scanned, row in enumerate(rows, 1):
             if scanned % PROGRESS_EVERY == 0:
                 emit({"event": "progress"})

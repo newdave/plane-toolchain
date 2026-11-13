@@ -796,6 +796,25 @@ def test_remote_program_defines_every_global_its_functions_reference():
     assert not missing, f"REMOTE functions use names it does not define: {missing}"
 
 
+def test_apply_and_revert_share_one_copy_of_each_run_helper():
+    # PTC-64: apply and revert share one state machine; no helper is duplicated per operation.
+    shared = (
+        "reason_of",
+        "refused",
+        "drain_state",
+        "warnings_text",
+        "run_context",
+        "run_call",
+        "run_stop",
+        "run_start_noting",
+        "run_steps",
+    )
+    for name in shared:
+        assert wr.REMOTE.count(f"\ndef {name}(") == 1, name
+    for nested in ("def reason_of(", "def call(", "def stop("):
+        assert f"    {nested}" not in wr.REMOTE, nested
+
+
 def test_kill_and_resume_through_the_assembled_program(host, monkeypatch):
     host.fake.crash_at("after_slug_done")
     with pytest.raises(Killed):
