@@ -189,19 +189,51 @@ class FakeDocker:
             raise Killed(label)
 
     def popen(self, argv, **kw):
-        """Streaming stand-in for subprocess.Popen on a docker argv."""
+        """Streaming stand-in for subprocess.Popen on a docker argv.
+
+        With stdin=PIPE the command runs when stdout is first read (after the caller has written
+        and closed stdin), as `docker exec -i ... manage.py shell` reads its program first.
+        """
         assert argv[0] == "docker"
         self.streams[tuple(argv[1:])] = (kw.get("stdout"), kw.get("stderr"))
-        code, stdout = self.execute(*argv[1:], input=None)
-        process = io.BytesIO(stdout)
+        fake = self
+
+        class Stdin:
+            def __init__(self):
+                self.data, self.closed = bytearray(), False
+
+            def write(self, data):
+                assert not self.closed
+                self.data += data
+                return len(data)
+
+            def close(self):
+                self.closed = True
 
         class Process:
-            stdout = process
-            returncode = None
+            def __init__(self):
+                self.stdin = Stdin() if kw.get("stdin") == subprocess.PIPE else None
+                self.returncode, self.result, self.killed = None, None, False
+                if self.stdin is None:
+                    self.run()
+
+            def run(self):
+                if self.result is None:
+                    piped = bytes(self.stdin.data) if self.stdin is not None else None
+                    code, stdout = fake.execute(*argv[1:], input=piped)
+                    self.result = (code, io.BytesIO(stdout))
+                return self.result
+
+            @property
+            def stdout(self):
+                return self.run()[1]
 
             def wait(self):
-                self.returncode = code
-                return code
+                self.returncode = self.run()[0]
+                return self.returncode
+
+            def kill(self):
+                self.killed = True
 
         return Process()
 

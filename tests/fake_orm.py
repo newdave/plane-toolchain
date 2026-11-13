@@ -5,10 +5,19 @@ Mimics only what the snippet uses: per-model `objects` (soft-delete filtered) an
 `filter(...).update(...)` and its row count, `atomic()` with rollback, a cache, `settings.WEB_URL`
 and the list of text and JSON columns. `FakeOrm.log` records begin, commit, rollback and each
 update with its ids, so tests can order writes against emitted events.
+
+`ManageShell` serves FakeDocker's `on_manage_shell`: it runs the piped program (the request
+line plus the assembled snippet, tail included) with fake django, plane and requests modules
+bound to a FakeOrm, a FakeLiveService and an API status.
 """
 
+import base64
 import contextlib
 import copy
+import hashlib
+import io
+import sys
+import types
 from types import SimpleNamespace
 
 
@@ -149,3 +158,135 @@ class FakeOrm:
 
     def snapshot(self):
         return {k: clone(t.rows) for k, t in self.models.items()}
+
+
+# --- `manage.py shell` stand-in: run the piped program against a FakeOrm ---
+
+# Model class names the snippet's `_django_orm` imports from plane.db.models, by model key.
+PLANE_MODELS = {
+    "Workspace": "workspace",
+    "Issue": "issue",
+    "Page": "page",
+    "IssueComment": "comment",
+    "Notification": "notification",
+    "Description": "description",
+    "EmailNotificationLog": "email_log",
+}
+
+
+class FakeLiveService:
+    """Live /live/convert-document/: deterministic per (html, variant); `fail` raises."""
+
+    def __init__(self):
+        self.calls, self.fail = [], False
+
+    def convert(self, html, variant):
+        self.calls.append((html, variant))
+        if self.fail:
+            raise RuntimeError("Live unavailable")
+        digest = hashlib.sha256(f"{variant}:{html}".encode()).hexdigest()
+        return {
+            "description_json": {"type": "doc", "variant": variant, "digest": digest[:12]},
+            "description_binary": base64.b64encode(digest.encode()).decode(),
+            "description_stripped": "stripped-" + digest[:8],
+        }
+
+
+def django_modules(orm, live, api):
+    """sys.modules entries for the imports `_django_orm`, `_live_convert` and `_api_probe` make.
+
+    `api["status"]` is what the API's /api/instances/ answers."""
+    fields = types.ModuleType("django.db.models")
+    for name in ("JSONField", "TextField", "CharField"):
+        setattr(fields, name, type(name, (), {}))
+
+    def model(table):
+        concrete = []
+        for column, kind in table.columns.items():
+            field = getattr(fields, "JSONField" if kind == "json" else "TextField")()
+            field.column, field.attname = column, table.attnames.get(column, column)
+            concrete.append(field)
+        meta = SimpleNamespace(db_table=table.db_table, concrete_fields=concrete)
+        manager = table.all_objects
+        return SimpleNamespace(all_objects=manager, _base_manager=manager, _meta=meta)
+
+    models = {key: model(table) for key, table in orm.models.items()}
+
+    class Response:
+        def __init__(self, status, body=None):
+            self.status_code, self.body = status, body
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError("HTTP error")
+
+        def json(self):
+            return self.body
+
+    def post(endpoint, json, timeout):
+        assert endpoint.endswith("/live/convert-document/")
+        return Response(200, live.convert(json["description_html"], json["variant"]))
+
+    def get(endpoint, timeout, allow_redirects):
+        assert endpoint.endswith("/api/instances/") and allow_redirects is False
+        return Response(api["status"])
+
+    specs = {
+        "django": {},
+        "django.apps": {"apps": SimpleNamespace(get_models=lambda: list(models.values()))},
+        "django.conf": {"settings": orm.settings},
+        "django.core": {},
+        "django.core.cache": {"cache": orm.cache},
+        "django.db": {},
+        "django.db.transaction": {"atomic": orm.atomic},
+        "plane": {},
+        "plane.db": {},
+        "plane.db.models": {name: models[key] for name, key in PLANE_MODELS.items()},
+        "plane.utils": {},
+        "plane.utils.constants": {"RESTRICTED_WORKSPACE_SLUGS": sorted(orm.restricted_slugs)},
+        "requests": {"post": post, "get": get},
+    }
+    modules = {"django.db.models": fields}
+    for name, attributes in specs.items():
+        modules[name] = types.ModuleType(name)
+        for attribute, value in attributes.items():
+            setattr(modules[name], attribute, value)
+    for name, module in modules.items():  # bind each submodule on its parent package
+        parent, _, leaf = name.rpartition(".")
+        if parent:
+            setattr(modules[parent], leaf, module)
+    return modules
+
+
+class ManageShell:
+    """FakeDocker `on_manage_shell` handler: exec the piped program as `manage.py shell` does,
+    with Django, Plane and requests bound to `orm`, a FakeLiveService and the API status.
+
+    Records each request (`requests`). Stdout is what the program printed; an exception that
+    escapes the program exits 1, as the real shell would."""
+
+    def __init__(self, orm, live=None, api_status=200):
+        self.orm, self.live = orm, live or FakeLiveService()
+        self.api = {"status": api_status}
+        self.requests = []
+
+    def __call__(self, text):
+        modules = django_modules(self.orm, self.live, self.api)
+        saved = {name: sys.modules.get(name) for name in modules}
+        sys.modules.update(modules)
+        out = io.StringIO()
+        namespace = {"__name__": "__main__"}
+        try:
+            with contextlib.redirect_stdout(out):
+                exec(compile(text, "<manage.py shell>", "exec"), namespace)  # noqa: S102
+        except Exception:  # noqa: BLE001 - the real shell exits non-zero
+            return out.getvalue(), 1
+        finally:
+            for name, module in saved.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+            if "RENAME_REQUEST" in namespace:
+                self.requests.append(namespace["RENAME_REQUEST"])
+        return out.getvalue(), 0
