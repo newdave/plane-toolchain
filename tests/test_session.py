@@ -105,6 +105,65 @@ _plane_toolchain_prompt_remove
     assert result.returncode == 0, result.stderr
 
 
+def test_zsh_prompt_runs_python_only_when_the_inputs_change(tmp_path):
+    import os
+    import shutil
+    import subprocess
+
+    zsh = shutil.which("zsh")
+    if not zsh:
+        pytest.skip("zsh unavailable")
+    root = Path(__file__).resolve().parents[1]
+    (tmp_path / "src/plane_toolchain").mkdir(parents=True)
+    shutil.copyfile(
+        root / "src/plane_toolchain/session.py", tmp_path / "src/plane_toolchain/session.py"
+    )
+    (tmp_path / "config").mkdir()
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    real = shutil.which("python3")
+    (stubs / "python3").write_text(f'#!/bin/sh\necho x >> "$COUNT"\nexec "{real}" "$@"\n')
+    (stubs / "python3").chmod(0o755)
+    count = tmp_path / "count"
+    env = {k: v for k, v in os.environ.items() if k != "PLANE_ENABLED"}
+    env.update(
+        COUNT=str(count),
+        PATH=f"{stubs}:{os.environ['PATH']}",
+        MISE_PROJECT_ROOT=str(tmp_path),
+        PROMPT_SCRIPT=str(root / "scripts/plane-prompt.zsh"),
+    )
+    result = subprocess.run(  # noqa: S603 - fixed local shell fixture
+        [
+            zsh,
+            "-f",
+            "-c",
+            """
+PS1='original> '
+source "$PROMPT_SCRIPT" "$MISE_PROJECT_ROOT"
+_plane_toolchain_prompt
+_plane_toolchain_prompt
+_plane_toolchain_prompt
+[[ $PS1 == '[Plane:disabled] original> ' ]] || exit 1
+[[ $(wc -l < "$COUNT") -eq 1 ]] || exit 2
+print 'PLANE_ENABLED=true' > "$MISE_PROJECT_ROOT/config/local.env"
+_plane_toolchain_prompt
+[[ $PS1 == '[Plane:enabled] original> ' ]] || exit 3
+_plane_toolchain_prompt
+[[ $(wc -l < "$COUNT") -eq 2 ]] || exit 4
+export PLANE_ENABLED=false
+_plane_toolchain_prompt
+[[ $PS1 == '[Plane:disabled] original> ' ]] || exit 5
+[[ $(wc -l < "$COUNT") -eq 3 ]] || exit 6
+""",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (result.returncode, result.stderr)
+
+
 def test_unreadable_file_reports_invalid_not_traceback(tmp_path):
     (tmp_path / "config").mkdir()
     (tmp_path / "config/local.env").write_bytes(b"PLANE_ENABLED=\xff\xfe\n")

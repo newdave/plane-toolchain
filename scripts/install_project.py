@@ -80,12 +80,20 @@ KNOWN_SHIM_SHA256 = {
     "67c0a37573d63a7ad8a40bd0825a74287ff23b5d8305b78295fd19018aca3d51",
     # plane.sh.pre-venv and plane.sh.pre-shfmt, shfmt -i 4 (same bytes from both).
     "fccb403454719381d6e607105361d1feee74465063b67a2730172376b1be43db",
-    # plane.sh (current template), shfmt -i 0. Its raw and -i 2 form is SHIM itself.
+    # plane.sh.pre-quotes (shim before PTC-76 PLANE_TOOLCHAIN quote stripping), raw and -i 2.
+    "9534600d60faf3c8cf343f46690ba794b26d2099033ab1c927a05b620f66ed57",
+    # plane.sh.pre-quotes, shfmt -i 0.
     "5ee180219ba62a63a99622bcf6ed63b1d59004114bd7ab5b7abf16a457b7ad97",
-    # plane.sh (current template), shfmt -i 2 -ci.
+    # plane.sh.pre-quotes, shfmt -i 2 -ci.
     "3d333a638bc32443f40203e6d3e035de8aebc2205136890ee46dd030d2ceaf60",
-    # plane.sh (current template), shfmt -i 4.
+    # plane.sh.pre-quotes, shfmt -i 4.
     "bf5d23d0062e49a0c79b817fa8f42d5a5ae8cb550f0b0ef62f87986badbdd598",
+    # plane.sh (current template), shfmt -i 0. Its raw and -i 2 form is SHIM itself.
+    "0c646a2bfdad71a388b36cdc0717eababe6c318d523d536ad30d533a636c1541",
+    # plane.sh (current template), shfmt -i 2 -ci.
+    "c72cf940db29097839da6d0e56653d2f8031f24dea5eef1c7c3ebafa6224b847",
+    # plane.sh (current template), shfmt -i 4.
+    "b3946f6369659da6f3c9581654758b5f0e580b8ed0bb2747ca4b53258b6d0bdc",
 }
 SETTING_NAMES = ("PLANE_MCP_URL", "PLANE_WORKSPACE", "PLANE_PROJECT")
 GITIGNORE = (
@@ -140,29 +148,45 @@ def insert_file(content, *, reuse=False, also=(), digests=()):
     return insert, remove
 
 
+def eol(old):
+    """Line ending of existing text: CRLF when it has any, else LF."""
+    return "\r\n" if old and "\r\n" in old else "\n"
+
+
 def insert_block(old):
     if old is not None and MARKER in old:
         raise ValueError("already contains a plane-toolchain block")
-    return separate(old) + BLOCK
+    return separate(old) + BLOCK.replace("\n", eol(old))
 
 
 def separate(old):
     """Return existing text followed by one blank line, keeping its own line endings."""
     if not old or not old.strip():
         return ""
-    return (old if old.endswith("\n") else old + "\n") + "\n"
+    ending = eol(old)
+    return (old if old.endswith("\n") else old + ending) + ending
+
+
+def variants(block):
+    """The block with LF endings and with CRLF endings."""
+    return (block, block.replace("\n", "\r\n"))
 
 
 def strip(text, block, created):
     """Remove an appended block and its separator; None when nothing else remains."""
-    separated = "\n" + block
-    text = text.replace(separated, "", 1) if separated in text else text.replace(block, "", 1)
+    for ending, found in zip(("\n", "\r\n"), variants(block), strict=True):
+        if found in text:
+            separated = ending + found
+            text = (
+                text.replace(separated, "", 1) if separated in text else text.replace(found, "", 1)
+            )
+            break
     return None if created and not text.strip() else text
 
 
 def remove_block(text, created):
     for block in (BLOCK, LEGACY_BLOCK):
-        if block in text:
+        if any(found in text for found in variants(block)):
             return strip(text, block, created)
     raise Changed("Plane block changed since installation")
 
@@ -177,12 +201,21 @@ def load(old):
 
 
 def dump(data):
-    return json.dumps(data, indent=2) + "\n"
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+def member(data, key, kind, *, default):
+    """Return data[key], inserting the default when absent; refuse any other type."""
+    value = data.setdefault(key, default)
+    if not isinstance(value, kind):
+        what = "a JSON object" if kind is dict else "a list"
+        raise ValueError(f"{key} is not {what}")
+    return value
 
 
 def insert_server(old):
     data = load(old)
-    servers = data.setdefault("mcpServers", {})
+    servers = member(data, "mcpServers", dict, default={})
     if "plane" in servers:
         raise ValueError("already defines a plane MCP server")
     servers["plane"] = MCP_ENTRY
@@ -192,7 +225,7 @@ def insert_server(old):
 def remove_server(text, created):
     data = load(text)
     servers = data.get("mcpServers", {})
-    if servers.get("plane") != MCP_ENTRY:
+    if not isinstance(servers, dict) or servers.get("plane") != MCP_ENTRY:
         raise Changed("plane MCP server changed since installation")
     del servers["plane"]
     if not servers:
@@ -202,7 +235,7 @@ def remove_server(text, created):
 
 def insert_hook(old):
     data = load(old)
-    groups = data.setdefault("hooks", {}).setdefault("SessionStart", [])
+    groups = member(member(data, "hooks", dict, default={}), "SessionStart", list, default=[])
     if HOOK_GROUP in groups:
         raise ValueError("already has the Plane SessionStart hook")
     groups.append(HOOK_GROUP)
@@ -211,8 +244,9 @@ def insert_hook(old):
 
 def remove_hook(text, created, data=None):
     data = load(text) if data is None else data
-    groups = data.get("hooks", {}).get("SessionStart", [])
-    if HOOK_GROUP not in groups:
+    hooks = data.get("hooks", {})
+    groups = hooks.get("SessionStart", []) if isinstance(hooks, dict) else None
+    if not isinstance(groups, list) or HOOK_GROUP not in groups:
         raise Changed("Plane SessionStart hook changed since installation")
     groups.remove(HOOK_GROUP)
     if not groups:
@@ -251,13 +285,13 @@ def remove_settings(text, created):
 def insert_codex(old):
     if "plane" in tomllib.loads(old or "").get("mcp_servers", {}):
         raise ValueError("already defines a plane MCP server")
-    text = separate(old) + CODEX_BLOCK
+    text = separate(old) + CODEX_BLOCK.replace("\n", eol(old))
     tomllib.loads(text)
     return text
 
 
 def remove_codex(text, created):
-    if CODEX_BLOCK not in text:
+    if not any(found in text for found in variants(CODEX_BLOCK)):
         raise Changed("plane MCP server changed since installation")
     return strip(text, CODEX_BLOCK, created)
 
@@ -275,14 +309,26 @@ KINDS = {
 
 
 def read(path):
-    return path.read_text() if path.exists() else None
+    """Text exactly as stored: UTF-8, line endings untouched. None when missing."""
+    if not path.exists():
+        return None
+    try:
+        with path.open(encoding="utf-8", newline="") as source:
+            return source.read()
+    except UnicodeDecodeError:
+        raise ValueError(f"{path.name}: not valid UTF-8; refusing to change it") from None
+
+
+def fingerprint(text):
+    """SHA-256 of a file's text, None for a missing file; records the state before apply."""
+    return None if text is None else hashlib.sha256(text.encode()).hexdigest()
 
 
 def write(path, text, mode=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".install-")
     try:
-        with os.fdopen(fd, "w") as output:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as output:
             output.write(text)
         if path.exists():
             mode = path.stat().st_mode & 0o777
@@ -299,14 +345,23 @@ def guard(target, rel):
         if part == target:
             return path
         if part.is_symlink():
+            if part == path and rel in ("CLAUDE.md", "AGENTS.md"):
+                raise ValueError(
+                    f"{rel}: is a symlink, and the installer never writes through symlinks. "
+                    "Replace the link with a plain file (for CLAUDE.md, one containing "
+                    "'@AGENTS.md' next to the real AGENTS.md), then run the installer again."
+                )
             raise ValueError(f"{rel}: refusing symlinked installation path")
     raise ValueError(f"{rel}: outside target")
 
 
-def settings_kind(target):
+def settings_kind(target, preapprove=True):
     """Pre-approval is recorded as its own kind, so revert removes `plane` only when apply
-    added it. Receipts from before it (hooks-json) and installs that found it listed never
-    touch the list. Unreadable settings fall through; apply then refuses with the reason."""
+    added it. Receipts from before it (hooks-json), installs that found it listed and installs
+    that declined it never touch the list. Unreadable settings fall through; apply then
+    refuses with the reason."""
+    if not preapprove:
+        return "hooks-json"
     try:
         text = read(guard(target, ".claude/settings.json"))
         servers = load(text).get("enabledMcpjsonServers", [])
@@ -315,7 +370,7 @@ def settings_kind(target):
         return "settings-json"
 
 
-def plan(target):
+def plan(target, preapprove=True):
     """Return (relative path, kind) pairs for this target's current layout."""
     claude = read(guard(target, "CLAUDE.md"))
     steps = [
@@ -329,7 +384,7 @@ def plan(target):
         steps.append(("CLAUDE.md", "block"))
     return steps + [
         (".mcp.json", "mcp-json"),
-        (".claude/settings.json", settings_kind(target)),
+        (".claude/settings.json", settings_kind(target, preapprove)),
         (".codex/config.toml", "codex-toml"),
         (".codex/hooks.json", "hooks-json"),
     ]
@@ -341,15 +396,23 @@ def reverted(target, receipt):
     if receipt.get("version") != 1 or not isinstance(entries, dict) or not entries:
         raise ValueError("Invalid installation receipt")
     result = {}
+    pending = receipt.get("pending") is True
     for rel, entry in entries.items():
         if entry.get("kind") not in KINDS:
             raise ValueError("Invalid installation receipt")
         text = read(guard(target, rel))
+        # A pending receipt marks each file done once written. A file not marked may be
+        # unreached (still as before, or edited by the user since): it is never touched.
+        unreached = pending and entry.get("done") is not True
+        if unreached and (text is None or fingerprint(text) == entry.get("before", False)):
+            continue
         if text is None:
             raise Changed(f"{rel}: removed since installation")
         try:
             result[rel] = KINDS[entry["kind"]][1](text, entry.get("created") is True)
         except (ValueError, tomllib.TOMLDecodeError) as error:
+            if unreached:
+                continue
             raise Changed(f"{rel}: {error}") from None
     return result
 
@@ -376,31 +439,80 @@ def missing_values(text):
     return [name for name in SETTING_NAMES if not found.get(name)]
 
 
-def apply(target, values=None, toolchain=SOURCE):
+def apply(target, values=None, toolchain=SOURCE, preapprove=True):
     target = target.resolve(strict=True)
     receipt_path = guard(target, RECEIPT)
+    resumed = None
     if receipt_path.exists():
         receipt = json.loads(receipt_path.read_text())
-        reverted(target, receipt)
-        print("Plane integration already installed")
-        outdated(target, receipt)
-        return
+        if receipt.get("pending") is not True:
+            reverted(target, receipt)
+            print("Plane integration already installed")
+            outdated(target, receipt)
+            return
+        resumed = receipt
+        print("Finishing an interrupted installation")
+        recorded = receipt["entries"].get(".claude/settings.json", {}).get("approval")
+        if recorded and (recorded == "declined") != (not preapprove):
+            print(
+                f"Keeping the recorded pre-approval choice ({recorded}) from the interrupted "
+                "run; revert, then apply again to change it."
+            )
     changes, entries = {}, {}
-    for rel, kind in plan(target):
-        old = read(guard(target, rel))
-        try:
-            changes[rel] = KINDS[kind][0](old)
-        except (ValueError, tomllib.TOMLDecodeError) as error:
-            raise ValueError(f"{rel}: {error}") from None
-        entries[rel] = {"kind": kind, "created": old is None}
+    if resumed is None:
+        for rel, kind in plan(target, preapprove):
+            old = read(guard(target, rel))
+            try:
+                changes[rel] = KINDS[kind][0](old)
+            except (ValueError, tomllib.TOMLDecodeError) as error:
+                raise ValueError(f"{rel}: {error}") from None
+            entries[rel] = {"kind": kind, "created": old is None, "before": fingerprint(old)}
+            if rel == ".claude/settings.json":
+                # Whether apply put `plane` in enabledMcpjsonServers; revert acts on the kind.
+                entries[rel]["approval"] = (
+                    "added"
+                    if kind == "settings-json"
+                    else "declined"
+                    if not preapprove
+                    else "listed"
+                )
+        created = [name for name in DIRECTORIES if not (target / name).exists()]
+    else:
+        # Files marked done must be intact. Others get their change now, also when the user
+        # edited or created them since; then the installer did not create them.
+        entries, created = resumed["entries"], resumed.get("directories", [])
+        for rel, entry in entries.items():
+            if entry.get("done") is True:
+                continue
+            old = read(guard(target, rel))
+            if old is not None and fingerprint(old) != entry.get("before", False):
+                try:
+                    KINDS[entry["kind"]][1](old, entry.get("created") is True)
+                    continue  # written, but the receipt was not marked before the crash
+                except (ValueError, tomllib.TOMLDecodeError):
+                    entry["created"] = False
+            try:
+                changes[rel] = KINDS[entry["kind"]][0](old)
+            except (ValueError, tomllib.TOMLDecodeError) as error:
+                raise ValueError(f"{rel}: {error}") from None
+        done = {k: v for k, v in entries.items() if v.get("done") is True}
+        if done:
+            reverted(target, {**resumed, "entries": done, "pending": False})
     local = guard(target, ".plane/local.env")
     seeded = None if local.exists() else local_env(toolchain, values or {})
-    created = [name for name in DIRECTORIES if not (target / name).exists()]
+    # The pending receipt goes first, so a crash or OSError midway leaves something revert
+    # (or a repeat apply) can finish from; the final receipt replaces it last.
+    receipt = {"version": 1, "directories": created, "entries": entries}
+    write(receipt_path, json.dumps({**receipt, "pending": True}, indent=2) + "\n")
     for rel, text in changes.items():
         write(target / rel, text)
+        entries[rel]["done"] = True
+        write(receipt_path, json.dumps({**receipt, "pending": True}, indent=2) + "\n")
     if seeded is not None:
         write(local, seeded, 0o600)
-    receipt = {"version": 1, "directories": created, "entries": entries}
+    for entry in entries.values():
+        entry.pop("before", None)
+        entry.pop("done", None)
     write(receipt_path, json.dumps(receipt, indent=2) + "\n")
     print("Installed Plane integration; review the diff before committing.")
     print("Next: run 'mise run setup' in the toolchain.")
@@ -452,8 +564,19 @@ def settings(target, env):
     return base.rstrip("/"), workspace, project, key
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib copies X-API-Key to a redirect target, even another host or plain http."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError(
+            f"Plane answered with a redirect (HTTP {code}); refusing to send the API key "
+            "onward. Set PLANE_API_URL to the final URL."
+        )
+
+
 def http_client(base, key):
     """Return request(method, path, body) -> parsed JSON using the Plane REST API."""
+    opener = urllib.request.build_opener(NoRedirect)
 
     def request(method, path, body=None):
         data = None if body is None else json.dumps(body).encode()
@@ -462,7 +585,7 @@ def http_client(base, key):
         req.add_header("Accept", "application/json")
         if data is not None:
             req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=30) as response:  # noqa: S310
+        with opener.open(req, timeout=30) as response:
             return json.load(response)
 
     return request
@@ -492,6 +615,8 @@ def label(target, env=None, client=None):
     if not receipt_path.is_file():
         raise ValueError("No installation receipt; run apply first")
     receipt = json.loads(receipt_path.read_text())
+    if receipt.get("pending") is True:
+        raise ValueError("Installation was interrupted; run apply again to finish it")
     outdated(target, receipt)
     base, workspace, project, key = settings(target, os.environ if env is None else env)
     request = (client or http_client)(base, key)
@@ -521,6 +646,8 @@ def outdated(target, receipt):
     """Say so when an intact install predates the current files; never rewrite anything."""
     for rel, entry in receipt["entries"].items():
         text = read(target / rel)
+        if text is None:
+            continue
         if entry["kind"] == "block" and BLOCK not in text and LEGACY_BLOCK in text:
             print(
                 f"{rel}: Plane block predates the awaiting-decision rule. Revert, then apply "
@@ -533,8 +660,16 @@ def outdated(target, receipt):
                     f"{rel}: shim is not the current version. Revert, then apply again "
                     "to update this installation."
                 )
-        if rel == ".claude/settings.json" and entry["kind"] == "hooks-json":
-            servers = json.loads(text).get("enabledMcpjsonServers")
+        if (
+            rel == ".claude/settings.json"
+            and entry["kind"] == "hooks-json"
+            and entry.get("approval") != "declined"
+        ):
+            try:
+                servers = load(text).get("enabledMcpjsonServers")
+            except ValueError:
+                print(f"{rel}: not a JSON object; cannot check the pre-approval of plane.")
+                continue
             if not isinstance(servers, list) or "plane" not in servers:
                 print(
                     f"{rel}: plane is not pre-approved in enabledMcpjsonServers. Revert, then "
@@ -578,6 +713,11 @@ def main(argv=None):
     parser.add_argument("--url", help="hosted MCP endpoint written to .plane/local.env")
     parser.add_argument("--workspace", help="workspace slug written to .plane/local.env")
     parser.add_argument("--project", help="project UUID written to .plane/local.env")
+    parser.add_argument(
+        "--no-preapprove",
+        action="store_true",
+        help="apply only: do not add plane to enabledMcpjsonServers in .claude/settings.json",
+    )
     args = parser.parse_args(argv)
     try:
         if args.operation == "apply":
@@ -586,13 +726,15 @@ def main(argv=None):
                 "PLANE_WORKSPACE": args.workspace,
                 "PLANE_PROJECT": args.project,
             }
-            apply(args.target, values)
+            apply(args.target, values, preapprove=not args.no_preapprove)
         elif args.operation == "label":
             label(args.target)
         else:
             revert(args.target)
     except (ValueError, OSError) as error:
         sys.exit(str(error))
+    except Exception as error:  # noqa: BLE001 - one line, never a traceback
+        sys.exit(f"Installer failed ({type(error).__name__}): {error}")
 
 
 if __name__ == "__main__":
