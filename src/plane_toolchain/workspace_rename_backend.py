@@ -627,24 +627,26 @@ def restore(args, orm, emit, convert=None):
 
 
 def health(args, orm, emit, convert=None, probe=None):
-    """Read-only: the API answers, NEW is held by a live workspace and OLD by none.
+    """Read-only: the API answers 200, NEW is held by exactly `workspace_id` and OLD by none.
 
-    `probe()` returns the HTTP status of the API's /api/instances/. With `workspace_id`, NEW
-    must be held by exactly that id. For a revert, the host passes the slugs swapped. Every
-    check runs and is reported; any failure gives `summary ok:false`."""
-    old, new = args["old"], args["new"]
+    `workspace_id` (the journalled id) is required: without it, a NEW held by a workspace this
+    rename never touched would pass. `probe()` returns the HTTP status of the API's
+    /api/instances/; anything but 200, redirects included, fails. For a revert, the host passes
+    the slugs swapped. Every check runs and is reported; any failure gives `summary ok:false`."""
+    old, new, workspace_id = args["old"], args["new"], args.get("workspace_id")
+    if not workspace_id:
+        emit({"event": "refuse", "reason": "workspace_id_missing"})
+        emit({"event": "summary", "ok": False, "step": "health"})
+        return False
     try:
         api = probe is not None and probe() == 200
     except Exception:  # unreachable or timed out: a failed check, never a crash
         api = False
-    holders = _live_slugs(orm, new)
     results = [
         ("api", api),
-        ("new_present", bool(holders)),
+        ("new_present", _live_slugs(orm, new) == [str(workspace_id)]),
         ("old_absent", not _live_slugs(orm, old)),
     ]
-    if args.get("workspace_id"):
-        results.append(("workspace", holders == [str(args["workspace_id"])]))
     for name, ok in results:
         emit({"event": "health", "check": name, "ok": ok})
     ok = all(ok for _, ok in results)
@@ -699,13 +701,14 @@ API_URL = "http://127.0.0.1:8000"  # ASSUMPTION: the API serves on port 8000 in 
 
 def _api_probe(args):
     """Return a probe for the API's /api/instances/ status. The payload `api_url` wins over
-    API_URL; the URL is never emitted. Raises on connection errors and after a 10 s timeout."""
+    API_URL; the URL is never emitted. Raises on connection errors and after a 10 s timeout.
+    Redirects are not followed, so a redirect's 3xx status fails the health check."""
     endpoint = (args.get("api_url") or API_URL).rstrip("/") + "/api/instances/"
 
     def probe():
         import requests
 
-        return requests.get(endpoint, timeout=10).status_code
+        return requests.get(endpoint, timeout=10, allow_redirects=False).status_code
 
     return probe
 

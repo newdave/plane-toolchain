@@ -1239,7 +1239,8 @@ def test_snippet_main_carries_the_journal_inside_the_request():
 
 def run_health(orm, probe, old="old-slug", new="new-slug", **extra):
     events = []
-    args = {"old": old, "new": new, **extra}
+    extra.setdefault("workspace_id", "w1")  # the journalled id, as T7 passes it
+    args = {"old": old, "new": new, **{k: v for k, v in extra.items() if v is not None}}
     ok = snippet_namespace()["run"]("health", args, orm, events.append, None, probe)
     return ok, events
 
@@ -1264,10 +1265,11 @@ def raise_oserror():
         (renamed_orm, lambda: 200, set()),
         (make_orm, lambda: 200, {"new_present", "old_absent"}),  # not renamed yet
         (renamed_orm, lambda: 503, {"api"}),
+        (renamed_orm, lambda: 302, {"api"}),  # a redirect is not an answer
         (renamed_orm, raise_oserror, {"api"}),
         (renamed_orm, None, {"api"}),
     ],
-    ids=["healthy", "not_renamed", "api_503", "api_down", "no_probe"],
+    ids=["healthy", "not_renamed", "api_503", "api_redirect", "api_down", "no_probe"],
 )
 def test_health_requires_new_present_and_old_absent(setup, probe, failed):
     orm = setup()
@@ -1288,12 +1290,21 @@ def test_health_fails_when_another_workspace_holds_old():
     assert not ok and checks(events)["old_absent"] is False
 
 
-def test_health_binds_new_to_the_given_workspace_id():
-    orm = renamed_orm()
+def test_health_refuses_without_workspace_id():
+    ok, events = run_health(renamed_orm(), lambda: 200, workspace_id=None)
+    assert not ok and not checks(events)
+    assert events == [
+        {"event": "refuse", "reason": "workspace_id_missing"},
+        {"event": "summary", "ok": False, "step": "health"},
+    ]
+
+
+def test_health_fails_when_new_is_held_by_another_workspace():
+    orm = other_workspace_holds_new()  # NEW exists, OLD is absent, but w2 holds NEW
     ok, events = run_health(orm, lambda: 200, workspace_id="w1")
-    assert ok and checks(events)["workspace"] is True
-    ok, events = run_health(orm, lambda: 200, workspace_id="w2")
-    assert not ok and checks(events)["workspace"] is False
+    assert not ok
+    assert checks(events) == {"api": True, "new_present": False, "old_absent": True}
+    assert run_health(orm, lambda: 200, workspace_id="w2")[0]
 
 
 def test_health_checks_a_revert_with_the_slugs_swapped():
@@ -1307,14 +1318,14 @@ def test_health_checks_a_revert_with_the_slugs_swapped():
 def test_snippet_api_probe_gets_instances_endpoint(monkeypatch):
     gets = []
 
-    def get(url, timeout):
-        gets.append((url, timeout))
+    def get(url, timeout, allow_redirects):
+        gets.append((url, timeout, allow_redirects))
         return types.SimpleNamespace(status_code=200)
 
     monkeypatch.setitem(sys.modules, "requests", types.SimpleNamespace(get=get))
     ns = snippet_namespace()
     assert ns["_api_probe"]({})() == 200
-    assert gets == [("http://127.0.0.1:8000/api/instances/", 10)]
+    assert gets == [("http://127.0.0.1:8000/api/instances/", 10, False)]  # never follow
     ns["_api_probe"]({"api_url": "http://api:8000/"})()
     assert gets[-1][0] == "http://api:8000/api/instances/"
 
@@ -1326,7 +1337,7 @@ def test_snippet_main_passes_the_api_probe_to_health():
         seen.append(args)
         return lambda: 200
 
-    request = {"op": "health", "args": {"old": "old-slug", "new": "new-slug"}}
+    request = {"op": "health", "args": {"old": "old-slug", "new": "new-slug", "workspace_id": "w1"}}
     ns["_main"](request, lambda: orm, lambda args: None, lines.append, probe_factory)
     assert json.loads(lines[-1]) == {"event": "summary", "ok": True, "step": "health"}
     assert seen == [request["args"]]
