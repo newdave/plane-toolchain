@@ -347,10 +347,13 @@ def guard(target, rel):
     raise ValueError(f"{rel}: outside target")
 
 
-def settings_kind(target):
+def settings_kind(target, preapprove=True):
     """Pre-approval is recorded as its own kind, so revert removes `plane` only when apply
-    added it. Receipts from before it (hooks-json) and installs that found it listed never
-    touch the list. Unreadable settings fall through; apply then refuses with the reason."""
+    added it. Receipts from before it (hooks-json), installs that found it listed and installs
+    that declined it never touch the list. Unreadable settings fall through; apply then
+    refuses with the reason."""
+    if not preapprove:
+        return "hooks-json"
     try:
         text = read(guard(target, ".claude/settings.json"))
         servers = load(text).get("enabledMcpjsonServers", [])
@@ -359,7 +362,7 @@ def settings_kind(target):
         return "settings-json"
 
 
-def plan(target):
+def plan(target, preapprove=True):
     """Return (relative path, kind) pairs for this target's current layout."""
     claude = read(guard(target, "CLAUDE.md"))
     steps = [
@@ -373,7 +376,7 @@ def plan(target):
         steps.append(("CLAUDE.md", "block"))
     return steps + [
         (".mcp.json", "mcp-json"),
-        (".claude/settings.json", settings_kind(target)),
+        (".claude/settings.json", settings_kind(target, preapprove)),
         (".codex/config.toml", "codex-toml"),
         (".codex/hooks.json", "hooks-json"),
     ]
@@ -423,7 +426,7 @@ def missing_values(text):
     return [name for name in SETTING_NAMES if not found.get(name)]
 
 
-def apply(target, values=None, toolchain=SOURCE):
+def apply(target, values=None, toolchain=SOURCE, preapprove=True):
     target = target.resolve(strict=True)
     receipt_path = guard(target, RECEIPT)
     resumed = None
@@ -438,13 +441,22 @@ def apply(target, values=None, toolchain=SOURCE):
         print("Finishing an interrupted installation")
     changes, entries = {}, {}
     if resumed is None:
-        for rel, kind in plan(target):
+        for rel, kind in plan(target, preapprove):
             old = read(guard(target, rel))
             try:
                 changes[rel] = KINDS[kind][0](old)
             except (ValueError, tomllib.TOMLDecodeError) as error:
                 raise ValueError(f"{rel}: {error}") from None
             entries[rel] = {"kind": kind, "created": old is None, "before": fingerprint(old)}
+            if rel == ".claude/settings.json":
+                # Whether apply put `plane` in enabledMcpjsonServers; revert acts on the kind.
+                entries[rel]["approval"] = (
+                    "added"
+                    if kind == "settings-json"
+                    else "declined"
+                    if not preapprove
+                    else "listed"
+                )
         created = [name for name in DIRECTORIES if not (target / name).exists()]
     else:
         # Files still as they were get their change; written ones must be intact.
@@ -616,7 +628,11 @@ def outdated(target, receipt):
                     f"{rel}: shim is not the current version. Revert, then apply again "
                     "to update this installation."
                 )
-        if rel == ".claude/settings.json" and entry["kind"] == "hooks-json":
+        if (
+            rel == ".claude/settings.json"
+            and entry["kind"] == "hooks-json"
+            and entry.get("approval") != "declined"
+        ):
             try:
                 servers = load(text).get("enabledMcpjsonServers")
             except ValueError:
@@ -665,6 +681,11 @@ def main(argv=None):
     parser.add_argument("--url", help="hosted MCP endpoint written to .plane/local.env")
     parser.add_argument("--workspace", help="workspace slug written to .plane/local.env")
     parser.add_argument("--project", help="project UUID written to .plane/local.env")
+    parser.add_argument(
+        "--no-preapprove",
+        action="store_true",
+        help="apply only: do not add plane to enabledMcpjsonServers in .claude/settings.json",
+    )
     args = parser.parse_args(argv)
     try:
         if args.operation == "apply":
@@ -673,7 +694,7 @@ def main(argv=None):
                 "PLANE_WORKSPACE": args.workspace,
                 "PLANE_PROJECT": args.project,
             }
-            apply(args.target, values)
+            apply(args.target, values, preapprove=not args.no_preapprove)
         elif args.operation == "label":
             label(args.target)
         else:

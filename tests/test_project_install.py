@@ -955,6 +955,50 @@ def test_symlinked_instruction_file_gets_a_tailored_message(tmp_path, name):
     assert not (tmp_path / ".plane").exists()
 
 
+def settings_entry(path):
+    return receipt(path)["entries"][".claude/settings.json"]
+
+
+def test_receipt_records_that_apply_added_the_pre_approval(tmp_path):
+    apply(tmp_path)
+    assert settings_entry(tmp_path)["approval"] == "added"
+
+
+def test_receipt_records_an_existing_pre_approval_as_listed(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text('{"enabledMcpjsonServers": ["plane"]}')
+    apply(tmp_path)
+    assert settings_entry(tmp_path)["approval"] == "listed"
+
+
+def test_opt_out_installs_the_hook_without_pre_approving(tmp_path, capsys):
+    apply(tmp_path, preapprove=False)
+    data = json.loads((tmp_path / ".claude/settings.json").read_text())
+    assert "enabledMcpjsonServers" not in data
+    assert "plane.sh" in data["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert settings_entry(tmp_path)["approval"] == "declined"
+    capsys.readouterr()
+    apply(tmp_path, preapprove=False)
+    assert "pre-approved" not in capsys.readouterr().out  # no outdated notice
+    revert(tmp_path)
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_opt_out_flag_on_the_command_line(tmp_path):
+    installer["main"](["apply", str(tmp_path), "--no-preapprove"])
+    assert "enabledMcpjsonServers" not in (tmp_path / ".claude/settings.json").read_text()
+
+
+def test_opt_out_keeps_an_existing_entry_through_revert(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text('{"enabledMcpjsonServers": ["plane"]}')
+    apply(tmp_path, preapprove=False)
+    revert(tmp_path)
+    assert json.loads((tmp_path / ".claude/settings.json").read_text()) == {
+        "enabledMcpjsonServers": ["plane"]
+    }
+
+
 def serve(handler):
     server = http.server.HTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()

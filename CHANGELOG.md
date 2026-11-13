@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows
 - `install_project.py label` refuses HTTP redirects, so the Plane API key is never sent to another host or over plain http; it reports the redirect and asks for the final `PLANE_API_URL` (PTC-72).
 - `install_project.py apply` writes a pending receipt first, then the files, then the final receipt. If a write fails midway, `revert` undoes exactly what was written (files still as before are skipped; edited ones are refused) and a repeat `apply` finishes the install. `label` refuses an interrupted installation. Earlier receipts still revert (PTC-73).
 - The installer reads and writes target files as UTF-8 with line endings untouched: a CRLF `AGENTS.md`, `CLAUDE.md` or Codex config gets its block appended in CRLF and reverts byte for byte, and non-ASCII JSON stays unescaped. Invalid UTF-8, a non-object `mcpServers` or `hooks` and a non-list `SessionStart` are refused with a message instead of a traceback, `main` reports any other failure on one line, and a symlinked `CLAUDE.md` or `AGENTS.md` gets a message that says how to fix the layout (PTC-74).
+- `install_project.py apply --no-preapprove` installs without adding `plane` to `enabledMcpjsonServers`. The receipt records `approval` (`added`, `listed` or `declined`) for `.claude/settings.json`, and `docs/project-install.md` explains that a committed pre-approval plus the shim runs repository-controlled shell without a prompt (PTC-75).
 
 ## [0.2.1] - 2026-11-14
 
