@@ -1,0 +1,58 @@
+scripts/install_project.py
+  s_066dd3ba2255bd::t_ce24370c5e808f 83-85,87,89,91-96
+tests/fixtures/plane.sh.shfmt-i0
+  s_066dd3ba2255bd::t_75bb39ccba45cf 32-37
+scripts/plane-mcp.sh
+  s_066dd3ba2255bd::t_dd95d467929714 13-15,59-62,70-74,77-78,81-88,101-104
+tests/fixtures/plane.sh.shfmt-i2ci
+  s_066dd3ba2255bd::t_75bb39ccba45cf 32-37
+CHANGELOG.md
+  s_066dd3ba2255bd::t_4b4b82d157c272 15
+docs/project-install.md
+  s_066dd3ba2255bd::t_4b4b82d157c272 66
+tests/test_worktree_bridge.py
+  s_066dd3ba2255bd::t_2186a9f7c26f15 418
+  s_066dd3ba2255bd::t_f18202268834c7 3,20-24,77,86-92,114-120,312-417,419-431
+templates/project/plane.sh
+  s_066dd3ba2255bd::t_18a81f06e15e7e 32-37
+tests/fixtures/plane.sh.pre-quotes.shfmt-i4
+  s_066dd3ba2255bd::t_75bb39ccba45cf 1-70
+tests/test_project_install.py
+  s_066dd3ba2255bd::t_ce24370c5e808f 505-511
+  s_066dd3ba2255bd::t_f18202268834c7 179-218
+tests/fixtures/plane.sh.shfmt
+  s_066dd3ba2255bd::t_75bb39ccba45cf 32-37
+docs/configuration.md
+  s_066dd3ba2255bd::t_4b4b82d157c272 19,21,45
+tests/test_session.py
+  s_066dd3ba2255bd::t_f18202268834c7 108-166
+templates/project/plane.sh.pre-quotes
+  s_066dd3ba2255bd::t_279489d7308b52 1-70
+scripts/plane-prompt.zsh
+  s_066dd3ba2255bd::t_932ab024ecff46 5-15,17-18,25-27,33-48,58-60
+  s_066dd3ba2255bd::t_15e313a0b0f8d0 16,19-24
+tests/fixtures/plane.sh.pre-quotes.shfmt
+  s_066dd3ba2255bd::t_75bb39ccba45cf 1-70
+tests/fixtures/plane.sh.pre-quotes.shfmt-i0
+  s_066dd3ba2255bd::t_75bb39ccba45cf 1-70
+tests/fixtures/plane.sh.shfmt-i4
+  s_066dd3ba2255bd::t_75bb39ccba45cf 32-37
+tests/fixtures/plane.sh.pre-quotes.shfmt-i2ci
+  s_066dd3ba2255bd::t_75bb39ccba45cf 1-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "7ef7498800133f4a81c8686149b7aabef098ddde",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
