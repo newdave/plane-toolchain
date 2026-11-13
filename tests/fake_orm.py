@@ -19,6 +19,7 @@ class QuerySet:
         return QuerySet(self.table, keep)
 
     def values(self, *cols):
+        # Like Django, `values()` takes field names (attnames); a DB column name that differs raises.
         rows = [{c: r["id"] if c == "pk" else r[c] for c in cols} for r in self.rows]
         return ValuesSet(self.table, rows)
 
@@ -62,8 +63,9 @@ class Manager:
 
 
 class Table:
-    def __init__(self, db_table, rows, columns):
+    def __init__(self, db_table, rows, columns, attnames=None):
         self.db_table, self.rows, self.columns = db_table, rows, columns
+        self.attnames = attnames or {}  # DB column -> field name, when they differ
         self.updates = []
         self.streamed = 0
         self.objects = Manager(self, False)
@@ -71,17 +73,24 @@ class Table:
 
 
 class FakeOrm:
-    """`tables` maps a model key to `(db_table, columns, rows)`; columns are {name: "text"|"json"}."""
+    """`tables` maps a model key to `(db_table, columns, rows)`; columns are {column: "text"|"json"}.
+
+    A table entry may carry a fourth item, `{column: attname}`; rows are keyed by attname.
+    """
 
     def __init__(self, tables, web_url="https://plane.example.com", restricted=("api", "spaces")):
-        self.models = {key: Table(db, rows, cols) for key, (db, cols, rows) in tables.items()}
+        self.models = {
+            key: Table(db, rows, cols, *rest) for key, (db, cols, rows, *rest) in tables.items()
+        }
         self.settings = SimpleNamespace(WEB_URL=web_url)
         self.restricted_slugs = set(restricted)
         self.cache = {}
 
     def text_columns(self):
         return [
-            (t.db_table, t, c, kind) for t in self.models.values() for c, kind in t.columns.items()
+            (t.db_table, t, t.attnames.get(c, c), c, kind)
+            for t in self.models.values()
+            for c, kind in t.columns.items()
         ]
 
     @contextlib.contextmanager

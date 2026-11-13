@@ -224,11 +224,58 @@ def test_check_reports_unfixed_hits_in_other_tables_without_changing_them():
     assert set(unfixed) == {
         ("webhook_logs", "response_body"),
         ("issue_versions", "description_html"),
+        ("issues", "description_html"),  # i3 lives in another workspace
     }
     assert unfixed[("webhook_logs", "response_body")]["ids"] == ["l1"]
-    assert events[-1]["unfixed"] == 2
+    assert unfixed[("webhook_logs", "response_body")]["reason"] == "out_of_scope"
+    assert events[-1]["unfixed"] == 3
     assert orm.snapshot() == before
     assert all(t.updates == [] for t in orm.models.values())
+
+
+def test_check_reports_cross_workspace_links_without_planning_them():
+    ok, events = run_check(make_orm())
+    plans = {e["id"] for e in events if e["event"] == "plan"}
+    assert "i3" not in plans
+    other = [e for e in events if e.get("reason") == "other_workspace"]
+    assert other == [
+        {
+            "event": "unfixed",
+            "table": "issues",
+            "column": "description_html",
+            "reason": "other_workspace",
+            "count": 1,
+            "ids": ["i3"],
+        }
+    ]
+
+
+def test_check_caps_cross_workspace_ids():
+    html = f'<a href="{URL}">x</a>'
+    orm = make_orm()
+    orm.models["issue"].rows.extend(
+        {
+            "id": f"x{n}",
+            "workspace_id": "w2",
+            "description_html": html,
+            "description_json": {},
+            "deleted_at": None,
+        }
+        for n in range(60)
+    )
+    ok, events = run_check(orm)
+    event = next(e for e in events if e.get("reason") == "other_workspace")
+    assert event["count"] == 61 and len(event["ids"]) == 50 and event["truncated"] is True
+
+
+def test_check_queries_by_field_name_and_reports_column_name():
+    rows = [{"id": "a1", "body_text": f'<a href="{URL}">x</a>', "deleted_at": None}]
+    orm = make_orm(
+        attn=("attn_table", {"body": "text"}, rows, {"body": "body_text"}),
+    )
+    ok, events = run_check(orm)
+    event = next(e for e in events if e.get("table") == "attn_table")
+    assert event["column"] == "body" and event["ids"] == ["a1"]
 
 
 def test_check_never_emits_row_content():

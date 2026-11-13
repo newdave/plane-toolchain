@@ -91,31 +91,52 @@ def _plan(orm, workspace_id, old, hosts, emit):
     return planned, rebuild
 
 
-def _unfixed(orm, old, hosts, emit):
-    """Report hits outside the rewrite scope by table and column; never change them."""
+def _report(emit, table, column, ids, reason):
+    """Emit one unfixed event: ids only, capped, never row content."""
+    emit(
+        {
+            "event": "unfixed",
+            "table": table,
+            "column": column,
+            "reason": reason,
+            "count": len(ids),
+            "ids": ids[:MAX_IDS],
+            **({"truncated": True} if len(ids) > MAX_IDS else {}),
+        }
+    )
+
+
+def _unfixed(orm, workspace_id, old, hosts, emit):
+    """Report hits apply will not change; never change them.
+
+    In-scope columns are rewritten only for the old workspace, so hits in other workspaces are
+    reported as `other_workspace`. Hits in tables outside the scope are `out_of_scope`.
+    """
     in_scope = {(t, c) for t, _, cols in REWRITE_SCOPE for c, _ in cols}
     in_scope |= {(t, c) for t, cols in DERIVED_COLUMNS.items() for c in cols}
     total = 0
-    for db_table, model, column, kind in orm.text_columns():
+    for table, key, columns in REWRITE_SCOPE:
+        for column, kind in columns:
+            rows = orm.models[key].all_objects.values("pk", "workspace_id", column).iterator()
+            ids = [
+                str(r["pk"])
+                for r in rows
+                if str(r["workspace_id"]) != workspace_id and _count(r[column], kind, old, hosts)
+            ]
+            if ids:
+                total += len(ids)
+                _report(emit, table, column, ids, "other_workspace")
+    for db_table, model, attname, column, kind in orm.text_columns():
         if (db_table, column) in in_scope:
             continue
         ids = [
             str(r["pk"])
-            for r in model.all_objects.values("pk", column).iterator()
-            if _count(r[column], kind, old, hosts)
+            for r in model.all_objects.values("pk", attname).iterator()
+            if _count(r[attname], kind, old, hosts)
         ]
         if ids:
             total += len(ids)
-            emit(
-                {
-                    "event": "unfixed",
-                    "table": db_table,
-                    "column": column,
-                    "count": len(ids),
-                    "ids": ids[:MAX_IDS],
-                    **({"truncated": True} if len(ids) > MAX_IDS else {}),
-                }
-            )
+            _report(emit, db_table, column, ids, "out_of_scope")
     return total
 
 
@@ -128,7 +149,7 @@ def check(args, orm, emit):
         emit({"event": "summary", "ok": False})
         return False
     planned, rebuild = _plan(orm, workspace_id, old, hosts, emit)
-    unfixed = _unfixed(orm, old, hosts, emit)
+    unfixed = _unfixed(orm, workspace_id, old, hosts, emit)
     emit(
         {"event": "summary", "ok": True, "planned": planned, "rebuild": rebuild, "unfixed": unfixed}
     )
@@ -192,7 +213,7 @@ def _django_orm():
                     kind = "text"
                 else:
                     continue
-                yield model._meta.db_table, Unfiltered(model), field.column, kind
+                yield model._meta.db_table, Unfiltered(model), field.attname, field.column, kind
 
     orm.text_columns = lambda: list(text_columns())
     return orm
