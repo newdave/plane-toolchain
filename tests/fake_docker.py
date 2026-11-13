@@ -142,7 +142,8 @@ class FakeDocker:
                 # label) serves the Pages route; the upstream original answers 404.
                 status = container.get("pages_status")
                 if status is None:
-                    status = 401 if "terrainlink.pages.source" in container["labels"] else 404
+                    derived = {"terrainlink.pages.source", "plane-toolchain.pages.source"}
+                    status = 401 if derived & set(container["labels"]) else 404
                 ok = status in (401, 403)
             return (0 if ok else 1), b""
         if command == "build":

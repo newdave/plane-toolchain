@@ -1,8 +1,8 @@
 """The only module allowed to spell legacy identifiers; neutral replacements sit beside them.
 
-Deploy code still reads and writes the legacy names on existing hosts. See
-docs/decisions/0001-neutral-names.md for the mapping and migration plan. A guard test
-(tests/test_legacy_names.py) rejects new references elsewhere.
+Deploy code reads the legacy names on existing hosts; the Pages and MCP helpers write only the
+neutral ones (PTC-27, PTC-28). See docs/decisions/0001-neutral-names.md for the mapping and
+migration plan. A guard test (tests/test_legacy_names.py) rejects new references elsewhere.
 """
 
 # Pages: backup container suffix, source label, derived image prefix, backend module.
@@ -26,14 +26,19 @@ NEUTRAL_MCP_BACKUP_NAME = "server.py.before-plane-toolchain-ce"
 NEUTRAL_MCP_RECEIPT_NAME = "plane-toolchain-ce-receipt.json"
 
 # Constants shipped into each stdlib-only remote program (the host never imports this package).
+# The Pages remote reads the legacy backup suffix and label; it writes only neutral names.
 PAGES = {
     "PAGES_BACKUP_SUFFIX": PAGES_BACKUP_SUFFIX,
     "PAGES_LABEL": PAGES_LABEL,
-    "PAGES_IMAGE_PREFIX": PAGES_IMAGE_PREFIX,
-    "PAGES_BACKEND_FILE": PAGES_BACKEND_FILE,
-    "PAGES_BACKEND_MODULE": PAGES_BACKEND_MODULE,
+    "NEUTRAL_PAGES_BACKUP_SUFFIX": NEUTRAL_PAGES_BACKUP_SUFFIX,
+    "NEUTRAL_PAGES_LABEL": NEUTRAL_PAGES_LABEL,
+    "NEUTRAL_PAGES_IMAGE_PREFIX": NEUTRAL_PAGES_IMAGE_PREFIX,
+    "NEUTRAL_PAGES_BACKEND_FILE": NEUTRAL_PAGES_BACKEND_FILE,
+    "NEUTRAL_PAGES_BACKEND_MODULE": NEUTRAL_PAGES_BACKEND_MODULE,
 }
 MCP = {
     "MCP_BACKUP_NAME": MCP_BACKUP_NAME,
     "MCP_RECEIPT_NAME": MCP_RECEIPT_NAME,
+    "NEUTRAL_MCP_BACKUP_NAME": NEUTRAL_MCP_BACKUP_NAME,
+    "NEUTRAL_MCP_RECEIPT_NAME": NEUTRAL_MCP_RECEIPT_NAME,
 }

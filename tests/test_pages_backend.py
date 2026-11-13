@@ -58,7 +58,7 @@ def test_replacement_preserves_opaque_config_and_does_not_mutate_source():
     }
     body = replacement(original, "derived", "http://live:3000", "digest")
     assert body["Env"] == ["OPAQUE=value", "CE_PLANE_LIVE_URL=http://live:3000"]
-    assert body["Labels"] == {"owner": "kept", "terrainlink.pages.source": "digest"}
+    assert body["Labels"] == {"owner": "kept", "plane-toolchain.pages.source": "digest"}
     assert body["HostConfig"] == original["HostConfig"]
     assert body["NetworkingConfig"]["EndpointsConfig"]["shared"]["Aliases"] == ["service"]
     assert original["Config"]["Image"] == "base"

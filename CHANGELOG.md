@@ -8,12 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The workspace rename Django snippet (`workspace_rename_backend.py`) has a read-only `check` that validates the slugs and reports every planned link rewrite per record and field, plus hits it will not fix, as JSON lines with ids, tables, columns and counts only (PTC-34).
 - `owner:plane-pages:build` builds the derived Pages image from the upstream backend image (or `PLANE_BACKEND_IMAGE`) and prints its tag and source digest, without touching any container. Use it for Saltbox-managed hosts where the running API image is local (PTC-45).
 - `ce_page` update replaces an existing Page body. It needs an `expected_updated_at` precondition and `force=true`, disconnects open Live editors first and keeps the old body as a page version (capped at 20). It refuses only if the body changed while editors closed, and reports a late Live overwrite with 409. Both server payloads changed; redeploy them (PTC-44).
 - Workspace rename host operations: stop services (beat, queue drain up to 60 s without purging, worker, web, space, admin), restart Live, start in reverse order, and back up the database with `pg_dump` to an owner-only `backup.dump` whose SHA-256 is recorded in the receipt. Only `docker stop`, `start`, `restart` and `exec` are used. Library functions only; no task or CLI yet (PTC-38).
 
 ### Changed
 
+- The Pages deploy helper writes only neutral names: backup container `<name>-before-plane-toolchain-pages`, label `plane-toolchain.pages.source`, image tag `plane-toolchain-pages:<digest16>` and backend module `plane.api.plane_toolchain_pages`. It still reads the legacy names, so `check`, `revert` and `apply` accept hosts deployed earlier. A re-apply of a host with a healthy legacy-labelled derived rebuilds it from the retained original with the neutral label and module, retires the old derived stopped as `<name>-pages-reverted-<ts>` and renames the backup to the neutral name once healthy; a failure restores the legacy derived. It refuses to act when a legacy and a neutral backup both exist. Saltbox users set the neutral label after the next `owner:plane-pages:build` (PTC-27).
+- The MCP compat deploy writes `server.py.before-plane-toolchain-ce` and `plane-toolchain-ce-receipt.json`. It still reads the legacy names and, on a successful apply or repair, migrates them (receipt first, then the digest-verified backup, then the legacy receipt). It refuses with a reconcile message when legacy and neutral files disagree (PTC-28).
 - Legacy deploy names are centralised in `plane_toolchain/legacy.py`, with a test that rejects new references elsewhere. Behaviour is unchanged.
 
 ### Fixed
