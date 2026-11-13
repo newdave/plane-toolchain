@@ -53,6 +53,12 @@ run = "uv run --locked python -m plane_toolchain.pages_deploy build"
 run = "uv run --locked python -m plane_toolchain.pages_deploy revert"
 [tasks."owner:plane-pages:check"]
 run = "uv run --locked python -m plane_toolchain.pages_deploy check"
+[tasks."owner:plane-workspace-rename:check"]
+run = "uv run --locked python -m plane_toolchain.workspace_rename check"
+[tasks."owner:plane-workspace-rename:apply"]
+run = "uv run --locked python -m plane_toolchain.workspace_rename apply"
+[tasks."owner:plane-workspace-rename:revert"]
+run = "uv run --locked python -m plane_toolchain.workspace_rename revert"
 [tasks."plane:example"]
 run = "uv run --locked python examples/github/plane_event.py"
 [tasks."owner:github-examples:apply"]

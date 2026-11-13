@@ -105,6 +105,18 @@ Apply and revert restart services. Obtain deployment authority before running th
 
 The remote helpers ignore SIGHUP and a closed SSH channel, so a dropped session does not stop an apply or its rollback halfway. A SIGKILL or reboot can still interrupt one. Re-run Pages apply to finish it: with no API container, apply restores the rollback container (using `unless-stopped` and saying so when its own policy was already retired to `no`); with a stopped derived container, apply retires it as `-pages-failed-*` and restores the original. It then applies normally. If the restored original fails to start after a stopped derived container was retired, the API stays down until the next apply. Any other layout with a rollback container is still refused. Re-run MCP apply or revert: its pending receipt accepts either entry point.
 
+## Workspace slug rename
+
+Owner tasks rename a Plane workspace slug in place on a live host. `check` is read-only and the safe default. `apply` and `revert` stop services, so obtain deployment authority first.
+
+```sh
+mise run owner:plane-workspace-rename:check
+mise run owner:plane-workspace-rename:apply
+mise run owner:plane-workspace-rename:revert
+```
+
+Required environment: `PLANE_RENAME_FROM` and `PLANE_RENAME_TO` (slugs: letters, digits, `-` and `_`; they must differ), `PLANE_MCP_SSH`, `PLANE_API_CONTAINER` and `PLANE_LIVE_URL`. Optional: `PLANE_RENAME_RECEIPT_DIR` (absolute path on the host), `PLANE_API_URL` and the service overrides `PLANE_DB_CONTAINER`, `PLANE_REDIS_CONTAINER`, `PLANE_WEB_CONTAINER`, `PLANE_SPACE_CONTAINER`, `PLANE_ADMIN_CONTAINER`, `PLANE_WORKER_CONTAINER`, `PLANE_BEAT_CONTAINER`, `PLANE_LIVE_CONTAINER` and `PLANE_MQ_CONTAINER`. Every value is validated before any SSH call, and errors never print configuration. The request, including the Django snippet, goes to the host on stdin as JSON; nothing but the fixed program is in the SSH arguments. The remote exit code is the task's exit code. Ctrl-C locally prints guidance (the host program may still be running; check the receipt, then rerun to resume or run revert) and exits 130.
+
 ## Migrating from legacy names
 
 Hosts deployed before the neutral names carry state under legacy `terrainlink` names: backup names, receipt names, image labels and backend module paths. They are compatibility metadata only. Both helpers read the legacy and the neutral names and write only the neutral ones. The Pages helper refuses to act when both a legacy and a neutral rollback container exist: reconcile manually. The MCP helper refuses when legacy and neutral receipts or backups disagree. ADR 0001 sets the policy: read both names, write only neutral names, refuse when they disagree, and remove legacy reads after a deprecation window. The legacy spellings live only in `src/plane_toolchain/legacy.py`. A Pages host with no retained original (the Saltbox path) keeps the legacy label until its next build, because Docker labels cannot change on a running container.
