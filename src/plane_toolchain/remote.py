@@ -5,6 +5,7 @@ never print runtime configuration.
 """
 
 import inspect
+import json
 import os
 import shlex
 import subprocess
@@ -68,11 +69,65 @@ def ssh_argv(host, source):
         "ConnectTimeout=15",
         "ServerAliveInterval=15",
         "ServerAliveCountMax=4",
+        "LogLevel=QUIET",  # ssh's own diagnostics name the host; remote stderr still passes
     ]
     argv = ["ssh"]
     for option in options:
         argv += ["-o", option]
     return argv + ["--", host, "python3 -c " + shlex.quote(source)]
+
+
+def quiet_failure(kind, failure, trace):
+    """Excepthook for the remote program: `Type: message (in function, line n)` on stderr.
+
+    Only the innermost frame of the program itself is named, never a path or a traceback.
+    """
+    import traceback
+
+    frames = [f for f in traceback.extract_tb(trace) if f.filename == "<string>"]
+    where = " (in " + frames[-1].name + ", line " + str(frames[-1].lineno) + ")" if frames else ""
+    say(kind.__name__ + ": " + str(failure) + where, sys.stderr)
+
+
+def guarded(entry):
+    """Prefix a remote entry stub with the quiet excepthook.
+
+    An uncaught exception on the host then prints one line instead of a traceback with host
+    paths, and the interpreter still exits 1. Tests that exec a program see exceptions as before.
+    """
+    return inspect.getsource(quiet_failure) + "sys.excepthook = quiet_failure\n\n" + entry
+
+
+SSH_FAILED = (
+    "SSH connection failed or dropped (exit 255). The host program may have run; "
+    "check the host, PLANE_MCP_SSH and SSH keys before retrying."
+)
+REMOTE_FAILED = "Remote operation failed (exit {}); see the message above."
+INTERRUPTED = "Interrupted locally. The host program may still be running; check the host."
+
+
+def run_remote(host, source, payload, check=True, interrupted=INTERRUPTED):
+    """Run the remote program over SSH with the payload on stdin; return its exit code.
+
+    The remote's own stderr streams straight to ours. A failure exits with the remote's code
+    (1 when unknown) after one fixed line: never the argv (host, program source) or a traceback.
+    With check=False the caller gets any exit code back and only Ctrl-C and a dead link exit here.
+    """
+    try:
+        result = subprocess.run(  # noqa: S603 - validated owner host; fixed remote program
+            ssh_argv(host, source), input=json.dumps(payload), text=True, check=check
+        )
+    except subprocess.CalledProcessError as failure:
+        code = failure.returncode if failure.returncode > 0 else 1
+        say(SSH_FAILED if code == 255 else REMOTE_FAILED.format(code), sys.stderr)
+        sys.exit(code)
+    except KeyboardInterrupt:
+        say(interrupted, sys.stderr)
+        sys.exit(130)
+    code = getattr(result, "returncode", 0)
+    if code == 255:
+        say(SSH_FAILED, sys.stderr)
+    return code
 
 
 def require_env(*names):

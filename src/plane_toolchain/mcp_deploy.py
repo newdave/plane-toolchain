@@ -18,7 +18,7 @@ from plane_toolchain.legacy import (
     NEUTRAL_MCP_RECEIPT_NAME,
     refusal,
 )
-from plane_toolchain.remote import docker, program, require_env, say, ssh_argv
+from plane_toolchain.remote import docker, guarded, program, require_env, run_remote, say
 
 
 def git_tracked(root):
@@ -278,7 +278,7 @@ REMOTE = program(
         wait_healthy,
         deploy,
     ],
-    "say(deploy(json.load(sys.stdin), docker, git_tracked))\n",
+    guarded("say(deploy(json.load(sys.stdin), docker, git_tracked))\n"),
     MCP,
 )
 
@@ -295,13 +295,15 @@ def main():
         "container": container,
         "source": Path(__file__).with_name("ce_tools.py").read_text(),
     }
-    subprocess.run(  # noqa: S603 - validated owner host; fixed remote program
-        ssh_argv(host, REMOTE),
-        input=json.dumps(payload),
-        text=True,
-        check=True,
-    )
+    run_remote(host, REMOTE, payload)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        print(
+            "MCP deployment failed before or during SSH. No runtime configuration logged.",
+            file=sys.stderr,
+        )
+        sys.exit(1)

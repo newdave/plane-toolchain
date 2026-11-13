@@ -96,7 +96,7 @@ def test_main_ssh_argv_uses_program_and_stdin_payload(run, monkeypatch):
     for secret in (*SECRETS[1:], "old-slug", "new_slug", "/var/lib/rename"):
         assert not any(secret in part for part in argv)
     assert snippet not in " ".join(argv)
-    assert kw["text"] is True and "check" not in kw
+    assert kw["text"] is True and kw["check"] is False
     assert json.loads(kw["input"]) == {
         "operation": "apply",
         "from": "old-slug",
@@ -173,3 +173,45 @@ def test_mise_tasks_declared():
         if not name.startswith("owner:"):
             assert not any("plane-workspace-rename" in str(dep) for dep in task.get("depends", []))
             assert "plane-workspace-rename" not in str(task.get("run", ""))
+
+
+# PTC-57: a failing remote prints its refusal line only; no host, program text or traceback.
+FAKE_HOST = "owner@203.0.113.7"
+REFUSAL_LINE = "ValueError: Legacy-named state found: example"
+
+
+def failing_ssh(monkeypatch, code=1, error=None):
+    def run(argv, **kw):
+        if error:
+            raise error
+        print(REFUSAL_LINE, file=sys.stderr)
+        if kw.get("check"):
+            raise subprocess.CalledProcessError(code, argv)
+        return subprocess.CompletedProcess(argv, code)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+def assert_no_leaks(capsys):
+    seen = capsys.readouterr()
+    text = seen.out + seen.err
+    for leak in ("203.0.113.7", "owner@", "python3 -c", "Traceback", "CalledProcessError"):
+        assert leak not in text
+    return seen
+
+
+def test_main_passes_remote_exit_code_and_hides_argv(run, monkeypatch, capsys):
+    monkeypatch.setenv("PLANE_MCP_SSH", FAKE_HOST)
+    failing_ssh(monkeypatch, code=7)
+    assert call("apply") == 7
+    assert REFUSAL_LINE in assert_no_leaks(capsys).err
+
+
+def test_main_ssh_failure_and_interrupt_are_quiet(run, monkeypatch, capsys):
+    monkeypatch.setenv("PLANE_MCP_SSH", FAKE_HOST)
+    failing_ssh(monkeypatch, code=255)
+    assert call() == 255
+    assert remote.SSH_FAILED in assert_no_leaks(capsys).err
+    failing_ssh(monkeypatch, error=KeyboardInterrupt())
+    assert call() == 130
+    assert workspace_rename.LOCAL_INTERRUPTED in capsys.readouterr().err

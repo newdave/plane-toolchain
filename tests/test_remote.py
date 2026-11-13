@@ -2,8 +2,10 @@
 
 import ast
 import inspect
+import re
 import signal
 import subprocess
+import sys
 import textwrap
 
 import pytest
@@ -64,6 +66,8 @@ def test_ssh_argv_never_prompts_and_ends_options_before_host():
         "ServerAliveInterval=15",
         "-o",
         "ServerAliveCountMax=4",
+        "-o",
+        "LogLevel=QUIET",
         "--",
         "owner@host",
         "python3 -c 'print(1)'",
@@ -127,7 +131,13 @@ def legacy_names():
 def unshipped(source):
     """Legacy constants read inside functions of `source` but never assigned at module level."""
     tree = ast.parse(source)
-    shipped = {t.id for n in tree.body if isinstance(n, ast.Assign) for t in n.targets}
+    shipped = {
+        t.id
+        for n in tree.body
+        if isinstance(n, ast.Assign)
+        for t in n.targets
+        if isinstance(t, ast.Name)
+    }
     names = legacy_names()
     used = {
         n.id
@@ -173,3 +183,94 @@ def test_pages_replacement_namespace_seeds_its_legacy_constants():
         for key in node.value.keys
     }
     assert used and used <= seeded
+
+
+HOST = "owner@203.0.113.7"
+PROGRAM_TEXT = "print('secret-program-text')"
+REFUSAL = "ValueError: Legacy-named state found: example"
+
+
+def failing_run(code, message=REFUSAL, error=None):
+    def run(argv, **kw):
+        if error:
+            raise error
+        print(message, file=sys.stderr)
+        if kw.get("check", False) and code:
+            raise subprocess.CalledProcessError(code, argv)
+        return subprocess.CompletedProcess(argv, code)
+
+    return run
+
+
+def assert_quiet(capsys):
+    seen = capsys.readouterr()
+    text = seen.out + seen.err
+    for leak in ("203.0.113.7", "owner@", PROGRAM_TEXT, "Traceback", "CalledProcessError"):
+        assert leak not in text
+    return seen
+
+
+def test_run_remote_failure_keeps_remote_message_and_hides_argv(monkeypatch, capsys):
+    monkeypatch.setattr(subprocess, "run", failing_run(1))
+    with pytest.raises(SystemExit) as stop:
+        remote.run_remote(HOST, PROGRAM_TEXT, {})
+    assert stop.value.code == 1
+    assert REFUSAL in assert_quiet(capsys).err
+
+
+def test_run_remote_ssh_failure_is_generic(monkeypatch, capsys):
+    monkeypatch.setattr(subprocess, "run", failing_run(255, message="ssh failed"))
+    with pytest.raises(SystemExit) as stop:
+        remote.run_remote(HOST, PROGRAM_TEXT, {})
+    assert stop.value.code == 255
+    assert remote.SSH_FAILED in assert_quiet(capsys).err
+
+
+def test_run_remote_interrupt_exits_130_without_traceback(monkeypatch, capsys):
+    monkeypatch.setattr(subprocess, "run", failing_run(0, error=KeyboardInterrupt()))
+    with pytest.raises(SystemExit) as stop:
+        remote.run_remote(HOST, PROGRAM_TEXT, {})
+    assert stop.value.code == 130
+    assert remote.INTERRUPTED in assert_quiet(capsys).err
+
+
+def test_run_remote_success_returns_code_and_prints_nothing(monkeypatch, capsys):
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 0))
+    assert remote.run_remote(HOST, PROGRAM_TEXT, {}) == 0
+    assert remote.run_remote(HOST, PROGRAM_TEXT, {}, check=False) == 0
+    assert capsys.readouterr() == ("", "")
+
+
+def test_run_remote_unchecked_returns_remote_code(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", failing_run(7))
+    assert remote.run_remote(HOST, PROGRAM_TEXT, {}, check=False) == 7
+
+
+def test_guarded_entry_prints_type_and_message_not_traceback():
+    source = remote.program([], [], remote.guarded("raise ValueError('Legacy-named state: x')\n"))
+    done = subprocess.run(  # noqa: S603 - local interpreter, fixed test program
+        [sys.executable, "-I", "-c", source], capture_output=True, text=True
+    )
+    assert done.returncode == 1
+    assert re.fullmatch(
+        r"ValueError: Legacy-named state: x \(in <module>, line \d+\)\n", done.stderr
+    )
+
+
+def test_guarded_entry_leaves_exit_codes_alone():
+    source = remote.program([], [], remote.guarded("sys.exit(3)\n"))
+    done = subprocess.run(  # noqa: S603 - local interpreter, fixed test program
+        [sys.executable, "-I", "-c", source], capture_output=True, text=True
+    )
+    assert (done.returncode, done.stderr) == (3, "")
+
+
+def test_run_remote_signal_killed_ssh_exits_one(monkeypatch, capsys):
+    def run(argv, **kw):
+        raise subprocess.CalledProcessError(-9, argv)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(SystemExit) as stop:
+        remote.run_remote(HOST, PROGRAM_TEXT, {})
+    assert stop.value.code == 1
+    assert_quiet(capsys)

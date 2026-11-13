@@ -28,7 +28,15 @@ from plane_toolchain.legacy import (
     PAGES_LABEL,
     refusal,
 )
-from plane_toolchain.remote import docker, docker_ok, program, require_env, say, ssh_argv
+from plane_toolchain.remote import (
+    docker,
+    docker_ok,
+    guarded,
+    program,
+    require_env,
+    run_remote,
+    say,
+)
 
 
 def replacement(original, image, live_url, digest):
@@ -481,8 +489,10 @@ REMOTE = program(
         build,
         deploy,
     ],
-    "say(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
-    "    lambda name, pages=True: healthy(name, docker_ok, time.sleep, pages=pages), time.time))\n",
+    guarded(
+        "say(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
+        "    lambda name, pages=True: healthy(name, docker_ok, time.sleep, pages=pages), time.time))\n"
+    ),
     PAGES,
 )
 
@@ -518,9 +528,7 @@ def main():
             raise ValueError("Invalid PLANE_BACKEND_IMAGE")
         payload = dict(operation=operation, worker=worker, backend_image=image, source=source)
         payload["digest"] = digest
-        subprocess.run(  # noqa: S603 - validated owner host; fixed remote program
-            ssh_argv(host, REMOTE), input=json.dumps(payload), text=True, check=True
-        )
+        run_remote(host, REMOTE, payload)
         return
     host, container, live_url = require_env(
         "PLANE_MCP_SSH", "PLANE_API_CONTAINER", "PLANE_LIVE_URL"
@@ -537,12 +545,7 @@ def main():
         digest=digest,
         replacement="import copy\n" + inspect.getsource(replacement),
     )
-    subprocess.run(  # noqa: S603 - validated owner host; fixed remote program
-        ssh_argv(host, REMOTE),
-        input=json.dumps(payload),
-        text=True,
-        check=True,
-    )
+    run_remote(host, REMOTE, payload)
 
 
 if __name__ == "__main__":
