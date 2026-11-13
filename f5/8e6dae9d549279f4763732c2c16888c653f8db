@@ -1,0 +1,38 @@
+docs/extensions.md
+  s_066dd3ba2255bd::t_7f41217346632f 85,102
+  s_066dd3ba2255bd::t_323a87f7d15f52 100
+src/plane_toolchain/pages_deploy.py
+  s_066dd3ba2255bd::t_7f41217346632f 21-25,43-45,61-82,94-99,134,137-140,207,245,334-336,339-340,346,350-353,355-425,466,493-496,499-501,505,508,517,532-534
+tests/fake_docker.py
+  s_066dd3ba2255bd::t_7f41217346632f 127-128
+tests/test_remote.py
+  s_066dd3ba2255bd::t_7f41217346632f 115,148,166
+src/plane_toolchain/legacy.py
+  s_066dd3ba2255bd::t_6a0bc00e1ce4b9 3
+  s_066dd3ba2255bd::t_98ed465f69d85a 4-5
+  s_066dd3ba2255bd::t_7f41217346632f 29,33-37
+CHANGELOG.md
+  s_066dd3ba2255bd::t_7f41217346632f 16
+tests/test_mcp_deploy.py
+  s_066dd3ba2255bd::t_58438765f5bf7b 312
+tests/test_pages_deploy.py
+  s_066dd3ba2255bd::t_7f41217346632f 17-21,182,208,222,236-240,246,254,328,349,354,367,376,387,462,480,496,522,599,616,618,656,664,666,683,697,733,735,737,746,771,848,874,880,1005-1006,1012,1116-1375
+tests/test_pages_backend.py
+  s_066dd3ba2255bd::t_7f41217346632f 61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "f58e6dae9d549279f4763732c2c16888c653f8db",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
