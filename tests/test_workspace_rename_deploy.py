@@ -242,3 +242,39 @@ def test_shipped_program_stops_backs_up_and_starts(fake, tmp_path, monkeypatch):
     assert (directory / "backup.dump").read_bytes() == fake.pg_dump
     assert all(fake.containers[n]["running"] for n in ALL)
     assert len(json.loads((directory / "receipt.json").read_text())["backup_sha256"]) == 64
+
+
+def test_backup_refuses_existing_dump_and_starts_no_pg_dump(fake, tmp_path):
+    directory = receipt_dir(tmp_path)
+    digest = wr.backup_database("plane-db", directory, fake.popen)
+    fake.calls.clear()
+    fake.pg_dump = b"different"
+    with pytest.raises(RuntimeError, match=r"backup\.dump already exists"):
+        wr.backup_database("plane-db", directory, fake.popen)
+    assert (directory / "backup.dump").read_bytes() == b"PGDMP-fake-dump"
+    assert json.loads((directory / "receipt.json").read_text())["backup_sha256"] == digest
+    assert not any("pg_dump" in " ".join(c) for c in fake.calls)
+    assert not list(directory.glob("*.tmp"))
+
+
+def test_backup_read_error_kills_and_waits_for_child(tmp_path):
+    events = []
+
+    class Broken:
+        def read(self, size):
+            raise OSError("pipe broke")
+
+    class Process:
+        stdout = Broken()
+
+        def kill(self):
+            events.append("kill")
+
+        def wait(self):
+            events.append("wait")
+
+    directory = receipt_dir(tmp_path)
+    with pytest.raises(OSError, match="pipe broke"):
+        wr.backup_database("plane-db", directory, lambda argv, **kw: Process())
+    assert events == ["kill", "wait"]
+    assert not list(directory.glob("backup.dump*"))

@@ -292,10 +292,14 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None):
     secure_receipt_dir(directory, uid)
     final = pathlib.Path(directory) / "backup.dump"
     temporary = str(final) + ".tmp"
+    if os.path.lexists(final):
+        # Never replace the only pre-change backup. A dump on disk without a recorded hash
+        # (crash window) is for T7's resume logic to resolve.
+        raise RuntimeError("backup.dump already exists in the receipt directory; refusing")
     if os.path.lexists(temporary):
         os.unlink(temporary)
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    digest, size, failure = hashlib.sha256(), 0, None
+    digest, size, failure, process = hashlib.sha256(), 0, None, None
     try:
         process = popen(
             ["docker", "exec", db, "sh", "-c", PG_DUMP],
@@ -316,6 +320,9 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None):
         else:
             os.fsync(descriptor)
     except Exception:
+        if process is not None:
+            process.kill()
+            process.wait()
         os.close(descriptor)
         os.unlink(temporary)
         raise
@@ -323,7 +330,10 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None):
     if failure:
         os.unlink(temporary)
         raise RuntimeError(failure)
-    os.replace(temporary, final)
+    try:
+        os.link(temporary, final)  # fails atomically if a dump appeared meanwhile
+    finally:
+        os.unlink(temporary)
     parent = os.open(directory, os.O_RDONLY)
     try:
         os.fsync(parent)
