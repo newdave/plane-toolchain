@@ -1,0 +1,25 @@
+docs/workspace-rename.md
+  s_0f9f4887aae26e::t_d17985db767ec3 83
+CHANGELOG.md
+  s_0f9f4887aae26e::t_46c077d0e3a9f5 9-12
+tests/test_workspace_rename_hardening_gates.py
+  s_0f9f4887aae26e::t_6bf7ed489e513d 20-28
+src/plane_toolchain/workspace_rename_backend.py
+  s_0f9f4887aae26e::t_d17985db767ec3 53-55,84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "c369d201cb5cc4901ba920eb315665332039cbc2",
+  "prompts": {},
+  "sessions": {
+    "s_0f9f4887aae26e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3292e112-0ccb-44da-a9cd-0e74c6eec52c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
