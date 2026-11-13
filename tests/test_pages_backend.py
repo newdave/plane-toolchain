@@ -72,7 +72,9 @@ def test_replacement_rejects_auto_removal_before_stopping_original():
         replacement({"HostConfig": {"AutoRemove": True}}, "derived", "http://live:3000", "digest")
 
 
-def _pages_view(monkeypatch, missing_project=False, binary=None):
+def _pages_view(
+    monkeypatch, missing_project=False, binary=None, pages=None, guest=False, guest_flag=True
+):
     """Build the Pages view from stubbed Django/Plane modules (they exist only in the CE image)."""
     import sys
     import types
@@ -94,6 +96,15 @@ def _pages_view(monkeypatch, missing_project=False, binary=None):
 
     class Rows:
         def filter(self, *args, **kwargs):
+            if pages is not None:
+                return PageRows(
+                    [
+                        row
+                        for row in self.items
+                        if all(q.matches(row) for q in args)
+                        and all(row.get(k) == v for k, v in kwargs.items())
+                    ]
+                )
             return self
 
         def distinct(self):
@@ -106,6 +117,16 @@ def _pages_view(monkeypatch, missing_project=False, binary=None):
             calls["values"] = fields
             return [{"id": "p1"}]
 
+    class PageRows(Rows):
+        def __init__(self, items):
+            self.items = items
+
+        def get(self, **kwargs):
+            for row in self.items:
+                if all(row.get(k) == v for k, v in kwargs.items()):
+                    return row
+            raise Http404
+
     class Project:
         pass
 
@@ -116,19 +137,28 @@ def _pages_view(monkeypatch, missing_project=False, binary=None):
         if source is Project:
             if missing_project:
                 raise Http404
-            return types.SimpleNamespace(guest_view_all_features=True)
+            return types.SimpleNamespace(guest_view_all_features=guest_flag)
+        if pages is not None:
+            return source.get(**kwargs)
         return "page-row"
 
     class Q:
         def __init__(self, *args, **kwargs):
-            pass
+            self.kwargs, self.others = kwargs, []
 
         def __or__(self, other):
-            return self
+            combined = Q()
+            combined.others = [self, other]
+            return combined
+
+        def matches(self, row):
+            if self.others:
+                return any(q.matches(row) for q in self.others)
+            return all(row.get(k) == v for k, v in self.kwargs.items())
 
     class Members:
         def filter(self, **kwargs):
-            return types.SimpleNamespace(exists=lambda: False)
+            return types.SimpleNamespace(exists=lambda: guest)
 
     class Permission:
         pass
@@ -181,7 +211,7 @@ def _pages_view(monkeypatch, missing_project=False, binary=None):
     module("plane.app.views.page.base", PageViewSet=PageViewSet)
     module(
         "plane.db.models",
-        Page=types.SimpleNamespace(objects=Rows()),
+        Page=types.SimpleNamespace(objects=PageRows(pages) if pages is not None else Rows()),
         PageVersion=None,
         Project=Project,
         ProjectMember=types.SimpleNamespace(objects=Members()),
@@ -635,6 +665,89 @@ def test_post_non_object_live_reply_is_a_conversion_failure(monkeypatch, reply):
         view.post(view.request, "w", "x")
     assert str(caught.value) == "Live document conversion unavailable; nothing written"
     assert caught.value.status_code == 502
+
+
+def _row(page_id, owner, access):
+    """A page row as the view's filters see it: lookup path to value."""
+    return {
+        "id": page_id,
+        "owned_by": owner,
+        "access": access,
+        "workspace__slug": "w",
+        "project_pages__project_id": "x",
+        "project_pages__deleted_at__isnull": True,
+    }
+
+
+# Plane CE v1.4.3 rules, read from tag v1.4.3 (apps/api/plane/app/permissions/page.py
+# ProjectPagePermission, and apps/api/plane/app/views/page/base.py PagesDescriptionViewSet):
+# PATCH needs an active project role of admin or member; the owner of a page passes the
+# object check; a non-owner passes only on public pages (access 0); another user's private
+# page is denied; the description update and list/retrieve query use owned_by=user | access=0.
+# A guest without guest_view_all_features sees only own pages (PageViewSet.retrieve/list).
+PAGES = [
+    _row("own-private", "u", 1),
+    _row("own-public", "u", 0),
+    _row("other-public", "u2", 0),
+    _row("other-private", "u2", 1),
+]
+
+
+def _visible_ids(monkeypatch, **kwargs):
+    view, _, _ = _pages_view(monkeypatch, pages=PAGES, **kwargs)
+    return sorted(row["id"] for row in view.visible().items)
+
+
+def test_member_sees_own_pages_and_public_pages_of_others_only(monkeypatch):
+    # Non-owner PATCH on a public page is allowed by Plane (members edit public pages).
+    assert _visible_ids(monkeypatch) == ["other-public", "own-private", "own-public"]
+
+
+def test_another_owners_private_page_is_not_visible_to_patch_or_get(monkeypatch):
+    view, _, http404 = _pages_view(monkeypatch, pages=PAGES)
+    view.request.data = {
+        "description_html": "<p>x</p>",
+        "expected_updated_at": STAMP,
+        "force": True,
+    }
+    with pytest.raises(http404):
+        view.patch(view.request, "w", "x", page_id="other-private")
+    with pytest.raises(http404):
+        view.get(view.request, "w", "x", page_id="other-private")
+
+
+def test_non_owner_can_retrieve_a_public_page(monkeypatch):
+    view, _, _ = _pages_view(monkeypatch, pages=PAGES)
+    assert view.get(view.request, "w", "x", page_id="other-public").data["detail"]["id"] == (
+        "other-public"
+    )
+
+
+def test_guest_without_guest_view_all_features_sees_only_own_pages(monkeypatch):
+    ids = _visible_ids(monkeypatch, guest=True, guest_flag=False)
+    assert ids == ["own-private", "own-public"]
+
+
+def test_guest_with_guest_view_all_features_sees_public_pages(monkeypatch):
+    # Guests still cannot PATCH: ProjectPagePermission allows PATCH for admin/member only.
+    ids = _visible_ids(monkeypatch, guest=True, guest_flag=True)
+    assert ids == ["other-public", "own-private", "own-public"]
+
+
+def test_pages_view_is_gated_by_plane_page_permission_and_authentication(monkeypatch):
+    # Role checks (admin/member PATCH and POST, guest read only) live in Plane's
+    # ProjectPagePermission; the view must keep it and fail closed if CE changes it.
+    from plane_toolchain import pages_backend
+
+    _pages_view(monkeypatch)
+    view = pages_backend.routes()[1][0][1]
+    perms = view.permission_classes
+    assert [c.__name__ for c in perms[1:]] == ["Permission"]
+    import sys
+
+    sys.modules["plane.app.views.page.base"].PageViewSet.permission_classes = []
+    with pytest.raises(RuntimeError, match="permission contract changed"):
+        pages_backend.routes()
 
 
 def test_detail_route_allows_get_and_patch_only(monkeypatch):

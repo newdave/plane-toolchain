@@ -19,6 +19,14 @@ def test_normalises_existing_ce_relation_response_without_losing_other_types():
     assert relation_result(data) == result
 
 
+def test_relation_rows_from_other_projects_keep_their_own_project_id():
+    # CE relations are workspace-wide: ids from other projects are listed, never filtered,
+    # and each carries its project_id so the caller can tell (documented in docs/extensions.md).
+    data = {"blocking": [{"issue_id": "far", "project_id": "other-project"}]}
+    result = relation_result(data)
+    assert result["dependencies"]["blocking"] == [{"id": "far", "project_id": "other-project"}]
+
+
 def test_invalid_relation_identity_fails_closed():
     with pytest.raises(ValueError):
         relation_result(SimpleNamespace(model_dump=lambda: {"blocked_by": [{}]}))

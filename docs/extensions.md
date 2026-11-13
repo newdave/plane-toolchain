@@ -9,9 +9,18 @@ The extensions augment the official Plane MCP server. They reuse its API-key aut
 | `ce_workitem_relation` | Definitions, list, create built-in dependencies | Additive, same project, 1–100 distinct targets; no deletion or custom definitions |
 | `ce_page` | List, retrieve, create, update project Pages | Update replaces the whole body; needs `expected_updated_at` and `force=true`; no deletion |
 
-Relations normalise CE `issue_id` objects into the MCP dependency contract. Each source and target is checked through the project-scoped work-item API before creating a relation.
+Relations normalise CE `issue_id` objects into the MCP dependency contract. CE relations are workspace-wide, so `list` may return issue ids from other projects. Each row keeps its own `project_id`; rows are not filtered, only ids are exposed (no content), and reading the issue still needs that project's membership. Each source and target is checked through the project-scoped work-item API before creating a relation.
 
-Pages require both the MCP extension and the backend adapter. The backend keeps Plane authentication, permissions, sanitisation and throttling. It checks project membership and private-page visibility. Creation converts HTML through Plane Live into consistent JSON and binary document formats before writing in a transaction. Conversion failure writes nothing. List requests fail above 1,000 Pages rather than silently truncating results.
+Pages require both the MCP extension and the backend adapter. The backend keeps Plane authentication, permissions, sanitisation and throttling. It checks project membership and private-page visibility.
+
+Permission model, aligned with Plane CE v1.4.3 (`apps/api/plane/app/permissions/page.py` `ProjectPagePermission`, and `apps/api/plane/app/views/page/base.py` `PagesDescriptionViewSet.partial_update` and `PageViewSet.retrieve`/`list`, read at tag `v1.4.3`):
+
+- The view keeps `IsAuthenticated` and Plane's own `ProjectPagePermission`; startup fails if `PageViewSet.permission_classes` is not exactly that. The caller must be an active project member.
+- Create (POST) and update (PATCH) need project role admin or member. Guests may read only.
+- A page owner passes the object check. A non-owner passes only on a public page (`access=0`); another user's private page is denied (403 from the permission class, 404 from the view).
+- So any admin or member can update any public page, whoever owns it. This matches Plane's own description update, which filters on `owned_by=user OR access=0`.
+- A guest without `guest_view_all_features` sees only pages they own (Plane's retrieve and list rule). The view applies the same filter.
+- Differences from Plane, all stricter: the view also refuses an archived project (404), and update requires `force=true` and `expected_updated_at`. Locked and archived pages are refused as in Plane. Creation converts HTML through Plane Live into consistent JSON and binary document formats before writing in a transaction. Conversion failure writes nothing. List requests fail above 1,000 Pages rather than silently truncating results.
 
 ### Page update
 

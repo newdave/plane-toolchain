@@ -49,7 +49,12 @@ def bind_host(env):
 
 
 def relation_result(response):
-    """Translate CE issue IDs into the MCP dependency response contract."""
+    """Translate CE issue IDs into the MCP dependency response contract.
+
+    CE relations are workspace-wide, so a row may name an issue in another project.
+    Rows keep their own project_id and are not filtered: only ids are returned, never
+    content, and reading the issue still needs that project's membership.
+    """
     # SDK's legacy response model expects strings, while CE v1.4.3 returns
     # issue_id/project_id objects. Decode its public API payload directly.
     data = response if isinstance(response, dict) else response.model_dump()
