@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import re
+import signal
 import subprocess
 import sys
 import tarfile
@@ -39,6 +40,7 @@ class FakeDocker:
         self.celery_listed = True
         self.queue_probes = []
         self.crash_label = None
+        self.error_output = b""  # stderr attached to a failed call's CalledProcessError
 
     def add(self, name, labels=None, running=True, healthy=True, hostname=None, **host_config):
         ident = self.new_id()
@@ -115,6 +117,11 @@ class FakeDocker:
             if rest[0] not in self.containers:
                 return 1, b""
             self.containers[rest[0]]["running"] = command != "stop"
+            return 0, b""
+        if command == "rm":
+            if rest[0] not in self.containers or self.containers[rest[0]]["running"]:
+                return 1, b""
+            del self.containers[rest[0]]
             return 0, b""
         if command == "rename":
             old, new = rest
@@ -248,7 +255,7 @@ class FakeDocker:
         self.streams[args] = (kw.get("stdout"), kw.get("stderr"))
         code, stdout = self.execute(*args, input=kw.get("input"))
         if code and kw.get("check", True):
-            raise subprocess.CalledProcessError(code, ["docker", *args])
+            raise subprocess.CalledProcessError(code, ["docker", *args], stderr=self.error_output)
         return stdout
 
     def probe(self, *args):
@@ -285,7 +292,7 @@ class FakeDocker:
             self.streams[tuple(argv[1:])] = (kw.get("stdout"), kw.get("stderr"))
             code, stdout = self.execute(*argv[1:], input=kw.get("input"))
         if code and kw.get("check"):
-            raise subprocess.CalledProcessError(code, argv)
+            raise subprocess.CalledProcessError(code, argv, stderr=self.error_output)
         return subprocess.CompletedProcess(argv, code, stdout if kw.get("capture_output") else None)
 
     def http_connection(self):
@@ -329,7 +336,10 @@ def run_program(program, payload, fake, monkeypatch):
     monkeypatch.setattr(time, "time", lambda: NOW + 0.5)
     monkeypatch.setattr(http.client, "HTTPConnection", fake.http_connection())
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    terminate = signal.getsignal(signal.SIGTERM)  # a guarded program installs its own handler
     try:
         exec(compile(program, "<string>", "exec"), {"__name__": "__main__"})  # noqa: S102
     except SystemExit as exit:
         assert exit.code in (0, None)
+    finally:
+        signal.signal(signal.SIGTERM, terminate)
