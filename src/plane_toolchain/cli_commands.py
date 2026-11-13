@@ -86,6 +86,20 @@ def validate(namespace: argparse.Namespace) -> None:
         namespace.body = read_body(namespace, "--html or --file") if has_body else None
     if key == ("comment", "add"):
         namespace.body = read_body(namespace, "--html or --file")
+    if key == ("page", "show") and not is_uuid(namespace.page_id):
+        raise UsageError("Page must be a UUID")
+    if key == ("page", "create"):
+        if not namespace.name.strip():
+            raise UsageError("--name must not be empty")
+        namespace.body = read_body(namespace, "--html or --file")
+    if key == ("relation", "list"):
+        task_reference(namespace.ref)
+    if key == ("relation", "add"):
+        refs = [namespace.ref, *namespace.others]
+        for ref in refs:
+            task_reference(ref)
+        if len({ref.upper() for ref in refs}) != len(refs):
+            raise UsageError("Relation tasks must be distinct")
 
 
 async def task_list(call: Call, project: str, namespace: argparse.Namespace) -> Any:
@@ -168,10 +182,80 @@ async def comment_add(call: Call, project: str, namespace: argparse.Namespace) -
     raise ReadbackError
 
 
+async def page_list(call: Call, project: str, namespace: argparse.Namespace) -> Any:
+    return await call("ce_page", {"action": "list", "project_id": project})
+
+
+async def page_show(call: Call, project: str, namespace: argparse.Namespace) -> Any:
+    return await call(
+        "ce_page", {"action": "retrieve", "project_id": project, "page_id": namespace.page_id}
+    )
+
+
+async def page_create(call: Call, project: str, namespace: argparse.Namespace) -> Any:
+    created = await call(
+        "ce_page",
+        {
+            "action": "create",
+            "project_id": project,
+            "name": namespace.name,
+            "description_html": namespace.body,
+            "access": 0 if namespace.public else 1,
+        },
+    )
+    page_id = created.get("id") if isinstance(created, dict) else None
+    if not page_id:
+        raise ReadbackError
+    page = await call("ce_page", {"action": "retrieve", "project_id": project, "page_id": page_id})
+    if not isinstance(page, dict) or page.get("name") != namespace.name:
+        raise ReadbackError
+    return page
+
+
+async def relation_list(call: Call, project: str, namespace: argparse.Namespace) -> Any:
+    project_id, workitem_id = await resolve_task(call, project, namespace.ref)
+    return await call(
+        "ce_workitem_relation",
+        {"action": "list", "project_id": project_id, "workitem_id": workitem_id},
+    )
+
+
+async def relation_add(call: Call, project: str, namespace: argparse.Namespace) -> Any:
+    project_id, workitem_id = await resolve_task(call, project, namespace.ref)
+    targets = [(await resolve_task(call, project, ref))[1] for ref in namespace.others]
+    if workitem_id in targets:
+        raise UsageError("A task cannot be related to itself")
+    if len(set(targets)) != len(targets):
+        raise UsageError("Relation tasks must be distinct")
+    ids = {"project_id": project_id, "workitem_id": workitem_id}
+    await call(
+        "ce_workitem_relation",
+        {
+            "action": "create",
+            **ids,
+            "workitem_ids": targets,
+            "relation_type": namespace.type,
+        },
+    )
+    listing = await call("ce_workitem_relation", {"action": "list", **ids})
+    rows = []
+    if isinstance(listing, dict):
+        rows = (listing.get("dependencies") or {}).get(namespace.type) or []
+    found = {row.get("id") for row in rows if isinstance(row, dict)}
+    if not set(targets) <= found:
+        raise ReadbackError
+    return listing
+
+
 HANDLERS: dict[tuple[str, str], Callable[[Call, str, argparse.Namespace], Awaitable[Any]]] = {
     ("task", "list"): task_list,
     ("task", "show"): task_show,
     ("task", "update"): task_update,
     ("comment", "list"): comment_list,
     ("comment", "add"): comment_add,
+    ("page", "list"): page_list,
+    ("page", "show"): page_show,
+    ("page", "create"): page_create,
+    ("relation", "list"): relation_list,
+    ("relation", "add"): relation_add,
 }

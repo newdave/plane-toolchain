@@ -20,6 +20,14 @@ __all__ = ["ReadbackError", "UsageError", "environment", "execute", "main", "par
 FAILED = "Plane MCP request failed; remote outcome must be checked"
 
 
+RELATION_TYPES = [
+    "blocking",
+    "blocked_by",
+    "start_before",
+    "start_after",
+    "finish_before",
+    "finish_after",
+]
 PRIORITIES = ["urgent", "high", "medium", "low", "none"]
 
 
@@ -61,6 +69,29 @@ def parser() -> argparse.ArgumentParser:
     added = comment.add_parser("add", parents=[common], help="add a comment")
     added.add_argument("ref", help="task UUID or identifier such as PTC-12")
     body(added)
+
+    page = groups.add_parser("page", help="project Pages").add_subparsers(
+        dest="action", required=True
+    )
+    page.add_parser("list", parents=[common], help="list Pages")
+    page_show = page.add_parser("show", parents=[common], help="show one Page")
+    page_show.add_argument("page_id", help="Page UUID")
+    page_new = page.add_parser("create", parents=[common], help="create a Page")
+    page_new.add_argument("--name", required=True)
+    page_new.add_argument(
+        "--public", action="store_true", help="public in project (default private)"
+    )
+    body(page_new)
+
+    relation = groups.add_parser("relation", help="task relations").add_subparsers(
+        dest="action", required=True
+    )
+    relation_list = relation.add_parser("list", parents=[common], help="list relations")
+    relation_list.add_argument("ref", help="task UUID or identifier such as PTC-12")
+    relation_add = relation.add_parser("add", parents=[common], help="add relations")
+    relation_add.add_argument("ref", help="task UUID or identifier such as PTC-12")
+    relation_add.add_argument("others", nargs="+", metavar="other_ref", help="related tasks")
+    relation_add.add_argument("--type", choices=RELATION_TYPES, default="blocked_by")
     return root
 
 

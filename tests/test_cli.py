@@ -388,3 +388,139 @@ def test_priority_none_accepts_null_readback(tmp_path):
     fake = Fake([{}, {"priority": None}])
     code, _, _ = run(["task", "update", OTHER, "--priority", "none"], fake, tmp_path)
     assert code == 0
+
+
+PAGE = "00000000-0000-0000-0000-0000000000a1"
+W1 = "00000000-0000-0000-0000-0000000000b1"
+W2 = "00000000-0000-0000-0000-0000000000b2"
+
+
+def relations(kind, *ids):
+    return {
+        "dependencies": {kind: [{"id": i, "project_id": PROJECT} for i in ids]},
+        "custom": {},
+    }
+
+
+def test_page_create_private_by_default_and_rereads(tmp_path):
+    fake = Fake([{"id": PAGE, "name": "Plan"}, {"id": PAGE, "name": "Plan"}])
+    code, out, _ = run(["page", "create", "--name", "Plan", "--html", "<p>x</p>"], fake, tmp_path)
+    assert code == 0
+    assert fake.calls == [
+        (
+            "ce_page",
+            {
+                "action": "create",
+                "project_id": PROJECT,
+                "name": "Plan",
+                "description_html": "<p>x</p>",
+                "access": 1,
+            },
+        ),
+        ("ce_page", {"action": "retrieve", "project_id": PROJECT, "page_id": PAGE}),
+    ]
+    assert json.loads(out)["id"] == PAGE
+
+
+def test_page_create_public_flag(tmp_path):
+    fake = Fake([{"id": PAGE, "name": "Plan"}, {"id": PAGE, "name": "Plan"}])
+    run(["page", "create", "--name", "Plan", "--html", "<p>x</p>", "--public"], fake, tmp_path)
+    assert fake.calls[0][1]["access"] == 0
+
+
+def test_page_create_name_mismatch_exits_5(tmp_path):
+    fake = Fake([{"id": PAGE, "name": "Plan"}, {"id": PAGE, "name": "Other"}])
+    code, _, err = run(["page", "create", "--name", "Plan", "--html", "<p>x</p>"], fake, tmp_path)
+    assert code == 5
+    assert "readback" in err
+
+
+def test_page_list_and_show(tmp_path):
+    fake = Fake([[{"id": PAGE}], {"id": PAGE}])
+    assert run(["page", "list"], fake, tmp_path)[0] == 0
+    assert run(["page", "show", PAGE], fake, tmp_path)[0] == 0
+    assert fake.calls == [
+        ("ce_page", {"action": "list", "project_id": PROJECT}),
+        ("ce_page", {"action": "retrieve", "project_id": PROJECT, "page_id": PAGE}),
+    ]
+
+
+def test_page_show_rejects_non_uuid_without_connecting(tmp_path):
+    fake = Fake()
+    assert run(["page", "show", "nope"], fake, tmp_path)[0] == 2
+    assert fake.entered == 0
+
+
+def test_page_edit_is_not_a_command(tmp_path):
+    fake = Fake()
+    for verb in ("edit", "update"):
+        assert run(["page", verb, PAGE, "--html", "<p>x</p>"], fake, tmp_path)[0] == 2
+    assert fake.entered == 0
+
+
+def test_relation_add_resolves_identifiers_and_confirms(tmp_path):
+    listing = relations("blocked_by", W2)
+    fake = Fake([{"project": OTHER, "id": W1}, {"project": OTHER, "id": W2}, {}, listing])
+    code, out, _ = run(["relation", "add", "ptc-1", "PTC-2"], fake, tmp_path)
+    assert code == 0
+    assert fake.calls[2] == (
+        "ce_workitem_relation",
+        {
+            "action": "create",
+            "project_id": OTHER,
+            "workitem_id": W1,
+            "workitem_ids": [W2],
+            "relation_type": "blocked_by",
+        },
+    )
+    assert fake.calls[3][1]["action"] == "list"
+    assert json.loads(out) == listing
+
+
+def test_relation_add_missing_from_listing_exits_5(tmp_path):
+    fake = Fake([{}, relations("blocking", W1)])
+    code, _, _ = run(["relation", "add", W1, W2, "--type", "blocking"], fake, tmp_path)
+    assert code == 5
+
+
+def test_relation_add_rejects_self_relation(tmp_path):
+    fake = Fake([{"project": OTHER, "id": W1}])
+    code, _, err = run(["relation", "add", W1, "PTC-1"], fake, tmp_path)
+    assert code == 2
+    assert [c[0] for c in fake.calls] == ["workitem"]
+    assert err.startswith("plane: ")
+
+
+def test_relation_add_rejects_duplicate_literals_without_connecting(tmp_path):
+    fake = Fake()
+    assert run(["relation", "add", W1, W2, "ptc-3", "PTC-3"], fake, tmp_path)[0] == 2
+    assert fake.entered == 0
+
+
+def test_relation_add_rejects_duplicates_after_resolving(tmp_path):
+    fake = Fake([{"project": OTHER, "id": W1}, {"project": OTHER, "id": W2}])
+    code, _, _ = run(["relation", "add", W1, W2, "PTC-2"], fake, tmp_path)
+    assert code == 2
+    assert all(c[0] == "workitem" for c in fake.calls)
+
+
+def test_relation_list(tmp_path):
+    fake = Fake([relations("blocked_by")])
+    assert run(["relation", "list", W1], fake, tmp_path)[0] == 0
+    assert fake.calls == [
+        ("ce_workitem_relation", {"action": "list", "project_id": PROJECT, "workitem_id": W1})
+    ]
+
+
+def test_relation_remove_is_not_a_command(tmp_path):
+    fake = Fake()
+    for verb in ("remove", "delete"):
+        assert run(["relation", verb, W1, W2], fake, tmp_path)[0] == 2
+    assert fake.entered == 0
+
+
+def test_missing_ce_tool_exits_4(tmp_path):
+    fake = Fake(error=ValueError("Required MCP tool unavailable"))
+    code, _, err = run(["page", "list"], fake, tmp_path)
+    assert code == 4
+    assert err == "plane: Required MCP tool unavailable\n"
