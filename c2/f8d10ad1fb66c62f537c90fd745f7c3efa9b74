@@ -1,0 +1,115 @@
+src/plane_toolchain/mcp_deploy.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 21-30,50-55,64-68,70-72,74-75,106-120,215-220,229,238-240,256-259,261,275-278,283-285,287-288,294-299,302-307,315-321,335-336,341
+src/plane_toolchain/pages_deploy.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 13,18,37,39,56-57,111-120,126,129-131,148,154-155,181-186,191,194,196-253,255-306,325,330,333,337,340,373,375,399,403,407,409-422,424-426,467,471,482,508,514-525,527-531,549,575-576,591,600,605-610,627-629,668-673
+  s_066dd3ba2255bd::t_f4f1547e76539d 674
+tests/sigterm_harness.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 1-71
+docs/project-install.md
+  s_066dd3ba2255bd::t_cc2259303b60c3 28-29,34-44,56,66
+docs/extensions.md
+  s_066dd3ba2255bd::t_cc2259303b60c3 12,14-23,39-49,53-56,61,93,96-105,139
+tests/fixtures/plane.sh.pre-quotes.shfmt-i4
+  s_066dd3ba2255bd::t_cc2259303b60c3 1-70
+tests/test_mcp_deploy.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 6,224,820-1038
+tests/test_worktree_bridge.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 3,20-24,77,86-92,114-120,312-439
+examples/github/plane-comment.yml
+  s_066dd3ba2255bd::t_cc2259303b60c3 50,52
+templates/project/plane.sh
+  s_066dd3ba2255bd::t_cc2259303b60c3 32-37
+examples/github/plane-complete.yml
+  s_066dd3ba2255bd::t_cc2259303b60c3 58,60
+CHANGELOG.md
+  s_066dd3ba2255bd::t_cc2259303b60c3 18-33
+tests/fixtures/plane.sh.shfmt-i0
+  s_066dd3ba2255bd::t_cc2259303b60c3 32-37
+mise.toml
+  s_066dd3ba2255bd::t_cc2259303b60c3 70-73
+scripts/plane-prompt.zsh
+  s_066dd3ba2255bd::t_cc2259303b60c3 5-27,33-48,58-60
+tests/test_remote.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 277-402
+tests/test_project_install.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 4,10,179-218,505-511,778-1128
+tests/fake_docker.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 7,76,154-158,330,367,411,416-417
+tests/fixtures/plane.sh.pre-quotes.shfmt-i2ci
+  s_066dd3ba2255bd::t_cc2259303b60c3 1-70
+examples/github/plane_event.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 15,50-52,61-73,80-103
+  s_066dd3ba2255bd::t_35e6d57738b86f 104-105
+examples/github/plane-check.yml
+  s_066dd3ba2255bd::t_cc2259303b60c3 25,27
+templates/project/plane.sh.pre-quotes
+  s_066dd3ba2255bd::t_cc2259303b60c3 1-70
+scripts/plane-mcp.sh
+  s_066dd3ba2255bd::t_cc2259303b60c3 13-15,59-62,70-77,80-81,84-91,104-107
+src/plane_toolchain/pages_backend.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 10,31,46,52-54,69-70,88-89,103-104,179-180,182-185,187-194,269-272,414-419
+tests/test_github_examples.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 4-5,144-316
+scripts/install_project.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 83-85,87,89,91-96,151-155,159,166-172,177-183,189,204-213,218,228,238,247-249,288,294,312-324,331,348-353,358,360-364,373,387,399,404-408,414-415,442,445,448-460,462-500,503-506,509-510,513-515,567-576,579,588,618-619,649-650,663-672,716-720,729,736-737
+tests/test_legacy_payloads.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 16-19,23-26
+tests/fixtures/plane.sh.shfmt-i2ci
+  s_066dd3ba2255bd::t_cc2259303b60c3 32-37
+tests/fixtures/plane.sh.pre-quotes.shfmt
+  s_066dd3ba2255bd::t_cc2259303b60c3 1-70
+tests/test_session.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 108-166
+docs/configuration.md
+  s_066dd3ba2255bd::t_cc2259303b60c3 19,21,45
+examples/github/uv-requirements.txt
+  s_066dd3ba2255bd::t_cc2259303b60c3 1-21
+src/plane_toolchain/remote.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 11,18-19,36-50,102-124,126,129-130,132-137
+src/plane_toolchain/ce_tools.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 10-11,54-59,88-90,116-143,196,216-226
+tests/test_pages_deploy.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 24-31,115,215-216,230,238-239,241,336-337,351,372-373,608-622,692,720,787,1041,1357-1713
+.github/workflows/release.yml
+  s_066dd3ba2255bd::t_cc2259303b60c3 8,12,31-42,44-45
+tests/fixtures/plane.sh.shfmt-i4
+  s_066dd3ba2255bd::t_cc2259303b60c3 32-37
+docs/cli.md
+  s_066dd3ba2255bd::t_cc2259303b60c3 41,108
+tests/test_pages_backend.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 75-77,99-107,120-129,140-142,147,150-157,161,176,214,259,465-466,468,470-472,474,476-479,581,605-756,963,998-1008
+tests/fixtures/plane.sh.pre-quotes.shfmt-i0
+  s_066dd3ba2255bd::t_cc2259303b60c3 1-70
+docs/github-actions.md
+  s_066dd3ba2255bd::t_cc2259303b60c3 40,51,53
+.github/workflows/ci.yml
+  s_066dd3ba2255bd::t_cc2259303b60c3 13,26-29
+scripts/github_examples.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 5,9-11,17-72,75-76,78-79,83-93,96-99,101,106-110,117,121-122,126
+tests/fixtures/plane.sh.shfmt
+  s_066dd3ba2255bd::t_cc2259303b60c3 32-37
+tests/test_cli.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 261-286,434-436,438,458-462,473-484,666
+src/plane_toolchain/cli_commands.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 6,43-50,58-84,160-162,170-172,186-187,202-204,214-216,252,260,269-270,275-277,285-291
+tests/test_ce_tools.py
+  s_066dd3ba2255bd::t_cc2259303b60c3 22-29,122-181
+CONTRIBUTING.md
+  s_066dd3ba2255bd::t_cc2259303b60c3 22-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "c2f8d10ad1fb66c62f537c90fd745f7c3efa9b74",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
