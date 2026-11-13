@@ -272,24 +272,40 @@ def retained_note(name, docker):
     return note
 
 
+def kept_note(newest):
+    """`; kept newest reverted container: ...` for prune, or '' when there is none."""
+    return "; kept newest reverted container (revert recovery): " + newest if newest else ""
+
+
 def prune(name, docker, probe, confirm=False):
     """Remove (or, without `confirm`, list) stopped retired derived containers of `name`.
 
     Only a container that carries the Pages source label and is named exactly
     `<name>-pages-(reverted|failed)-<digits>[-<digits>...]` qualifies: never the live API, the
     rollback container, a running container, an `-aside` parking name or anything unlabelled
-    (an unlabelled one may be the upstream original).
+    (an unlabelled one may be the upstream original). The newest `-pages-reverted-` one is also
+    kept, labelled or not, and a container that vanishes before its inspect is skipped.
     """
     exact = re.compile(re.escape(name) + r"-pages-(reverted|failed)-\d+(-\d+)*")
     candidates = [n for n in retained_names(name, docker) if exact.fullmatch(n)]
+    # The newest parked `-pages-reverted-` container is revert recovery evidence: `finish_revert`
+    # reads the live restart policy from it and `interrupted_revert` takes its presence as proof
+    # a revert died. Removing it could strand a stopped API, so it is never a candidate.
+    reverted = [n for n in candidates if n.startswith(name + "-pages-reverted-")]
+    newest = reverted[-1] if reverted else None
     eligible, running = [], []
     for container in candidates:
-        held = json.loads(docker("inspect", container))[0]
+        if container == newest:
+            continue
+        try:
+            held = json.loads(docker("inspect", container))[0]
+        except subprocess.CalledProcessError:
+            continue  # Removed since the listing: nothing left to prune.
         if source_label(held) is None:
             continue
         (running if held["State"].get("Running") else eligible).append(container)
     if not eligible and not running:
-        return "No retired containers to prune"
+        return "No retired containers to prune" + kept_note(newest)
     parts = []
     if not confirm:
         parts.append("Dry run, nothing removed. Would remove: " + (", ".join(eligible) or "none"))
@@ -303,7 +319,7 @@ def prune(name, docker, probe, confirm=False):
         parts.append("kept running: " + ", ".join(running))
     if not confirm and eligible:
         parts.append("set PLANE_PAGES_PRUNE=yes to remove them")
-    return "; ".join(parts)
+    return "; ".join(parts) + kept_note(newest)
 
 
 def check(current, payload, health):
@@ -637,6 +653,7 @@ REMOTE = program(
         release_sigterm,
         retained_names,
         retained_note,
+        kept_note,
         prune,
     ]
     + [
