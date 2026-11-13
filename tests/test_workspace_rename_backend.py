@@ -813,6 +813,31 @@ def test_apply_steps_emit_row_content_only_in_journal_events():
     assert all(set(e) <= allowed for e in others)
 
 
+def test_snippet_uses_requests_only_for_live_post_and_api_get():
+    """`requests` appears only in _live_convert (post) and _api_probe (get), nowhere else."""
+    tree = ast.parse(snippet_source())
+    owners = {}
+    for top in tree.body:
+        for node in ast.walk(top):
+            owners.setdefault(id(node), getattr(top, "name", "<module>"))
+    uses = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            assert node.module != "requests", "from requests import ..."
+        if isinstance(node, ast.Import) and "requests" in [a.name for a in node.names]:
+            uses.add((owners[id(node)], "import"))
+            assert [a.asname for a in node.names] == [None], "aliased import of requests"
+        if isinstance(node, ast.Attribute) and getattr(node.value, "id", None) == "requests":
+            uses.add((owners[id(node)], node.attr))
+    allowed = {("_live_convert", "import"), ("_live_convert", "post")}
+    allowed |= {("_api_probe", "import"), ("_api_probe", "get")}
+    assert uses == allowed
+    names = {
+        owners[id(n)] for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "requests"
+    }
+    assert names == {"_live_convert", "_api_probe"}
+
+
 def test_snippet_live_convert_uses_payload_or_container_url(monkeypatch):
     posts = []
 
