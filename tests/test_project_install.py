@@ -1,11 +1,13 @@
 """Project installer adds Plane integration without overwriting another project's work."""
 
 import hashlib
+import http.server
 import json
 import os
 import runpy
 import shutil
 import subprocess
+import threading
 import tomllib
 from pathlib import Path
 
@@ -727,3 +729,48 @@ def test_hint_accepts_export_prefix_and_whitespace(tmp_path, capsys):
     )
     out = next_step(tmp_path, capsys, None)
     assert "Set PLANE_PROJECT in .plane/local.env" in out
+
+
+def serve(handler):
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@pytest.mark.parametrize("code", [301, 302, 307, 308])
+def test_label_http_client_never_sends_key_across_a_redirect(code):
+    seen = []
+
+    class Target(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("X-API-Key"))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        do_POST = do_GET
+
+        def log_message(self, *args):
+            pass
+
+    target = serve(Target)
+
+    class Origin(Target):
+        def do_GET(self):
+            self.send_response(code)
+            self.send_header("Location", f"http://127.0.0.1:{target.server_port}/stolen")
+            self.end_headers()
+
+        do_POST = do_GET
+
+    origin = serve(Origin)
+    try:
+        request = installer["http_client"](f"http://127.0.0.1:{origin.server_port}", "fake-key")
+        with pytest.raises(ValueError, match="redirect.*refusing"):
+            request("GET", "/api/v1/labels/")
+        with pytest.raises(ValueError, match="redirect"):
+            request("POST", "/api/v1/labels/", {"name": "x"})
+    finally:
+        origin.shutdown()
+        target.shutdown()
+    assert seen == []

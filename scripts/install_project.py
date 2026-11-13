@@ -452,8 +452,19 @@ def settings(target, env):
     return base.rstrip("/"), workspace, project, key
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib copies X-API-Key to a redirect target, even another host or plain http."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError(
+            f"Plane answered with a redirect (HTTP {code}); refusing to send the API key "
+            "onward. Set PLANE_API_URL to the final URL."
+        )
+
+
 def http_client(base, key):
     """Return request(method, path, body) -> parsed JSON using the Plane REST API."""
+    opener = urllib.request.build_opener(NoRedirect)
 
     def request(method, path, body=None):
         data = None if body is None else json.dumps(body).encode()
@@ -462,7 +473,7 @@ def http_client(base, key):
         req.add_header("Accept", "application/json")
         if data is not None:
             req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=30) as response:  # noqa: S310
+        with opener.open(req, timeout=30) as response:
             return json.load(response)
 
     return request

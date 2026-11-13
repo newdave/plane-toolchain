@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `install_project.py label` refuses HTTP redirects, so the Plane API key is never sent to another host or over plain http; it reports the redirect and asks for the final `PLANE_API_URL` (PTC-72).
+
 ## [0.2.1] - 2026-11-14
 
 ### Fixed
