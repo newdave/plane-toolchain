@@ -67,6 +67,9 @@ env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-pages:revert"]
 run = "uv run --locked python -m plane_toolchain.pages_deploy revert"
 env = { VIRTUAL_ENV = false }
+[tasks."owner:plane-pages:prune"]
+run = "uv run --locked python -m plane_toolchain.pages_deploy prune"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-pages:check"]
 run = "uv run --locked python -m plane_toolchain.pages_deploy check"
 env = { VIRTUAL_ENV = false }

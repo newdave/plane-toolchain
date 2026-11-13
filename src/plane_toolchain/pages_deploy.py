@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -102,13 +103,26 @@ def restart_arg(container):
     return name + ":" + str(count) if name == "on-failure" and count else name
 
 
+def set_restart(probe, policy, container):
+    """`docker update --restart`; say so on stderr when it fails, since a retained container
+    that keeps its old policy could start beside the live API."""
+    if not probe("update", "--restart=" + policy, container):
+        say(
+            "Restart policy update failed for " + container + "; check it with docker inspect",
+            sys.stderr,
+        )
+
+
 def source_label(container):
     """Deployed source digest from the neutral label; None when unlabelled."""
     return (container["Config"].get("Labels") or {}).get(NEUTRAL_PAGES_LABEL)
 
 
-def healthy(name, probe, sleep, attempts=45, pages=True):
+def healthy(name, probe, sleep, attempts=45, pages=True, budget=120, clock=time.monotonic):
     """Wait for the API, and the Pages route when pages, inside the container; raise on timeout.
+
+    Stops after `attempts` tries or `budget` seconds, whichever comes first, so slow probes
+    cannot stretch the wait to minutes.
 
     The upstream original has no Pages route, so restoring it checks the API only.
     """
@@ -126,11 +140,14 @@ def healthy(name, probe, sleep, attempts=45, pages=True):
         "    sys.exit(0 if error.code in (401, 403) else 1)\n"
         "sys.exit(1)"
     )
+    start = clock()
     for _ in range(attempts):
         if probe("exec", name, "python", "-c", api) and (
             not pages or probe("exec", name, "python", "-c", route)
         ):
             return
+        if clock() - start >= budget:
+            break
         sleep(1)
     raise ValueError("API health check failed")
 
@@ -156,26 +173,119 @@ def build_context(base_image, source):
     return stream.getvalue()
 
 
-def docker_create(name, body):
-    """Create a container through the Docker API socket; the body stays in this process."""
+def docker_create(name, body, timeout=30):
+    """Create a container through the Docker API socket; the body stays in this process.
+
+    The socket has a timeout and is always closed. A failure names only the HTTP status or the
+    kind of error, never the body, the socket path or the response text.
+    """
 
     class DockerHTTP(http.client.HTTPConnection):
         def connect(self):
             self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.settimeout(timeout)
             self.sock.connect("/var/run/docker.sock")
 
+    failed = "Derived API container creation failed ("
     connection = DockerHTTP("localhost")
-    connection.request(
-        "POST",
-        "/containers/create?name=" + name,
-        body=json.dumps(body),
-        headers={"Content-Type": "application/json"},
+    try:
+        connection.request(
+            "POST",
+            "/containers/create?name=" + name,
+            body=json.dumps(body),
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        response.read()
+        status = response.status
+    except (OSError, http.client.HTTPException) as failure:
+        raise ValueError(failed + type(failure).__name__ + ")") from None
+    finally:
+        connection.close()
+    if status != 201:
+        raise ValueError(failed + "HTTP " + str(status) + ")")
+
+
+def build_image(base, source, digest, docker):
+    """Build the derived image tag for `digest` from `base` and `source`; return the tag.
+
+    stdout is discarded. On failure the error carries the exit code and a bounded tail of
+    docker's stderr (last 5 lines, 200 characters each): the build context holds no runtime
+    configuration, so none can appear.
+    """
+    image = NEUTRAL_PAGES_IMAGE_PREFIX + digest[:16]
+    try:
+        docker(
+            "build",
+            "-t",
+            image,
+            "-",
+            input=build_context(base, source),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError as failure:
+        lines = (failure.stderr or b"").decode(errors="replace").splitlines()
+        tail = " | ".join(line.strip()[:200] for line in lines[-5:] if line.strip())
+        raise ValueError(
+            "Image build failed (exit "
+            + str(failure.returncode)
+            + ")"
+            + (": " + tail if tail else "")
+        ) from None
+    return image
+
+
+def retained_names(name, docker):
+    """Sorted rollback and retired containers of `name`; empty if the listing fails."""
+    prefixes = (
+        backup_name(name),
+        name + "-pages-reverted-",
+        name + "-pages-failed-",
     )
-    response = connection.getresponse()
-    response.read()
-    if response.status != 201:
-        raise ValueError("Derived API container creation failed")
-    connection.close()
+    pattern = "^" + name + "(" + NEUTRAL_PAGES_BACKUP_SUFFIX + "|-pages-(reverted|failed)-)"
+    try:
+        listing = docker("ps", "-a", "--filter", "name=" + pattern, "--format", "{{.Names}}")
+    except subprocess.CalledProcessError:
+        return []
+    return sorted(n for n in listing.decode().split() if n.startswith(prefixes))
+
+
+def retained_note(name, docker):
+    """` Retained containers: ...` for the operator message, or '' when none (up to 20 named)."""
+    names = retained_names(name, docker)
+    if not names:
+        return ""
+    more = "; " + str(len(names) - 20) + " more" if len(names) > 20 else ""
+    note = "; retained containers: " + ", ".join(names[:20]) + more
+    if any(not n.startswith(backup_name(name)) for n in names):
+        note += "; run prune to remove retired ones"
+    return note
+
+
+def prune(name, docker, probe):
+    """Remove stopped `-pages-reverted-*` and `-pages-failed-*` containers of `name`.
+
+    Never touches the live API, the rollback container, a running container, or anything outside
+    those two name prefixes. Reports what was removed, kept running or could not be removed.
+    """
+    retired = [n for n in retained_names(name, docker) if n != backup_name(name)]
+    if not retired:
+        return "No retired containers to prune"
+    removed, running, stuck = [], [], []
+    for container in retired:
+        if json.loads(docker("inspect", container))[0]["State"].get("Running"):
+            running.append(container)
+        elif probe("rm", container):
+            removed.append(container)
+        else:
+            stuck.append(container)
+    parts = ["Pruned: " + ", ".join(removed) if removed else "Nothing pruned"]
+    if running:
+        parts.append("kept running: " + ", ".join(running))
+    if stuck:
+        parts.append("could not remove: " + ", ".join(stuck))
+    return "; ".join(parts)
 
 
 def check(current, payload, health):
@@ -194,22 +304,22 @@ def restore_any(name, backup, reverted, probe, docker, policy):
     aside = reverted + "-aside"
     try:
         if probe("inspect", name):
-            probe("update", "--restart=" + policy, name)
+            set_restart(probe, policy, name)
             if probe("start", name):
                 return
             if not probe("rename", name, aside):
                 return
-            probe("update", "--restart=no", aside)
+            set_restart(probe, "no", aside)
         for source in (reverted, backup):
             if probe("inspect", source) and probe("rename", source, name):
-                probe("update", "--restart=" + policy, name)
+                set_restart(probe, policy, name)
                 if probe("start", name):
                     return
                 if probe("rename", name, source):
-                    probe("update", "--restart=no", source)
+                    set_restart(probe, "no", source)
         if probe("inspect", aside):
             if probe("rename", aside, name):
-                probe("update", "--restart=" + policy, name)
+                set_restart(probe, policy, name)
                 probe("start", name)
     finally:
         # Return a parked container to its former name: derived -> reverted, original -> backup.
@@ -242,9 +352,9 @@ def finish_revert(name, backup, docker, probe, health):
     if policy is None:
         policy = held_policy(held)
     for parked_name in parked:
-        probe("update", "--restart=no", parked_name)  # Never auto-start beside the API.
+        set_restart(probe, "no", parked_name)  # Never auto-start beside the API.
     docker("rename", backup, name)
-    probe("update", "--restart=" + policy, name)
+    set_restart(probe, policy, name)
     docker("start", name)
     health(name, pages=False)  # On failure the original stays running.
     return "Original API container restored"
@@ -268,11 +378,11 @@ def revert(current, payload, backup, docker, probe, health, now):
         done.append("stop")
         docker("stop", name)
         docker("rename", name, reverted)
-        probe("update", "--restart=no", reverted)
+        set_restart(probe, "no", reverted)
         done.append("derived")
         docker("rename", backup, name)
         done.append("original")
-        probe("update", "--restart=" + policy, name)
+        set_restart(probe, policy, name)
         docker("start", name)
         health(name, pages=False)
     except BaseException as error:
@@ -280,16 +390,18 @@ def revert(current, payload, backup, docker, probe, health, now):
             if "original" in done:
                 docker("stop", name)
                 docker("rename", name, backup)
-                probe("update", "--restart=no", backup)
+                set_restart(probe, "no", backup)
             if "derived" in done:
                 docker("rename", reverted, name)
-            probe("update", "--restart=" + policy, name)
+            set_restart(probe, policy, name)
             docker("start", name)
         except Exception:
             restore_any(name, backup, reverted, probe, docker, policy)
             raise error  # Recovery error stays as __context__.
         raise
-    return "Original API container restored; derived container retained stopped"
+    return "Original API container restored; derived container retained stopped" + retained_note(
+        name, docker
+    )
 
 
 def failed_name(name, probe, now):
@@ -330,11 +442,11 @@ def reconcile(current, name, backup, docker, probe, health, now):
         policy = restart_arg(current)  # Copied from the original before its retirement.
         failed = failed_name(name, probe, now)
         docker("rename", name, failed)
-        probe("update", "--restart=no", failed)
+        set_restart(probe, "no", failed)
     else:
         raise refuse
     docker("rename", backup, name)
-    probe("update", "--restart=" + policy, name)
+    set_restart(probe, policy, name)
     docker("start", name)
     health(name, pages=False)
 
@@ -345,16 +457,7 @@ def derive(base_container, payload, docker):
     if not base.get("RepoDigests"):
         raise ValueError("Running image has no immutable registry digest")
     digest = payload["digest"]
-    image = NEUTRAL_PAGES_IMAGE_PREFIX + digest[:16]
-    docker(
-        "build",
-        "-t",
-        image,
-        "-",
-        input=build_context(base["RepoDigests"][0], payload["source"].encode()),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    image = build_image(base["RepoDigests"][0], payload["source"].encode(), digest, docker)
     namespace = {"NEUTRAL_PAGES_LABEL": NEUTRAL_PAGES_LABEL}  # the shipped replacement reads this
     exec(payload["replacement"], namespace)  # noqa: S102 - source shipped by main()
     return namespace["replacement"](base_container, image, payload["live_url"], digest)
@@ -380,7 +483,7 @@ def apply(current, payload, backup, docker, probe, create, health, now):
     except BaseException:
         probe("start", name)  # Never leave the live API stopped; its policy is unchanged.
         raise
-    probe("update", "--restart=no", backup)  # After the rename: a failed rename keeps the policy.
+    set_restart(probe, "no", backup)  # After the rename: a failed rename keeps the policy.
     try:
         create(name, body)
         docker("start", name)
@@ -390,12 +493,15 @@ def apply(current, payload, backup, docker, probe, create, health, now):
             probe("stop", name)
             failed = failed_name(name, probe, now)
             docker("rename", name, failed)
-            probe("update", "--restart=no", failed)
+            set_restart(probe, "no", failed)
         docker("rename", backup, name)
-        probe("update", "--restart=" + policy, name)
+        set_restart(probe, policy, name)
         docker("start", name)
         raise
-    return "Pages derived image applied; API healthy; original container retained for rollback"
+    return (
+        "Pages derived image applied; API healthy; original container retained for rollback"
+        + retained_note(name, docker)
+    )
 
 
 def build(payload, docker):
@@ -413,16 +519,7 @@ def build(payload, docker):
         digests = None
     if not digests:
         raise ValueError("Upstream image missing or has no registry digest")
-    image = NEUTRAL_PAGES_IMAGE_PREFIX + payload["digest"][:16]
-    docker(
-        "build",
-        "-t",
-        image,
-        "-",
-        input=build_context(digests[0], payload["source"].encode()),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    image = build_image(digests[0], payload["source"].encode(), payload["digest"], docker)
     return image + " " + payload["digest"]
 
 
@@ -448,6 +545,8 @@ def deploy(payload, docker, probe, create, health, now):
     found = legacy_state(current, name, listed, docker)
     if found:
         raise ValueError(refusal(found))
+    if operation == "prune":
+        return prune(name, docker, probe)
     if missing is not None:
         # A missing API with a rollback container is a half-finished apply or revert.
         if operation not in ("apply", "revert") or not probe("inspect", backup):
@@ -471,10 +570,15 @@ REMOTE = program(
         listed_names,
         legacy_state,
         restart_arg,
+        set_restart,
         source_label,
         healthy,
         build_context,
         docker_create,
+        build_image,
+        retained_names,
+        retained_note,
+        prune,
     ]
     + [
         check,
@@ -529,6 +633,12 @@ def main():
         payload = dict(operation=operation, worker=worker, backend_image=image, source=source)
         payload["digest"] = digest
         run_remote(host, REMOTE, payload)
+        return
+    if operation == "prune":
+        host, container = require_env("PLANE_MCP_SSH", "PLANE_API_CONTAINER")
+        if host.startswith("-") or not container.replace("-", "").replace("_", "").isalnum():
+            raise ValueError("Invalid deployment destination")
+        run_remote(host, REMOTE, dict(operation=operation, container=container))
         return
     host, container, live_url = require_env(
         "PLANE_MCP_SSH", "PLANE_API_CONTAINER", "PLANE_LIVE_URL"
