@@ -309,7 +309,7 @@ def test_backup_read_error_kills_and_waits_for_child(tmp_path):
 
 
 def test_shipped_program_defines_every_global_its_functions_reference():
-    imports = {"hashlib", "json", "os", "pathlib", "stat", "subprocess", "time"}
+    imports = wr.IMPORTS
     source = program(
         imports,
         [real_docker, *wr.SHIPPED],

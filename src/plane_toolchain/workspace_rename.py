@@ -11,6 +11,7 @@ payload carries to `manage.py shell`.
 Messages never carry receipt or journal content.
 """
 
+import fcntl
 import hashlib
 import inspect
 import json
@@ -685,10 +686,8 @@ def slug_state(api, snippet, old, new, workspace_id, directory, popen, uid=None)
         return "unknown"
 
 
-def deploy(data, seams):
+def run_apply(data, seams):
     """Run `check` (read-only), `apply` or `revert` (both resumable) for one workspace rename.
-
-    `revert` is handed to revert(); the rest of this docstring describes check and apply.
 
     data: operation, from, to, api (container), snippet (source), optional receipt_dir,
     services (PLANE_*_CONTAINER overrides), live_url and api_url. seams: docker, popen, clock,
@@ -714,8 +713,6 @@ def deploy(data, seams):
     crash = seams.get("crash") or (lambda label: None)
     uid = os.geteuid() if seams.get("uid") is None else seams["uid"]
     operation = data.get("operation")
-    if operation == "revert":
-        return revert(data, seams)
     if operation not in ("check", "apply"):
         raise RuntimeError("expected check, apply or revert")
     old, new, api, snippet = data["from"], data["to"], data["api"], data["snippet"]
@@ -931,7 +928,7 @@ def deploy(data, seams):
 # --- T8: revert from the receipt -------------------------------------------------------------
 
 
-def revert(data, seams):
+def run_revert(data, seams):
     """Revert one workspace rename from its receipt and journal; resumable like apply.
 
     Same payload and seams as deploy. Steps (effect, then advance): reverting (the receipt
@@ -1116,6 +1113,73 @@ def revert(data, seams):
     return f"Revert complete: {new} is back to {old}"
 
 
+LOCK_FILE = "run.lock"
+
+
+def lock_run(directory, uid, create):
+    """Take the exclusive run lock of a receipt directory; return its descriptor, or None.
+
+    Apply and revert hold it for the whole run, so a second run (a double start, or a dropped
+    SSH session whose remote program keeps going) refuses instead of driving a second state
+    machine over one receipt. It is `flock` on `run.lock` (0600, same private-file checks as the
+    receipt), released by closing the descriptor or when the process dies. With create False and
+    no directory there is nothing to lock: the preflight refuses with "no receipt"."""
+    directory = pathlib.Path(directory)
+    if create:
+        secure_receipt_dir(directory, uid)
+    elif not os.path.lexists(directory):
+        return None
+    else:
+        secure_receipt_dir(directory, uid)
+    path = directory / LOCK_FILE
+    if os.path.lexists(path):
+        private_file_check(path, uid, False)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        private_file_check(path, uid, False)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError(
+                "Refused: another apply or revert holds the lock on the receipt directory; "
+                "wait for it to finish, or check the host for a run still going"
+            ) from None
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def run_locked(data, seams, run, create):
+    """Run `run(data, seams)` while holding the run lock of the receipt directory."""
+    uid = os.geteuid() if seams.get("uid") is None else seams["uid"]
+    directory = pathlib.Path(data.get("receipt_dir") or receipt_dir(os.environ))
+    descriptor = lock_run(directory, uid, create)
+    try:
+        return run(data, seams)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def deploy(data, seams):
+    """Run `check` (read-only), `apply` or `revert` (both resumable) for one workspace rename.
+
+    `check` takes no lock and writes nothing. `apply` and `revert` first take the run lock and
+    refuse at once if another run holds it; see run_apply and run_revert for the steps."""
+    operation = data.get("operation")
+    if operation == "revert":
+        return revert(data, seams)
+    if operation == "apply":
+        return run_locked(data, seams, run_apply, True)
+    return run_apply(data, seams)
+
+
+def revert(data, seams):
+    """Revert one workspace rename under the run lock; see run_revert."""
+    return run_locked(data, seams, run_revert, False)
+
+
 def host_seams():
     return {"docker": docker, "popen": subprocess.Popen, "clock": time.time, "sleep": time.sleep}
 
@@ -1163,7 +1227,11 @@ SHIPPED = (
     reset_receipt,
     verify_backup,
     slug_state,
+    run_revert,
     revert,
+    run_apply,
+    lock_run,
+    run_locked,
     deploy,
     host_seams,
 )
@@ -1175,8 +1243,9 @@ SHIPPED_CONSTANTS = {
     "SHELL": SHELL,
     "APPLY_OPS": APPLY_OPS,
     "INTERRUPTED": INTERRUPTED,
+    "LOCK_FILE": LOCK_FILE,
 }
-IMPORTS = {"hashlib", "json", "os", "pathlib", "stat", "subprocess", "time"}
+IMPORTS = {"fcntl", "hashlib", "json", "os", "pathlib", "stat", "subprocess", "time"}
 FUNCTIONS = (docker, *SHIPPED)
 
 

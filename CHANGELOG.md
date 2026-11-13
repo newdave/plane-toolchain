@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 
 - Workspace rename: appending to `records.jsonl` after a kill that left a torn final line first repairs the tail (adds the missing newline to a whole record, or truncates a partial one back to the last newline, fsynced), so the new record is no longer glued onto it and lost or refused as a corrupt line (PTC-58).
+- Workspace rename: apply and revert take an exclusive `flock` on `run.lock` (0600, private-file checked) in the receipt directory for the whole run and refuse before any stop when another run holds it; `check` takes none (PTC-59).
 
 ## [0.2.1] - 2026-11-14
 

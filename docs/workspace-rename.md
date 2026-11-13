@@ -25,7 +25,8 @@ Plane stores every relation and asset key against the workspace UUID, so only th
 Apply writes a receipt directory on the host (default `~/.local/state/plane-toolchain/workspace-rename` of the SSH user, mode 0700, files 0600):
 
 - `receipt.json`: the step, phase and rotation record.
-- `records.jsonl`: the journal, one line per rewritten row with its original values, written before the row changes.
+- `records.jsonl`: the journal, one line per rewritten row with its original values, written before the row changes. A kill mid-append can leave a torn last line; the next append repairs it first, so it never corrupts the record that follows.
+- `run.lock`: the lock file that keeps two runs apart.
 - `backup.dump`: a `pg_dump -Fc` of the Plane database, with its SHA-256 in the receipt.
 
 The receipt directory holds copies of workspace content. Keep it owner-only, never print or share it, and never delete it.
@@ -140,6 +141,8 @@ Every refusal runs before the first stop, so a refused apply changes nothing. Th
 | `complete` | Health: the API answers 200, the new slug is held by the journalled workspace and the old slug is held by none. |
 
 The outage lasts from `stopped` to `started`, and grows with the number of rows to rebuild through Live.
+
+Apply and revert hold an exclusive lock (`run.lock` in the receipt directory, mode 0600) for the whole run. A second run, for example a double start or a rerun while the host program of a dropped SSH session is still going, refuses before it stops anything with `Refused: another apply or revert holds the lock on the receipt directory`. Wait for the first run, or look on the host for it. The lock goes when the run ends or its process dies. `check` takes no lock.
 
 A run that is already `complete` says `Rename already complete`. A rerun after a kill says `Resuming the rename from step <step>` and stops services again before continuing.
 
