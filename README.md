@@ -30,6 +30,7 @@ Follow [configuration](docs/configuration.md) before enabling remote access. Sta
 
 - [Configuration and client integration](docs/configuration.md)
 - [CE extension contract and deployment](docs/extensions.md)
+- [Workspace slug rename runbook](docs/workspace-rename.md)
 - [Installing into other projects](docs/project-install.md)
 - [GitHub Actions integration](docs/github-actions.md)
 - [Live CLI evaluation and recommendation](docs/cli-evaluation.md)
