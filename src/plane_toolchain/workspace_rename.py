@@ -1,10 +1,9 @@
 """Workspace slug rename: owner-side tooling.
 
-This slice holds only the host receipt and journal store. These functions later run on the
-host inside the stdlib-only REMOTE built by program(), so they take every path as an argument
-and use the standard library only. For program(), ship: write_atomic (from mcp_deploy),
-receipt_dir, secure_receipt_dir, private_file_check, step_order, write_receipt, new_receipt,
-load_receipt, advance, append_journal and load_journal.
+These functions run on the host inside the stdlib-only REMOTE built by program(), so they take
+every path as an argument and use the standard library only. SHIPPED lists what program()
+ships: write_atomic (from mcp_deploy) and the receipt, Docker and backup functions below.
+`say` and the `docker` helper come from remote.py; program() adds `say` itself.
 
 Messages never carry receipt or journal content.
 """
@@ -208,21 +207,31 @@ def service_names(environ):
 
 
 def queue_depth(mq, docker):
-    """Total messages (ready and unacknowledged) across all RabbitMQ queues."""
+    """Messages (ready and unacknowledged) across the queues of the configured RabbitMQ vhost.
+
+    Returns None when no `celery` queue is listed, so the caller cannot mistake a wrong or empty
+    vhost for a drained queue. The vhost is expanded inside the container; argv holds no secret.
+    """
+    probe = 'rabbitmqctl list_queues -q -p "${RABBITMQ_DEFAULT_VHOST:-/}" name messages'
     try:
-        out = docker("exec", mq, "rabbitmqctl", "list_queues", "-q", "name", "messages")
+        out = docker("exec", mq, "sh", "-c", probe)
     except subprocess.CalledProcessError:
         raise RuntimeError("queue probe failed") from None
-    total = 0
+    total, celery = 0, False
     for line in out.decode().splitlines():
         fields = line.split()
+        if fields and fields[0] == "celery":
+            celery = True
         if fields and fields[-1].isdigit():
             total += int(fields[-1])
-    return total
+    return total if celery else None
 
 
 def drain_queue(mq, docker, clock, sleep, timeout=DRAIN_SECONDS, interval=DRAIN_INTERVAL):
-    """Poll until the queue is empty or timeout passes; return jobs left. Never purges."""
+    """Poll until the queue is empty or timeout passes; return jobs left. Never purges.
+
+    Returns None at once when the celery queue is not listed: there is nothing to wait for.
+    """
     deadline = clock() + timeout
     remaining = queue_depth(mq, docker)
     while remaining and clock() < deadline:
@@ -237,7 +246,10 @@ def stop_services(names, docker, clock, sleep, crash=lambda label: None):
     docker("stop", names["beat"])
     crash("after_stop_" + names["beat"])
     remaining = drain_queue(names["mq"], docker, clock, sleep)
-    say("Queue drained" if not remaining else f"{remaining} jobs still queued; not purged")
+    if remaining is None:
+        say("Warning: celery queue not found; drain not verified")
+    else:
+        say("Queue drained" if not remaining else f"{remaining} jobs still queued; not purged")
     crash("after_drain")
     for key in ("worker", "web", "space", "admin"):
         crash("before_stop_" + names[key])
@@ -345,6 +357,7 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None):
 
 
 SHIPPED = (
+    write_atomic,
     secure_receipt_dir,
     private_file_check,
     step_order,

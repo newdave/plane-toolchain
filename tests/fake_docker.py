@@ -36,6 +36,8 @@ class FakeDocker:
         self.pg_dump = b"PGDMP-fake-dump"
         self.pg_dump_code = 0
         self.queue_depths = [0]
+        self.celery_listed = True
+        self.queue_probes = []
         self.crash_label = None
 
     def add(self, name, labels=None, running=True, healthy=True, hostname=None, **host_config):
@@ -167,7 +169,10 @@ class FakeDocker:
             return code, stdout if isinstance(stdout, bytes) else stdout.encode()
         if rest[-1].startswith("pg_dump"):
             return self.pg_dump_code, self.pg_dump
-        if "rabbitmqctl" in rest and "list_queues" in rest:
+        if "rabbitmqctl" in " ".join(rest) and "list_queues" in " ".join(rest):
+            self.queue_probes.append(" ".join(rest[1:]))
+            if not self.celery_listed:  # e.g. the probe hit a different vhost
+                return 0, b"other\t0\n"
             depths = self.queue_depths
             depth = depths.pop(0) if len(depths) > 1 else depths[0]
             return 0, f"celery\t{depth}\nother\t0\n".encode()

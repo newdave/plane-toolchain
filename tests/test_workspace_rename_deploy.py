@@ -1,7 +1,9 @@
+import builtins
 import hashlib
 import json
 import stat
 import subprocess
+import symtable
 
 import pytest
 from fake_docker import FakeDocker, Killed, run_program
@@ -80,7 +82,7 @@ def test_stop_order_beat_then_drain_then_worker_then_web_space_admin(fake):
     order = [
         c[1] if c[0] in ("stop", "restart") else "drain"
         for c in fake.calls
-        if c[0] in ("stop", "restart") or "rabbitmqctl" in c
+        if c[0] in ("stop", "restart") or any("rabbitmqctl" in a for a in c)
     ]
     first_drain = order.index("drain")
     last_drain = len(order) - 1 - order[::-1].index("drain")
@@ -135,6 +137,25 @@ def test_start_reverse_order(fake):
         for n in ("plane-admin", "plane-space", "plane", "plane-worker", "plane-beat-worker")
     ]
     assert all(fake.containers[n]["running"] for n in ALL)
+
+
+def test_drain_probes_the_configured_vhost_without_secrets_in_argv(fake):
+    clock = Clock()
+    wr.drain_queue(NAMES["mq"], fake.docker, clock, clock.sleep)
+    probe = fake.queue_probes[0]
+    assert '-p "${RABBITMQ_DEFAULT_VHOST:-/}"' in probe and "sh -c" in probe
+    assert "plane" not in probe.replace(NAMES["mq"], "")
+
+
+def test_drain_reports_celery_queue_not_found_instead_of_drained(fake, capsys):
+    fake.celery_listed = False
+    clock = Clock()
+    assert wr.drain_queue(NAMES["mq"], fake.docker, clock, clock.sleep) is None
+    assert clock.now == 0
+    stop(fake)
+    out = capsys.readouterr().out
+    assert "celery queue not found" in out and "Queue drained" not in out
+    assert not fake.containers[NAMES["web"]]["running"]  # a warning, not a failure
 
 
 def test_only_docker_stop_start_restart_used(fake, tmp_path):
@@ -233,7 +254,7 @@ def test_shipped_program_stops_backs_up_and_starts(fake, tmp_path, monkeypatch):
     )
     source = program(
         {"hashlib", "json", "os", "pathlib", "stat", "subprocess", "time"},
-        [real_docker, wr.write_atomic, *wr.SHIPPED],
+        [real_docker, *wr.SHIPPED],
         entry,
         {"DIR": str(directory), **wr.SHIPPED_CONSTANTS},
     )
@@ -278,3 +299,28 @@ def test_backup_read_error_kills_and_waits_for_child(tmp_path):
         wr.backup_database("plane-db", directory, lambda argv, **kw: Process())
     assert events == ["kill", "wait"]
     assert not list(directory.glob("backup.dump*"))
+
+
+def test_shipped_program_defines_every_global_its_functions_reference():
+    imports = {"hashlib", "json", "os", "pathlib", "stat", "subprocess", "time"}
+    source = program(
+        imports,
+        [real_docker, *wr.SHIPPED],
+        "",
+        {"DIR": "x", **wr.SHIPPED_CONSTANTS},
+    )
+    table = symtable.symtable(source, "<program>", "exec")
+    defined = {s.get_name() for s in table.get_symbols() if s.is_assigned() or s.is_imported()}
+    defined |= {s.get_name() for s in table.get_symbols() if s.is_namespace()}
+    defined |= set(dir(builtins))
+    missing = {}
+
+    def walk(scope):
+        for child in scope.get_children():
+            for symbol in child.get_symbols():
+                if symbol.is_global() and symbol.get_name() not in defined:
+                    missing.setdefault(child.get_name(), set()).add(symbol.get_name())
+            walk(child)
+
+    walk(table)
+    assert not missing, f"shipped functions use names the program does not define: {missing}"
