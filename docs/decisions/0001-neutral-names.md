@@ -76,9 +76,16 @@ CHANGELOG history only, and marks this ADR as superseded.
 
 ### Removal (PTC-30)
 
-On 2026-11-13 the owner chose "Override the ADR now: remove the legacy reads and merge". This waived the deprecation window gates. At that time no tagged release shipped the read-both code (v0.1.0 predates it), the host had not been redeployed, the 30-day window had not started, and the host still had legacy labels, receipts and backups.
+On 2026-11-13 the owner chose "Override the ADR now: remove the legacy reads and merge". This waived the deprecation window gates, which required that:
 
-The helpers now read and write only neutral names. One deviation from the plan above: `legacy.py` is kept, with four refuse-only names (the Pages backup suffix, the Pages source label, the MCP backup file and the MCP receipt). The Pages and MCP helpers refuse, before any change, when they find any of them. The reason is safety. An unmigrated host must be refused, not misread as a clean host. The refusal points to commit `1cb6153`, the last read-both commit, whose owner tasks migrate such a host.
+- a tagged release ships the read-both behaviour;
+- the live host has been redeployed with that release (PTC-23) and `check` passes for both helpers;
+- at least 30 days have passed since that redeploy;
+- a read-only host inventory finds no legacy containers, images, labels, backups or receipts.
+
+At that time no tagged release shipped the read-both code (v0.1.0 predates it), the host had not been redeployed, the 30-day window had not started, and the host still had legacy labels, receipts and backups.
+
+The helpers now read and write only neutral names. One deviation from the plan above: `legacy.py` is kept, with four refuse-only names (the Pages backup suffix, the Pages source label, the MCP backup file and the MCP receipt). The Pages and MCP helpers refuse, before any change, when they find any of them (Pages `build` only creates an image and is not checked). The reason is safety. An unmigrated host must be refused, not misread as a clean host. The refusal points to commit `1cb6153`, the last read-both commit, whose owner tasks migrate such a host.
 
 The guard now allows legacy names only in `legacy.py`, this ADR, the CHANGELOG, the guard itself and the tripwire test fixtures.
 
@@ -94,8 +101,8 @@ attribution is lost.
 The AGENTS.md rule "Preserve ... legacy rollback receipt names" was replaced by a rule
 that treated legacy `terrainlink` names as read-only compatibility inputs, kept in
 `src/plane_toolchain/legacy.py` and changed only through the migration policy above. The
-rule also states that the current helpers still write legacy names until PTC-27 and PTC-28
-land, so nobody renames them ahead of the migration.
+rule also stated that the helpers still wrote legacy names until PTC-27 and PTC-28
+landed, so nobody renamed them ahead of the migration.
 
 ## Consequences
 
