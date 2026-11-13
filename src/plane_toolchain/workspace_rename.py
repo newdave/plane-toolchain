@@ -521,48 +521,59 @@ def read_receipt(directory, uid):
 
 
 def finish_rotation(directory, uid):
-    """Complete a recorded backup rotation: backup.dump moves to `rotate_to`; never deleted.
+    """Complete the rotations a reset recorded in `rotating` ({file: new name}); never delete.
 
-    Link, then unlink, so a kill at any point leaves the dump under at least one name."""
+    Link, then unlink, so a kill at any point leaves each file under at least one name."""
     directory = pathlib.Path(directory)
     receipt = read_receipt(directory, uid)
-    target = receipt.get("rotate_to")
-    if not target:
-        return
-    dump, rotated = directory / "backup.dump", directory / target
-    if os.path.lexists(dump):
-        if not os.path.lexists(rotated):
-            os.link(dump, rotated)
-        elif not os.path.samefile(dump, rotated):
-            raise RuntimeError("rotated backup name is taken; refusing")
-        os.unlink(dump)
-        fsync_directory(directory)
-    elif not os.path.lexists(rotated):
-        raise RuntimeError("stale backup is missing; refusing")
-    receipt.pop("rotate_to")
-    write_receipt(directory, receipt)
+    rotating = receipt.get("rotating") or {}
+    for source, target in sorted(rotating.items()):
+        current, rotated = directory / source, directory / target
+        if os.path.lexists(current):
+            private_file_check(current, uid, False)
+            if not os.path.lexists(rotated):
+                os.link(current, rotated)
+            elif not os.path.samefile(current, rotated):
+                raise RuntimeError("rotated file name is taken; refusing")
+            os.unlink(current)
+            fsync_directory(directory)
+        elif not os.path.lexists(rotated):
+            raise RuntimeError("file set aside by the reset is missing; refusing")
+    if "rotating" in receipt:
+        receipt.pop("rotating")
+        write_receipt(directory, receipt)
 
 
 def reset_receipt(directory, clock, uid, crash=lambda label: None):
     """Explicitly put an apply receipt back to `pending` after a pre-slug failure.
 
-    `advance` never moves backward; this is the one deliberate exception. The backup is
-    rotated to a timestamped name (kept, never deleted) and its SHA-256 cleared, so the next
-    apply stops services again and takes a fresh dump. The receipt is written first, naming
-    the rotation; finish_rotation completes it now or on the next run."""
+    `advance` never moves backward; this is the one deliberate exception. The backup and the
+    journal are rotated to timestamped names (kept, never deleted; listed in `rotated_backups`
+    and `rotated_journals`) and the backup SHA-256 cleared, so the next apply stops services
+    again, takes a fresh dump and journals the originals it actually rewrites. A pre-slug
+    journal is safe to set aside: the slug transaction rolled back, so nothing it names was
+    changed. The receipt is written first, naming the rotations; finish_rotation completes them
+    now or on the next run."""
     directory = pathlib.Path(directory)
     receipt = read_receipt(directory, uid)
     if receipt.get("phase") != "apply":
         raise RuntimeError("only an apply receipt can be reset")
-    if os.path.lexists(directory / "backup.dump") and not receipt.get("rotate_to"):
-        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(clock()))
-        name, serial = "backup-" + stamp + ".dump", 0
-        taken = set(receipt.get("rotated_backups") or [])
+    rotating = dict(receipt.get("rotating") or {})
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(clock()))
+    rotations = {"backup.dump": "rotated_backups", "records.jsonl": "rotated_journals"}
+    for source, field in sorted(rotations.items()):
+        if source in rotating or not os.path.lexists(directory / source):
+            continue
+        stem, _, suffix = source.partition(".")
+        name, serial = stem + "-" + stamp + "." + suffix, 0
+        taken = set(receipt.get(field) or [])
         while name in taken or os.path.lexists(directory / name):
             serial += 1
-            name = "backup-" + stamp + "-" + str(serial) + ".dump"
-        receipt["rotate_to"] = name
-        receipt["rotated_backups"] = [*(receipt.get("rotated_backups") or []), name]
+            name = stem + "-" + stamp + "-" + str(serial) + "." + suffix
+        rotating[source] = name
+        receipt[field] = [*(receipt.get(field) or []), name]
+    if rotating:
+        receipt["rotating"] = rotating
     receipt["step"] = "pending"
     receipt.pop("backup_sha256", None)
     write_receipt(directory, receipt)
@@ -581,7 +592,7 @@ def verify_backup(directory, receipt, uid):
     """
     dump = pathlib.Path(directory) / "backup.dump"
     receipt = receipt or {}
-    if receipt.get("rotate_to") and receipt.get("step") == "pending":
+    if receipt.get("rotating") and receipt.get("step") == "pending":
         return "rotate"
     recorded = receipt.get("backup_sha256")
     present = os.path.lexists(dump)
@@ -642,8 +653,10 @@ def deploy(data, seams):
     pending, stopped, backed_up, slug_done, rows_done, cache_done, started, complete. Every
     refusal comes before the first stop. A resume between stopped and cache_done stops the
     services again first (idempotent). A failure before the slug change restarts the services
-    and resets the receipt to pending with the backup rotated, so the next apply stops again
-    and takes a fresh dump; a kill keeps the receipt, and its matching backup is reused. An
+    and resets the receipt to pending with the backup and journal rotated, so the next apply
+    stops again and takes a fresh dump; a kill keeps the receipt, and its matching backup is
+    reused unless a service ran again before the slug change (then it is rotated too). A
+    failure to stop again on resume after a possible slug commit is probed, never reset. An
     unclear step_slug is probed read-only: renamed continues, original is a pre-slug failure,
     anything else stops with services down. After the slug change, a failure stops with
     services down for the operator to resume (apply) or revert. There is no automatic rollback.
@@ -776,22 +789,52 @@ def deploy(data, seams):
                 f"Rename health check failed: {reason}. Receipt left at started; services "
                 "are running. Investigate, then rerun apply to recheck, or run revert."
             )
-        state = "Some services did not start" if target == "started" else "Services stay stopped"
+        if target == "started":
+            state = "Some services did not start"
+        elif target == step:  # stopping services again on resume failed
+            state = "Some services may still be running; stop them by hand"
+        else:
+            state = "Services stay stopped"
+        moving = "" if target == step else f" (moving to {target})"
         raise RuntimeError(
-            f"Rename stopped at {step} ({target}): {reason}. {state}. Rerun apply to resume, "
+            f"Rename stopped at {step}{moving}: {reason}. {state}. Rerun apply to resume, "
             "or run revert; nothing is rolled back automatically."
         )
+
+    def any_running():
+        for key in ("beat", "worker", "web", "space", "admin"):
+            state = json.loads(docker("inspect", names[key]))[0].get("State") or {}
+            if state.get("Running"):
+                return True
+        return False
 
     try:
         if backup_action == "rotate":
             finish_rotation(directory, uid)
         if at_or_past(step, "stopped") and not at_or_past(step, "started"):
-            say("Making sure services are stopped before resuming")
-            stop()
+            # A service running again since the kill may have changed data after the backup.
+            if not at_or_past(step, "slug_done") and not slug_committed and any_running():
+                say("Services ran again since the kill; setting the backup aside for a fresh one")
+                reset_receipt(directory, clock, uid, crash)
+                step, workspace_id, backup_action = "pending", None, None
+            else:
+                say("Making sure services are stopped before resuming")
+                stop()
     except Exception as failure:  # noqa: BLE001
+        reason = reason_of(failure)
         if at_or_past(step, "slug_done"):
-            post_slug_failure(step, reason_of(failure))
-        pre_slug_failure(step, reason_of(failure))
+            post_slug_failure(step, reason)
+        if workspace_id is not None:  # a slug step may have committed: never guess
+            state = slug_state(api, snippet, old, new, workspace_id, directory, popen, uid)
+            if state == "renamed":
+                post_slug_failure(step, reason)
+            if state != "original":
+                raise RuntimeError(
+                    f"Rename resume failed at {step}: {reason}; slug state unknown. Services "
+                    "were left as they are and nothing was reset. Check which workspace holds "
+                    "each slug and which services run, then rerun apply or run revert."
+                ) from None
+        pre_slug_failure(step, reason)
 
     while step != "complete":
         target = order[order.index(step) + 1]

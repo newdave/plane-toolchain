@@ -1148,6 +1148,7 @@ def test_reset_killed_after_receipt_write_finishes_rotation_on_resume(host):
         host.deploy()
     receipt = host.receipt()
     assert receipt["step"] == "pending" and (host.directory / "backup.dump").exists()
+    assert (host.directory / "records.jsonl").exists()
     host.deploy("check")  # check accepts the half-rotated state and writes nothing
     assert (host.directory / "backup.dump").read_bytes() == b"PGDMP-fake-dump"
     clear(host)
@@ -1155,20 +1156,98 @@ def test_reset_killed_after_receipt_write_finishes_rotation_on_resume(host):
     assert "Rename complete" in host.deploy()
     rotated = host.receipt()["rotated_backups"][0]
     assert (host.directory / rotated).read_bytes() == b"PGDMP-fake-dump"
-    assert "rotate_to" not in host.receipt()
+    journal = host.receipt()["rotated_journals"][0]
+    assert wr.load_journal(host.directory / ".", None) != []
+    assert '"kind":"workspace"' in (host.directory / journal).read_text()
+    assert "rotating" not in host.receipt()
 
 
 def test_kill_resume_restops_services_before_continuing(host):
     host.fake.crash_at("after_backed_up")
     with pytest.raises(Killed):
         host.deploy()
-    for name in ("plane", "plane-worker", "plane-beat-worker"):  # someone started them
-        host.fake.containers[name]["running"] = True
     mark = len(host.fake.calls)
     host.deploy()
     order = resumed_order(host.fake.calls[mark:])
     assert order.index("stop") < order.index("shell", 2)  # stop before step_slug
-    assert "pg_dump" not in order  # a kill keeps the matching backup
+    assert "pg_dump" not in order  # services stayed down: the matching backup is kept
+
+
+def test_kill_resume_with_services_running_takes_a_fresh_backup(host):
+    host.fake.crash_at("after_backed_up")
+    with pytest.raises(Killed):
+        host.deploy()
+    host.fake.containers["plane"]["running"] = True  # someone started web after the kill
+    host.fake.pg_dump = b"PGDMP-second-dump"
+    mark = len(host.fake.calls)
+    assert "Rename complete" in host.deploy()
+    order = resumed_order(host.fake.calls[mark:])
+    assert order.index("stop") < order.index("pg_dump") < order.index("shell", 2)
+    rotated = host.receipt()["rotated_backups"]
+    assert (host.directory / rotated[0]).read_bytes() == b"PGDMP-fake-dump"
+    assert (host.directory / "backup.dump").read_bytes() == b"PGDMP-second-dump"
+
+
+def test_kill_after_slug_commit_with_services_running_keeps_the_backup(host):
+    host.fake.crash_at("after_slug_done")
+    with pytest.raises(Killed):
+        host.deploy()
+    host.fake.containers["plane"]["running"] = True
+    assert "Rename complete" in host.deploy()
+    assert "rotated_backups" not in host.receipt()  # the dump is the pre-change state
+    assert sum("pg_dump" in " ".join(c) for c in host.fake.calls) == 1
+
+
+def test_restop_failure_after_slug_commit_is_a_post_slug_failure(host):
+    host.fake.crash_at("after_slug_done")
+    with pytest.raises(Killed):
+        host.deploy()
+    host.fake.fail.append(("stop", "plane-space"))
+    with pytest.raises(RuntimeError, match="Rerun apply to resume") as failure:
+        host.deploy()
+    assert "no data changed" not in str(failure.value)
+    assert "(backed_up)" not in str(failure.value)  # no "stopped at X (X)" duplicate
+    receipt = host.receipt()
+    assert receipt["step"] == "backed_up" and "rotated_backups" not in receipt
+    assert (host.directory / "backup.dump").exists()
+    assert not [c for c in host.fake.calls if c[0] == "start"]
+    assert "Rename complete" in host.deploy()
+
+
+def test_restop_failure_with_unknown_slug_state_leaves_services_alone(host):
+    host.fake.crash_at("after_slug_done")
+    with pytest.raises(Killed):
+        host.deploy()
+    real = host.shell
+    calls = {"n": 0}
+
+    def flaky(text):  # the preflight probe works; every later snippet call fails
+        calls["n"] += 1
+        return real(text) if calls["n"] <= 2 else ("", 1)
+
+    host.fake.on_manage_shell = flaky
+    host.fake.fail.append(("stop", "plane-space"))
+    mark = len(host.fake.calls)
+    with pytest.raises(RuntimeError, match="slug state unknown"):
+        host.deploy()
+    assert not [c for c in host.fake.calls[mark:] if c[0] == "start"]
+    assert host.receipt()["step"] == "backed_up"
+    assert (host.directory / "backup.dump").exists()
+
+
+def test_reset_rotates_the_journal_so_revert_restores_the_latest_originals(host):
+    host.shell.die_at = ("step_slug", 3)  # journals workspace, c1, d1, then rolls back
+    with pytest.raises(RuntimeError, match="Services restarted"):
+        host.deploy()
+    rotated = host.receipt()["rotated_journals"]
+    assert not (host.directory / "records.jsonl").exists()
+    assert '"id":"c1"' in (host.directory / rotated[0]).read_text()  # kept, never deleted
+    comment = host.orm.models["comment"].rows[0]
+    comment["comment_html"] = f'<a href="/{OLD}/x">edited by a user</a>'  # services were live
+    edited = snapshot(host.orm)
+    assert "Rename complete" in host.deploy()
+    revert_by_hand(host)  # reads only the current records.jsonl
+    assert snapshot(host.orm) == edited
 
 
 @pytest.mark.parametrize("step", ["slug_done", "rows_done", "cache_done"])
@@ -1255,15 +1334,27 @@ def test_entry_reports_interrupt_with_guidance_and_no_traceback(host, monkeypatc
     assert host.receipt()["step"] == "slug_done"
 
 
-def test_entry_turns_sigterm_into_an_interrupt():
-    assert "signal.SIGTERM" in wr.entry()
+def test_entry_turns_a_real_sigterm_into_guidance_without_traceback():
+    # The program blocks reading its payload, before any docker call; then SIGTERM arrives.
+    process = subprocess.Popen(  # noqa: S603 - this interpreter, the assembled program
+        [sys.executable, "-I", "-c", wr.REMOTE],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    time.sleep(1)
+    process.send_signal(signal.SIGTERM)
+    out, err = process.communicate(timeout=10)
+    assert process.returncode == 1
+    assert b"Rename interrupted (KeyboardInterrupt)" in err and b"Traceback" not in err
 
 
 def test_resume_runs_full_check_unless_at_or_past_slug_done(host, tmp_path):
     host.orm.models["workspace"].fail_update = True  # journals the workspace, then rolls back
     with pytest.raises(RuntimeError):
         host.deploy()
-    assert wr.journal_workspace(host.journal()) == "w1"
+    journal = host.directory / host.receipt()["rotated_journals"][0]  # set aside by the reset
+    assert '"kind":"workspace"' in journal.read_text()
     clear(host)
     mark = len(host.shell.requests)
     host.deploy()
