@@ -1,8 +1,10 @@
+import ast
 import base64
 import builtins
 import hashlib
 import io
 import json
+import signal
 import stat
 import subprocess
 import symtable
@@ -502,10 +504,13 @@ def run_remote(source, payload, host, monkeypatch, crash=None):
     monkeypatch.setattr(time, "sleep", lambda seconds: fake.calls.append(("sleep", seconds)))
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
     namespace = {"__name__": "__main__", "CRASH": crash or (lambda label: None)}
+    terminate = signal.getsignal(signal.SIGTERM)  # the entry installs its own handler
     try:
         exec(compile(source, "<string>", "exec"), namespace)  # noqa: S102
     except SystemExit as exit:
         return 1 if exit.code not in (0, None) else 0
+    finally:
+        signal.signal(signal.SIGTERM, terminate)
     return 0
 
 
@@ -586,7 +591,14 @@ def test_apply_happy_path_call_order_and_final_receipt_complete(host, monkeypatc
     assert receipt["step"] == "complete" and receipt["phase"] == "apply"
     dump = (host.directory / "backup.dump").read_bytes()
     assert receipt["backup_sha256"] == hashlib.sha256(dump).hexdigest()
-    assert host.ops() == ["check", "step_slug", "step_rows", "flush_cache", "health"]
+    assert host.ops() == [
+        "check",
+        "flush_cache",  # dry run, in the preflight
+        "step_slug",
+        "step_rows",
+        "flush_cache",
+        "health",
+    ]
     order = []
     for call in host.fake.calls:
         text = " ".join(call)
@@ -597,8 +609,8 @@ def test_apply_happy_path_call_order_and_final_receipt_complete(host, monkeypatc
         elif "pg_dump" in text:
             order.append("pg_dump")
     shells = [i for i, item in enumerate(order) if item == "shell"]
-    assert order[: shells[0] + 1] == ["shell"]  # read-only check before any stop
-    assert order[shells[0] + 1 : shells[1]] == [
+    assert order[: shells[1] + 1] == ["shell", "shell"]  # read-only preflight before any stop
+    assert order[shells[1] + 1 : shells[2]] == [
         "stop plane-beat-worker",
         "stop plane-worker",
         "stop plane",
@@ -607,7 +619,7 @@ def test_apply_happy_path_call_order_and_final_receipt_complete(host, monkeypatc
         "restart plane-live",
         "pg_dump",
     ]
-    assert order[shells[1] :] == [
+    assert order[shells[2] :] == [
         "shell",  # step_slug
         "shell",  # step_rows
         "shell",  # flush_cache
@@ -661,7 +673,8 @@ def test_health_failure_leaves_receipt_started_not_complete_and_exits_nonzero(
     assert all(host.running().values())
     host.shell.api["status"] = 200
     assert "Rename complete" in host.deploy()  # a rerun rechecks health only
-    assert host.ops()[-2:] == ["health", "health"]
+    assert host.ops()[-3:] == ["health", "flush_cache", "health"]
+    assert host.request("flush_cache")[-1] == {"dry_run": True}
     assert host.receipt()["step"] == "complete"
 
 
@@ -894,7 +907,7 @@ def test_backup_failure_restarts_services_and_changes_no_data(host):
     with pytest.raises(RuntimeError, match="Services restarted"):
         host.deploy()
     assert all(host.running().values())
-    assert host.receipt()["step"] == "stopped" and snapshot(host.orm) == before
+    assert host.receipt()["step"] == "pending" and snapshot(host.orm) == before
 
 
 def test_slug_step_failure_restarts_services(host):
@@ -902,7 +915,7 @@ def test_slug_step_failure_restarts_services(host):
     with pytest.raises(RuntimeError, match="Services restarted"):
         host.deploy()
     assert all(host.running().values())
-    assert host.receipt()["step"] == "backed_up"
+    assert host.receipt()["step"] == "pending"
     assert host.orm.models["workspace"].rows[0]["slug"] == OLD
 
 
@@ -971,3 +984,335 @@ def test_complete_receipt_is_a_no_op(host):
     host.fake.calls.clear()
     assert "already complete" in host.deploy()
     assert not mutating(host.fake)
+
+
+# --- PR #48 review fixes ---
+
+
+def first_op(text):
+    """The op of a piped program, from its `RENAME_REQUEST = ...loads('<json>')` line."""
+    line = text.split("\n", 1)[0]
+    return json.loads(ast.literal_eval(line[line.index(".loads(") + 7 : -1]))["op"]
+
+
+def sabotage(host, op, mode):
+    """Break the next `op` call. drop_summary: it runs, but its summary is lost; unrun: it exits
+    1 without running; mismatch: its summary names another workspace; dead: it and every later
+    call exit 1 without running, until the test restores host.shell."""
+    state = {"armed": True, "dead": False}
+
+    def handler(text):
+        hit = state["armed"] and first_op(text) == op
+        if hit:
+            state["armed"] = False
+            state["dead"] = mode == "dead"
+        if state["dead"] or (hit and mode == "unrun"):
+            return "", 1
+        out, code = host.shell(text)
+        if hit and mode == "drop_summary":
+            out = "".join(line for line in out.splitlines(True) if '"summary"' not in line)
+        if hit and mode == "mismatch":
+            out = out.replace('"workspace_id": "w1"', '"workspace_id": "w9"')
+        return out, code
+
+    host.fake.on_manage_shell = handler
+
+
+def fail_advance_once(monkeypatch, target):
+    real = wr.advance
+
+    def advance(directory, step, uid=None):
+        if step == target:
+            monkeypatch.setattr(wr, "advance", real)
+            raise OSError("disk full")
+        return real(directory, step, uid)
+
+    monkeypatch.setattr(wr, "advance", advance)
+
+
+# One-shot failures before slug_done; each must restart services and reset the receipt.
+def inject(host, failure, monkeypatch):
+    if failure == "drain_unverified":
+        host.fake.celery_listed = False
+    elif failure == "stop_fails":
+        host.fake.fail.append(("stop", "plane-space"))
+    elif failure == "advance_stopped_fails":
+        fail_advance_once(monkeypatch, "stopped")
+    elif failure == "backup_fails":
+        host.fake.pg_dump_code = 1
+    elif failure == "advance_backed_up_fails":
+        fail_advance_once(monkeypatch, "backed_up")
+    elif failure == "slug_update_fails":
+        host.orm.models["workspace"].fail_update = True
+    elif failure == "slug_unrun_exit":
+        sabotage(host, "step_slug", "unrun")
+    elif failure == "slug_snippet_dies":
+        host.shell.die_at = ("step_slug", 3)
+    else:
+        raise AssertionError(failure)
+
+
+def clear(host):
+    host.fake.celery_listed = True
+    host.fake.pg_dump_code = 0
+    host.orm.models["workspace"].fail_update = False
+    host.fake.on_manage_shell = host.shell
+
+
+PRE_SLUG_FAILURES = [
+    "drain_unverified",
+    "stop_fails",
+    "advance_stopped_fails",
+    "backup_fails",
+    "advance_backed_up_fails",
+    "slug_update_fails",
+    "slug_unrun_exit",
+    "slug_snippet_dies",
+]
+
+
+def resumed_order(calls):
+    """Positions of the first stop, the pg_dump and the step_slug shell in a call list."""
+    items = []
+    for call in calls:
+        if call[:2] == ("stop", "plane-beat-worker"):
+            items.append("stop")
+        elif "pg_dump" in " ".join(call):
+            items.append("pg_dump")
+        elif "manage.py" in call:
+            items.append("shell")
+    return items
+
+
+@pytest.mark.parametrize("failure", PRE_SLUG_FAILURES)
+def test_failure_and_restart_at_every_pre_slug_step_then_resume_stops_first(
+    host, failure, monkeypatch, tmp_path
+):
+    reference = reference_end_state(tmp_path)
+    inject(host, failure, monkeypatch)
+    with pytest.raises(RuntimeError, match="Services restarted"):
+        host.deploy()
+    assert all(host.running().values())
+    receipt = host.receipt()
+    assert receipt["step"] == "pending" and "backup_sha256" not in receipt
+    assert not (host.directory / "backup.dump").exists()
+    clear(host)
+    mark = len(host.fake.calls)
+    assert "Rename complete" in host.deploy()
+    order = resumed_order(host.fake.calls[mark:])
+    assert "stop" in order and "pg_dump" in order
+    # stop before the fresh backup, and the backup before step_slug (after check, dry flush)
+    assert (
+        order.index("stop") < order.index("pg_dump") < len(order) - 1 - order[::-1].index("shell")
+    )
+    assert order[: order.index("stop")] == ["shell", "shell"]
+    assert snapshot(host.orm) == snapshot(reference.orm)
+    assert all(host.running().values())
+
+
+@pytest.mark.parametrize("failure", PRE_SLUG_FAILURES)
+def test_failure_and_restart_at_every_pre_slug_step_then_revert_restores_original_state(
+    host, failure, monkeypatch
+):
+    original = snapshot(host.orm)
+    inject(host, failure, monkeypatch)
+    with pytest.raises(RuntimeError, match="Services restarted"):
+        host.deploy()
+    clear(host)
+    revert_by_hand(host)
+    assert snapshot(host.orm) == original
+    assert all(host.running().values())
+
+
+def test_reset_rotates_stale_backup_and_takes_a_fresh_dump(host):
+    host.orm.models["workspace"].fail_update = True
+    with pytest.raises(RuntimeError, match="Services restarted"):
+        host.deploy()
+    rotated = host.receipt()["rotated_backups"]
+    assert len(rotated) == 1 and (host.directory / rotated[0]).read_bytes() == b"PGDMP-fake-dump"
+    assert stat.S_IMODE((host.directory / rotated[0]).stat().st_mode) == 0o600
+    clear(host)
+    host.orm.models["workspace"].rows[1]["slug"] = "edited-meanwhile"  # services were live
+    host.fake.pg_dump = b"PGDMP-second-dump"
+    assert "Rename complete" in host.deploy()
+    assert (host.directory / "backup.dump").read_bytes() == b"PGDMP-second-dump"
+    assert (host.directory / rotated[0]).read_bytes() == b"PGDMP-fake-dump"  # kept
+    assert host.receipt()["backup_sha256"] == hashlib.sha256(b"PGDMP-second-dump").hexdigest()
+    assert sum("pg_dump" in " ".join(c) for c in host.fake.calls) == 2
+
+
+def test_reset_killed_after_receipt_write_finishes_rotation_on_resume(host):
+    host.orm.models["workspace"].fail_update = True
+    host.fake.crash_at("after_reset_receipt")
+    with pytest.raises(Killed):
+        host.deploy()
+    receipt = host.receipt()
+    assert receipt["step"] == "pending" and (host.directory / "backup.dump").exists()
+    host.deploy("check")  # check accepts the half-rotated state and writes nothing
+    assert (host.directory / "backup.dump").read_bytes() == b"PGDMP-fake-dump"
+    clear(host)
+    host.fake.pg_dump = b"PGDMP-second-dump"
+    assert "Rename complete" in host.deploy()
+    rotated = host.receipt()["rotated_backups"][0]
+    assert (host.directory / rotated).read_bytes() == b"PGDMP-fake-dump"
+    assert "rotate_to" not in host.receipt()
+
+
+def test_kill_resume_restops_services_before_continuing(host):
+    host.fake.crash_at("after_backed_up")
+    with pytest.raises(Killed):
+        host.deploy()
+    for name in ("plane", "plane-worker", "plane-beat-worker"):  # someone started them
+        host.fake.containers[name]["running"] = True
+    mark = len(host.fake.calls)
+    host.deploy()
+    order = resumed_order(host.fake.calls[mark:])
+    assert order.index("stop") < order.index("shell", 2)  # stop before step_slug
+    assert "pg_dump" not in order  # a kill keeps the matching backup
+
+
+@pytest.mark.parametrize("step", ["slug_done", "rows_done", "cache_done"])
+def test_resume_after_slug_done_restops_services(host, step):
+    host.fake.crash_at("after_" + wr.step_order("apply")[wr.step_order("apply").index(step) + 1])
+    with pytest.raises(Killed):
+        host.deploy()
+    assert host.receipt()["step"] == step
+    host.fake.containers["plane"]["running"] = True
+    mark = len(host.fake.calls)
+    host.deploy()
+    calls = host.fake.calls[mark:]
+    stop = calls.index(("stop", "plane"))
+    shells = [i for i, c in enumerate(calls) if "manage.py" in c]
+    assert stop < shells[-1]
+
+
+def test_step_slug_without_summary_but_renamed_continues_with_services_stopped(host):
+    sabotage(host, "step_slug", "drop_summary")
+    assert "Rename complete" in host.deploy()
+    calls = host.fake.calls
+    rows = [i for i, c in enumerate(calls) if "manage.py" in c][4]  # check, dry, slug, probe
+    assert not [c for c in calls[:rows] if c[0] == "start"]
+    assert "health" in host.ops()[: host.ops().index("step_rows")]  # the read-only probe
+
+
+def test_step_slug_workspace_mismatch_probes_and_continues_when_renamed(host):
+    sabotage(host, "step_slug", "mismatch")
+    assert "Rename complete" in host.deploy()
+    assert host.request("step_rows")[0]["workspace_id"] == "w1"
+
+
+def test_step_slug_unrun_with_old_slug_held_is_a_pre_slug_failure(host):
+    sabotage(host, "step_slug", "unrun")
+    with pytest.raises(RuntimeError, match="Services restarted"):
+        host.deploy()
+    assert host.receipt()["step"] == "pending" and all(host.running().values())
+
+
+def test_step_slug_ambiguous_outcome_stops_with_services_stopped(host):
+    sabotage(host, "step_slug", "dead")
+    with pytest.raises(RuntimeError, match="outcome unknown") as failure:
+        host.deploy()
+    assert "no data changed" not in str(failure.value)
+    assert "Services stay stopped" in str(failure.value)
+    assert not host.running()["plane"]
+    assert not [c for c in host.fake.calls if c[0] == "start"]
+    assert host.receipt()["step"] == "backed_up"
+    clear(host)
+    assert "Rename complete" in host.deploy()
+
+
+def test_start_services_tries_every_service_and_names_failures(fake):
+    stop(fake)
+    fake.fail.append(("start", "plane-space"))
+    fake.fail.append(("start", "plane-worker"))
+    with pytest.raises(RuntimeError, match="could not start: space, worker"):
+        wr.start_services(NAMES, fake.docker)
+    started = [c[1] for c in fake.calls if c[0] == "start"]
+    assert started == ["plane-admin", "plane-space", "plane", "plane-worker", "plane-beat-worker"]
+    assert fake.containers["plane-beat-worker"]["running"]
+
+
+def test_entry_reports_oserror_with_guidance_and_no_traceback(host, monkeypatch, capsys):
+    blocker = host.directory.parent / "not-a-directory"
+    blocker.write_text("")
+    payload = host.payload(receipt_dir=str(blocker / "receipts"))
+    assert run_remote(wr.REMOTE, payload, host, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "rerun apply" in err
+    assert "Rename interrupted (FileExistsError)" in err
+
+
+def test_entry_reports_interrupt_with_guidance_and_no_traceback(host, monkeypatch, capsys):
+    def interrupted(text):
+        if first_op(text) == "step_rows":
+            raise KeyboardInterrupt
+        return host.shell(text)
+
+    host.fake.on_manage_shell = interrupted
+    assert run_remote(wr.REMOTE, host.payload(), host, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "interrupted" in err.lower() and "revert" in err
+    assert host.receipt()["step"] == "slug_done"
+
+
+def test_entry_turns_sigterm_into_an_interrupt():
+    assert "signal.SIGTERM" in wr.entry()
+
+
+def test_resume_runs_full_check_unless_at_or_past_slug_done(host, tmp_path):
+    host.orm.models["workspace"].fail_update = True  # journals the workspace, then rolls back
+    with pytest.raises(RuntimeError):
+        host.deploy()
+    assert wr.journal_workspace(host.journal()) == "w1"
+    clear(host)
+    mark = len(host.shell.requests)
+    host.deploy()
+    assert [r["op"] for r in host.shell.requests[mark:]][0] == "check"
+    other = Host(tmp_path / "other")
+    other.fake.crash_at("after_rows_done")
+    with pytest.raises(Killed):
+        other.deploy()
+    mark = len(other.shell.requests)
+    other.deploy()
+    assert "check" not in [r["op"] for r in other.shell.requests[mark:]]
+
+
+def test_apply_preflight_runs_cache_dry_run_and_saltbox_before_any_stop(host, capsys):
+    host.deploy()
+    first_stop = next(i for i, c in enumerate(host.fake.calls) if c[0] == "stop")
+    before = host.fake.calls[:first_stop]
+    assert ("inspect", "plane-db") in before
+    assert host.shell.requests[1] == {"op": "flush_cache", "args": {"dry_run": True}}
+    assert sum("manage.py" in c for c in before) == 2
+    assert "Saltbox-managed host" in capsys.readouterr().out
+
+
+# Snippet process death right after a journal line, before that row's write. step_slug lines:
+# workspace, c1, d1, n1, e1 (one transaction, rolled back). step_rows lines: i1, p1 (per row).
+DEATHS = [("step_slug", 1), ("step_slug", 3), ("step_rows", 1), ("step_rows", 2)]
+
+
+@pytest.mark.parametrize("op,line", DEATHS)
+def test_snippet_death_after_journal_emit_then_resume_reaches_same_end_state(
+    host, op, line, tmp_path
+):
+    reference = reference_end_state(tmp_path)
+    host.shell.die_at = (op, line)
+    with pytest.raises(RuntimeError):
+        host.deploy()
+    if op == "step_rows":
+        assert host.receipt()["step"] == "slug_done" and not host.running()["plane"]
+        rows = {r["id"]: r["description_html"] for r in host.orm.models["issue"].rows}
+        assert (OLD in rows["i1"]) == (line == 1)  # line 2: i1 written, p1 journalled only
+    assert "Rename complete" in host.deploy()
+    assert snapshot(host.orm) == snapshot(reference.orm)
+
+
+@pytest.mark.parametrize("op,line", DEATHS)
+def test_snippet_death_after_journal_emit_then_revert_restores_original_state(host, op, line):
+    original = snapshot(host.orm)
+    host.shell.die_at = (op, line)
+    with pytest.raises(RuntimeError):
+        host.deploy()
+    revert_by_hand(host)
+    assert snapshot(host.orm) == original
