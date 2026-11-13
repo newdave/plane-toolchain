@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Python floor raised to 3.12 (`requires-python = ">=3.12"`); only 3.12 is tested (PTC-81).
+
+### Documentation
+
+- ADR 0001 Status now reads "Accepted; partly superseded by Removal (PTC-30)", and its read-both Migration policy, Deprecation window and Agent rule sections carry a historical banner (PTC-81).
+- `docs/configuration.md` lists config file locations per context (checkout, installed project, worktree) and records `.deploy/env` as a legacy fallback used only when `config/local.env` is absent; no behaviour change (PTC-81).
+
 ## [0.3.0] - 2026-11-14
 
 ### Fixed

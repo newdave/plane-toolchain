@@ -2,6 +2,19 @@
 
 All configuration applies to this checkout. No global Codex, Claude or shell files are changed.
 
+## Config file locations
+
+The paths depend on where the toolchain runs.
+
+| Context | Non-secret values | Encrypted key |
+| --- | --- | --- |
+| This repository's checkout | `config/local.env` (also `config/defaults.env`, `.env`) | `config/plane.enc.env` |
+| A project installed with `scripts/install_project.py` (has `.plane/plane.sh`) | `.plane/local.env` only | `.plane/plane.enc.env` |
+
+In a linked worktree of either, the main checkout's git-ignored file is the fallback, found through the git common dir. The worktree's own `local.env` overrides the main one per key. A worktree's own `plane.enc.env` wins when present.
+
+`.deploy/env` is a legacy fallback, used only when `config/local.env` is absent; it is read in place of `config/local.env`, with no main-checkout fallback. `plane:enable` and `plane:disable` refuse to create `config/local.env` beside a legacy `.deploy/env`: migrate it to `config/local.env` first.
+
 ## Connection values
 
 Inject these values into the process environment using your secret manager or CI settings:
