@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Workspace rename (PTC-82): the orphan sweep ignores read-only `check` snippets (now marked `check:<token>`) instead of refusing or killing them, and an old-format marker makes it refuse with the pid and the kill command instead of an unexplained refusal. The API-container clash check also compares container ids, not only names. `check` probes that `EmailNotificationLog` has no workspace column.
+
 ## [0.3.1] - 2026-11-14
 
 ### Fixed
