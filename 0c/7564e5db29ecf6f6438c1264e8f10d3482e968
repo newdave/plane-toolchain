@@ -1,0 +1,33 @@
+CHANGELOG.md
+  s_066dd3ba2255bd::t_ded6fe30e1e940 16
+tests/test_workspace_rename_deploy.py
+  s_066dd3ba2255bd::t_552953f406868a 117-122
+tests/test_workspace_rename_hardening.py
+  s_066dd3ba2255bd::t_195ea0bef1d7c1 557-565,571-616,619,621-661,663-709
+  s_066dd3ba2255bd::t_fdca3b616baa5f 662
+  s_066dd3ba2255bd::t_ded6fe30e1e940 11,566-570,617-618,620
+docs/workspace-rename.md
+  s_066dd3ba2255bd::t_ded6fe30e1e940 48,60-61,143,155
+src/plane_toolchain/workspace_rename.py
+  s_066dd3ba2255bd::t_d8956603e000e0 168-171,337-341,348-352,778-790,969,980,1004-1012,1041,1220,1232,1284,1508,1637-1641,1656-1657
+tests/test_docs_rename.py
+  s_066dd3ba2255bd::t_a1ca5c00a1ed5b 15
+tests/test_workspace_rename_cli.py
+  s_066dd3ba2255bd::t_2200fcafb099ac 20-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "0c7564e5db29ecf6f6438c1264e8f10d3482e968",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
