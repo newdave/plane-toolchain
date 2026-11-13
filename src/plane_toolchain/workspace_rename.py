@@ -997,6 +997,148 @@ def slug_state(api, snippet, old, new, workspace_id, directory, popen, uid=None)
         return "unknown"
 
 
+def seam_uid(seams):
+    """The uid that must own the receipt files: the `uid` seam, else this process's euid."""
+    return os.geteuid() if seams.get("uid") is None else seams["uid"]
+
+
+def run_directory(data):
+    """The receipt directory of a payload: `receipt_dir`, else the environment default."""
+    return pathlib.Path(data.get("receipt_dir") or receipt_dir(os.environ))
+
+
+def reason_of(failure):
+    """The operator text of a failure: a RuntimeError's message, else only its type name."""
+    return str(failure) if isinstance(failure, RuntimeError) else type(failure).__name__
+
+
+def refused(failure):
+    """A preflight RuntimeError as a refusal: its message, prefixed `Refused: ` once."""
+    text = str(failure)
+    return RuntimeError(text if text.startswith("Refused") else "Refused: " + text)
+
+
+def warnings_text(notes):
+    """The ` Warning: <note>.` tail of a failure message, one per note."""
+    return "".join(" Warning: " + note + "." for note in notes)
+
+
+def drain_state(reason):
+    """The service state after a failed drain gate, or None when `reason` is not one."""
+    if "and the workers are stopped" in reason:  # fast-fail drain gate
+        return "Services were left as they are (workers stopped, jobs kept)"
+    if "jobs still queued after" in reason:  # 60 s drain timeout, worker was running
+        return "Beat is stopped and the other services were left as they are (jobs kept)"
+    return None
+
+
+def run_context(data, seams, operations=None):
+    """What check, apply and revert share for one run, as a dict: the seams (docker, popen,
+    clock, crash, uid, and seams itself for the lazily read sleep) and the payload (operation,
+    old, new, api, snippet, directory, names, options, undrained).
+
+    run_apply and run_revert each build one, use the run_* helpers below for the snippet call,
+    the service stop and start and the step machine, and keep only their own steps and failure
+    messages. Seams are read before the operation check, and the payload after it. (A dict and
+    plain functions, not a class: program() ships function source only.)"""
+    run = {
+        "seams": seams,
+        "docker": seams["docker"],
+        "popen": seams["popen"],
+        "clock": seams["clock"],
+        "crash": seams.get("crash") or (lambda label: None),
+        "uid": seam_uid(seams),
+        "operation": data.get("operation"),
+    }
+    if operations is not None and run["operation"] not in operations:
+        raise RuntimeError("expected check, apply or revert")
+    run["old"], run["new"] = data["from"], data["to"]
+    run["api"], run["snippet"] = data["api"], data["snippet"]
+    run["directory"] = run_directory(data)
+    run["names"] = service_names(data.get("services") or {})
+    run["options"] = {key: data[key] for key in ("live_url", "api_url") if data.get(key)}
+    run["undrained"] = data.get("allow_undrained") is True
+    return run
+
+
+def run_call(run, op, args):
+    """Run one snippet operation; return its summary. No summary or ok:false raises."""
+    return snippet_ok(
+        run["api"], run["snippet"], op, args, run["directory"], run["popen"], run["uid"]
+    )
+
+
+def run_health(run, old, new, workspace_id):
+    """Health with `old` gone and `new` held by `workspace_id` (and the payload URLs)."""
+    args = {"old": old, "new": new, "workspace_id": workspace_id, **run["options"]}
+    return run_call(run, "health", args)
+
+
+def run_slug_state(run, workspace_id):
+    """slug_state (a read-only probe) for this run's rename."""
+    return slug_state(
+        run["api"],
+        run["snippet"],
+        run["old"],
+        run["new"],
+        workspace_id,
+        run["directory"],
+        run["popen"],
+        run["uid"],
+    )
+
+
+def run_preflight(run, operation):
+    """The read-only checks every operation starts with; `operation` picks the sweep."""
+    refuse_api_service(run["names"], run["api"])
+    inspect_services(run["names"], run["api"], run["docker"])
+    sweep_orphans(run["api"], run["popen"], operation, run["directory"])
+
+
+def run_stop(run):
+    """Drain and stop the services; an unverified drain raises."""
+    sleep = run["seams"]["sleep"]
+    remaining = stop_services(
+        run["names"], run["docker"], run["clock"], sleep, run["crash"], run["undrained"]
+    )
+    if remaining is None:  # wrong or empty vhost: the drain was never verified
+        raise RuntimeError("celery queue not found; drain not verified")
+
+
+def run_start(run):
+    start_services(run["names"], run["docker"], run["crash"])
+
+
+def run_start_noting(run, notes):
+    """Start the services; a failure is added to `notes` instead of raised."""
+    try:
+        run_start(run)
+    except Exception as problem:  # noqa: BLE001 - report it with the original failure
+        notes.append(reason_of(problem) + "; start the remaining services by hand")
+
+
+def run_steps(run, order, step, effect, recover, settle=None):
+    """Run every step after `step` (None: from the first) up to the last of `order`.
+
+    Each step is crash("before_<step>"), effect, crash("after_<step>"), settle (if any), then
+    advance. An Exception goes to recover(step, target, failure), with `step` the last step
+    reached; it raises, or returns once it has advanced the receipt itself. Killed and other
+    BaseExceptions propagate untouched."""
+    crash = run["crash"]
+    while step != order[-1]:
+        target = order[0] if step is None else order[order.index(step) + 1]
+        crash("before_" + target)
+        try:
+            effect(target)
+            crash("after_" + target)
+            if settle is not None:
+                settle()
+            advance(run["directory"], target, run["uid"])
+        except Exception as failure:
+            recover(step, target, failure)
+        step = target
+
+
 def run_apply(data, seams):
     """Run `check` (read-only), `apply` or `revert` (both resumable) for one workspace rename.
 
@@ -1020,30 +1162,18 @@ def run_apply(data, seams):
     host's fsync of it can leave a written row without a journal entry; only the pg_dump backup
     recovers that row. Closing it needs an acknowledgement channel, which this does not have.
     """
-    docker, popen, clock = seams["docker"], seams["popen"], seams["clock"]
-    crash = seams.get("crash") or (lambda label: None)
-    uid = os.geteuid() if seams.get("uid") is None else seams["uid"]
-    operation = data.get("operation")
-    if operation not in ("check", "apply"):
-        raise RuntimeError("expected check, apply or revert")
-    old, new, api, snippet = data["from"], data["to"], data["api"], data["snippet"]
-    directory = pathlib.Path(data.get("receipt_dir") or receipt_dir(os.environ))
-    names = service_names(data.get("services") or {})
-    options = {key: data[key] for key in ("live_url", "api_url") if data.get(key)}
-    undrained = data.get("allow_undrained") is True
+    run = run_context(data, seams, ("check", "apply"))
+    operation, old, new = run["operation"], run["old"], run["new"]
+    directory, uid, names = run["directory"], run["uid"], run["names"]
+    docker, clock, crash = run["docker"], run["clock"], run["crash"]
     order = step_order("apply")
-
-    def call(op, args):
-        return snippet_ok(api, snippet, op, args, directory, popen, uid)
 
     def at_or_past(step, mark):
         return step in order and order.index(step) >= order.index(mark)
 
     # Preflight: read-only, and it writes nothing (not even the receipt directory) for check.
     try:
-        refuse_api_service(names, api)
-        inspect_services(names, api, docker)
-        sweep_orphans(api, popen, operation, directory)
+        run_preflight(run, operation)
         receipt = None
         if operation == "apply" or os.path.lexists(directory):
             receipt = load_receipt(directory, old, new, uid)
@@ -1068,7 +1198,7 @@ def run_apply(data, seams):
         if step == "complete":
             if workspace_id is None:
                 raise RuntimeError("journal has no workspace record; refusing")
-            call("health", {"old": old, "new": new, "workspace_id": workspace_id, **options})
+            run_health(run, old, new, workspace_id)
             return (
                 "Rename already complete and healthy. To run another rename (including the "
                 "opposite one), archive the receipt directory first: move it aside whole, "
@@ -1082,15 +1212,14 @@ def run_apply(data, seams):
         slug_committed = at_or_past(step, "slug_done") or (
             step == "backed_up"
             and workspace_id is not None
-            and slug_state(api, snippet, old, new, workspace_id, directory, popen, uid) == "renamed"
+            and run_slug_state(run, workspace_id) == "renamed"
         )
         if not slug_committed:
-            call("check", {"old": old, "new": new})
-        call("flush_cache", {"dry_run": True})
+            run_call(run, "check", {"old": old, "new": new})
+        run_call(run, "flush_cache", {"dry_run": True})
         detect_saltbox(names, docker)
     except RuntimeError as failure:
-        text = str(failure)
-        raise RuntimeError(text if text.startswith("Refused") else "Refused: " + text) from None
+        raise refused(failure) from None
     if operation == "check":
         if step:
             say("A receipt for this rename is at step " + step + "; apply resumes from there")
@@ -1101,15 +1230,10 @@ def run_apply(data, seams):
     if step != "pending":
         say("Resuming the rename from step " + step)
 
-    def stop():
-        remaining = stop_services(names, docker, clock, seams["sleep"], crash, undrained)
-        if remaining is None:  # wrong or empty vhost: the drain was never verified
-            raise RuntimeError("celery queue not found; drain not verified")
-
     def effect(target):
         nonlocal workspace_id
         if target == "stopped":
-            stop()
+            run_stop(run)
         elif target == "backed_up":
             dump = directory / "backup.dump"
             if backup_action == "adopt" and os.path.lexists(dump):
@@ -1119,38 +1243,38 @@ def run_apply(data, seams):
                 say("Backup already taken; SHA-256 matches")
             else:
                 backup_database(
-                    names["db"], directory, popen, crash, uid, hide=(*names.values(), api)
+                    names["db"],
+                    directory,
+                    run["popen"],
+                    crash,
+                    uid,
+                    hide=(*names.values(), run["api"]),
                 )
                 say("Database backed up")
         elif target == "slug_done":
             args = {"old": old, "new": new}
             if workspace_id:
                 args["workspace_id"] = workspace_id
-            summary = call("step_slug", args)
+            summary = run_call(run, "step_slug", args)
             renamed = summary.get("workspace_id")
             journalled = journal_workspace(load_journal(directory, uid))
             if not renamed or journalled != renamed or workspace_id not in (None, renamed):
                 raise RuntimeError("slug step workspace does not match the journal")
             workspace_id = renamed
         elif target == "rows_done":
-            call("step_rows", {"old": old, "new": new, "workspace_id": workspace_id, **options})
+            args = {"old": old, "new": new, "workspace_id": workspace_id, **run["options"]}
+            run_call(run, "step_rows", args)
         elif target == "cache_done":
-            call("flush_cache", {})
+            run_call(run, "flush_cache", {})
         elif target == "started":
-            start_services(names, docker, crash)
+            run_start(run)
         elif target == "complete":
-            call("health", {"old": old, "new": new, "workspace_id": workspace_id, **options})
-
-    def reason_of(failure):
-        return str(failure) if isinstance(failure, RuntimeError) else type(failure).__name__
+            run_health(run, old, new, workspace_id)
 
     def pre_slug_failure(target, reason):
         """Restart services and reset the receipt; never returns."""
         notes = []
-        try:
-            start_services(names, docker, crash)
-        except Exception as problem:  # noqa: BLE001 - report it with the original failure
-            notes.append(reason_of(problem) + "; start the remaining services by hand")
+        run_start_noting(run, notes)
         try:
             reset_receipt(directory, clock, uid, crash)
         except Exception as problem:  # noqa: BLE001
@@ -1160,7 +1284,7 @@ def run_apply(data, seams):
             f"Rename failed before the slug change ({target}): {reason}. {restarted}; no data "
             "changed. The receipt is back at pending and the backup was set aside, so the next "
             "apply stops services and takes a fresh backup. Fix the cause and rerun apply."
-            + "".join(" Warning: " + note + "." for note in notes)
+            + warnings_text(notes)
         )
 
     def snippet_stuck(at, reason):
@@ -1170,7 +1294,7 @@ def run_apply(data, seams):
             "has PLANE_RENAME_RUN), then rerun apply to resume or run revert."
         )
 
-    def post_slug_failure(target, reason):
+    def post_slug_failure(step, target, reason):
         if target == "complete":
             raise RuntimeError(
                 f"Rename health check failed: {reason}. Receipt left at started; services "
@@ -1178,10 +1302,8 @@ def run_apply(data, seams):
             )
         if target == "started":
             state = "Some services did not start"
-        elif "and the workers are stopped" in reason:  # fast-fail drain gate
-            state = "Services were left as they are (workers stopped, jobs kept)"
-        elif "jobs still queued after" in reason:  # 60 s drain timeout, worker was running
-            state = "Beat is stopped and the other services were left as they are (jobs kept)"
+        elif drain_state(reason) is not None:
+            state = drain_state(reason)
         elif target == step:  # stopping services again on resume failed
             state = "Some services may still be running; stop them by hand"
         else:
@@ -1210,17 +1332,17 @@ def run_apply(data, seams):
                 step, workspace_id, backup_action = "pending", None, None
             else:
                 say("Making sure services are stopped before resuming")
-                stop()
+                run_stop(run)
     except Exception as failure:  # noqa: BLE001
         reason = reason_of(failure)
         if is_stuck(reason):
             snippet_stuck(step, reason)
         if at_or_past(step, "slug_done"):
-            post_slug_failure(step, reason)
+            post_slug_failure(step, step, reason)
         if workspace_id is not None:  # a slug step may have committed: never guess
-            state = slug_state(api, snippet, old, new, workspace_id, directory, popen, uid)
+            state = run_slug_state(run, workspace_id)
             if state == "renamed":
-                post_slug_failure(step, reason)
+                post_slug_failure(step, step, reason)
             if state != "original":
                 raise RuntimeError(
                     f"Rename resume failed at {step}: {reason}; slug state unknown. Services "
@@ -1229,37 +1351,32 @@ def run_apply(data, seams):
                 ) from None
         pre_slug_failure(step, reason)
 
-    while step != "complete":
-        target = order[order.index(step) + 1]
-        crash("before_" + target)
-        try:
-            effect(target)
-            crash("after_" + target)
-            advance(directory, target, uid)
-        except Exception as failure:  # Killed and other BaseExceptions propagate untouched
-            reason = reason_of(failure)
-            if is_stuck(reason):
-                snippet_stuck(step, reason)
-            if target in ("stopped", "backed_up"):
-                pre_slug_failure(target, reason)
-            if target != "slug_done":
-                post_slug_failure(target, reason)
-            # step_slug's outcome is unclear (no summary, non-zero exit, mismatch, or a
-            # failed advance): probe it read-only before deciding anything.
-            journalled = journal_workspace(load_journal(directory, uid))
-            state = slug_state(api, snippet, old, new, journalled, directory, popen, uid)
-            if state == "original":
-                pre_slug_failure(target, reason)
-            if state != "renamed":
-                raise RuntimeError(
-                    f"Rename slug step outcome unknown: {reason}. Services stay stopped; the "
-                    "receipt is at backed_up. Check which workspace holds each slug, then rerun "
-                    "apply or run revert."
-                ) from None
-            say("Slug step unclear, but NEW is held by the journalled workspace; continuing")
-            workspace_id = journalled
-            advance(directory, target, uid)
-        step = target
+    def recover(step, target, failure):
+        nonlocal workspace_id
+        reason = reason_of(failure)
+        if is_stuck(reason):
+            snippet_stuck(step, reason)
+        if target in ("stopped", "backed_up"):
+            pre_slug_failure(target, reason)
+        if target != "slug_done":
+            post_slug_failure(step, target, reason)
+        # step_slug's outcome is unclear (no summary, non-zero exit, mismatch, or a
+        # failed advance): probe it read-only before deciding anything.
+        journalled = journal_workspace(load_journal(directory, uid))
+        state = run_slug_state(run, journalled)
+        if state == "original":
+            pre_slug_failure(target, reason)
+        if state != "renamed":
+            raise RuntimeError(
+                f"Rename slug step outcome unknown: {reason}. Services stay stopped; the "
+                "receipt is at backed_up. Check which workspace holds each slug, then rerun "
+                "apply or run revert."
+            ) from None
+        say("Slug step unclear, but NEW is held by the journalled workspace; continuing")
+        workspace_id = journalled
+        advance(directory, target, uid)
+
+    run_steps(run, order, step, effect, recover)
     return f"Rename complete: {old} is now {new}"
 
 
@@ -1280,28 +1397,15 @@ def run_revert(data, seams):
     the journal are never deleted, and the pg_dump backup is never restored here: that is a
     manual last resort.
     """
-    docker, popen, clock = seams["docker"], seams["popen"], seams["clock"]
-    crash = seams.get("crash") or (lambda label: None)
-    uid = os.geteuid() if seams.get("uid") is None else seams["uid"]
-    old, new, api, snippet = data["from"], data["to"], data["api"], data["snippet"]
-    directory = pathlib.Path(data.get("receipt_dir") or receipt_dir(os.environ))
-    names = service_names(data.get("services") or {})
-    options = {key: data[key] for key in ("live_url", "api_url") if data.get(key)}
-    undrained = data.get("allow_undrained") is True
+    run = run_context(data, seams)
+    old, new, directory = run["old"], run["new"], run["directory"]
+    uid, crash = run["uid"], run["crash"]
     applied, order = step_order("apply"), step_order("revert")
     partial, finished, notes = None, False, []
 
-    def call(op, args):
-        return snippet_ok(api, snippet, op, args, directory, popen, uid)
-
-    def reason_of(failure):
-        return str(failure) if isinstance(failure, RuntimeError) else type(failure).__name__
-
     # Preflight: read-only. It never creates the receipt directory.
     try:
-        refuse_api_service(names, api)
-        inspect_services(names, api, docker)
-        sweep_orphans(api, popen, "revert", directory)
+        run_preflight(run, "revert")
         if not os.path.lexists(directory / "receipt.json"):
             raise RuntimeError("no receipt for this rename; nothing to revert")
         receipt = load_receipt(directory, old, new, uid)
@@ -1324,7 +1428,7 @@ def run_revert(data, seams):
                     "backup.dump by hand as the last resort"
                 )
             if records:
-                state = slug_state(api, snippet, old, new, workspace_id, directory, popen, uid)
+                state = run_slug_state(run, workspace_id)
                 if state == "unknown":
                     raise RuntimeError(
                         "slug state unknown: the journalled workspace holds neither slug as "
@@ -1336,7 +1440,7 @@ def run_revert(data, seams):
                 if not restore_needed:
                     say("The slug change never committed; no restore needed")
             else:
-                if slug_state(api, snippet, old, new, None, directory, popen, uid) != "original":
+                if run_slug_state(run, None) != "original":
                     raise RuntimeError(
                         "slug state unknown: nothing was journalled, but OLD is not live or NEW "
                         "is taken; check which workspace holds each slug, and restore "
@@ -1344,23 +1448,19 @@ def run_revert(data, seams):
                     )
                 say("Nothing was journalled; no restore needed")
     except RuntimeError as failure:
-        text = str(failure)
-        raise RuntimeError(text if text.startswith("Refused") else "Refused: " + text) from None
+        raise refused(failure) from None
 
     if phase == "revert":
         say("Resuming the revert from step " + step)
-
-    def stop():
-        remaining = stop_services(names, docker, clock, seams["sleep"], crash, undrained)
-        if remaining is None:
-            raise RuntimeError("celery queue not found; drain not verified")
 
     def restore():
         nonlocal partial
         set_receipt_field(directory, "restore_started", True, uid)
         crash("before_restore")
         args = {"old": old, "new": new, "journal": records, "workspace_id": workspace_id}
-        summary, events = run_snippet(api, snippet, "restore", args, directory, popen, uid)
+        summary, events = run_snippet(
+            run["api"], run["snippet"], "restore", args, directory, run["popen"], uid
+        )
         report("restore", summary, events)
         crash("after_restore")
         if summary is None:
@@ -1378,31 +1478,30 @@ def run_revert(data, seams):
 
     def verify():
         if workspace_id:
-            call("health", {"old": new, "new": old, "workspace_id": workspace_id, **options})
+            run_health(run, new, old, workspace_id)
         else:  # nothing journalled: OLD must be live and NEW free
-            call("check", {"old": old, "new": new})
+            run_call(run, "check", {"old": old, "new": new})
 
     def effect(target):
         if target == "reverting":
             set_receipt_field(directory, "reverted_from", origin, uid)
         elif target == "restored":
             say("Stopping services for the restore")
-            stop()
+            run_stop(run)
             if restore_needed:
                 restore()
-            call("flush_cache", {})
+            run_call(run, "flush_cache", {})
         elif target == "started":
-            start_services(names, docker, crash)
+            run_start(run)
         elif target == "reverted":
             verify()
 
     def finish_partial():
-        """Restart services and recheck after a partial restore; never returns."""
+        """After a partial restore: restart services and recheck; never returns then."""
         nonlocal finished
-        try:
-            start_services(names, docker, crash)
-        except Exception as problem:  # noqa: BLE001 - report it with the partial restore
-            notes.append(reason_of(problem) + "; start the remaining services by hand")
+        if not partial:
+            return
+        run_start_noting(run, notes)
         try:
             verify()
         except Exception as problem:  # noqa: BLE001
@@ -1414,7 +1513,7 @@ def run_revert(data, seams):
             "restored and services were started. The skipped rows changed after the rename and "
             "were not overwritten. Review them, then rerun revert to recheck (it stops services "
             "first). Restoring backup.dump by hand is the last resort and loses later edits."
-            + "".join(" Warning: " + note + "." for note in notes)
+            + warnings_text(notes)
         )
 
     def failed(target, reason):
@@ -1424,10 +1523,8 @@ def run_revert(data, seams):
                 "receipt was not changed. Stop the snippet process in the API container by hand "
                 "(its environment has PLANE_RENAME_RUN), then rerun revert."
             )
-        if "and the workers are stopped" in reason:
-            state = "Services were left as they are (workers stopped, jobs kept)"
-        elif "jobs still queued after" in reason:
-            state = "Beat is stopped and the other services were left as they are (jobs kept)"
+        if drain_state(reason) is not None:
+            state = drain_state(reason)
         elif target == "reverting":
             state = "Nothing was changed by the revert; services were left as they are"
         elif target == "restored":
@@ -1445,22 +1542,12 @@ def run_revert(data, seams):
             "resort."
         )
 
-    if phase == "apply":
-        step = None
-    while step != "reverted":
-        target = order[0] if step is None else order[order.index(step) + 1]
-        crash("before_" + target)
-        try:
-            effect(target)
-            crash("after_" + target)
-            if partial:
-                finish_partial()
-            advance(directory, target, uid)
-        except Exception as failure:  # Killed and other BaseExceptions propagate untouched
-            if finished:  # the report from finish_partial
-                raise
-            failed(target, reason_of(failure))
-        step = target
+    def recover(step, target, failure):
+        if finished:  # the report from finish_partial
+            raise failure
+        failed(target, reason_of(failure))
+
+    run_steps(run, order, None if phase == "apply" else step, effect, recover, finish_partial)
     return f"Revert complete: {new} is back to {old}"
 
 
@@ -1511,9 +1598,7 @@ def run_locked(data, seams, run, create, lock=True):
 
     A valid `snippet_idle_seconds` in the payload replaces SNIPPET_IDLE_SECONDS for the run."""
     global SNIPPET_IDLE_SECONDS
-    uid = os.geteuid() if seams.get("uid") is None else seams["uid"]
-    directory = pathlib.Path(data.get("receipt_dir") or receipt_dir(os.environ))
-    descriptor = lock_run(directory, uid, create) if lock else None
+    descriptor = lock_run(run_directory(data), seam_uid(seams), create) if lock else None
     idle, previous = data.get("snippet_idle_seconds"), SNIPPET_IDLE_SECONDS
     if isinstance(idle, (int, float)) and not isinstance(idle, bool) and 0 < idle <= 86400:
         SNIPPET_IDLE_SECONDS = idle
@@ -1601,6 +1686,21 @@ SHIPPED = (
     reset_receipt,
     verify_backup,
     slug_state,
+    seam_uid,
+    run_directory,
+    reason_of,
+    refused,
+    warnings_text,
+    drain_state,
+    run_context,
+    run_call,
+    run_health,
+    run_slug_state,
+    run_preflight,
+    run_stop,
+    run_start,
+    run_start_noting,
+    run_steps,
     run_revert,
     revert,
     run_apply,

@@ -222,6 +222,18 @@ def test_check_streams_unfixed_scan_and_caps_ids():
     assert orm.models["version"].streamed >= 1
 
 
+def test_plan_streams_each_scope_table_once():
+    # PTC-64: the plan scan streams rows with iterator() instead of materialising the queryset.
+    orm = make_orm()
+    events = []
+    hosts = backend.hosts_from_url(orm.settings.WEB_URL)
+    planned, _ = backend._plan(orm, "w1", "old-slug", hosts, events.append)
+    assert planned == 7
+    assert {key: orm.models[key].streamed for _, key, _ in backend.REWRITE_SCOPE} == {
+        key: 1 for _, key, _ in backend.REWRITE_SCOPE
+    }
+
+
 def test_check_refuses_new_slug_taken_by_soft_deleted_workspace():
     orm = make_orm()
     orm.models["workspace"].rows.append(
