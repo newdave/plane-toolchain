@@ -32,30 +32,39 @@ fi
 session="$toolchain/src/plane_toolchain/session.py"
 missing="plane-toolchain not found; set PLANE_TOOLCHAIN in .plane/local.env"
 case "${1:-}" in
-  session)
-    # Startup hooks report problems but never block the client.
-    [[ -f "$session" ]] && exec python3 "$session"
-    printf '{"systemMessage": "Plane: invalid (%s)."}\n' "$missing"
-    ;;
-  status)
-    [[ -f "$session" ]] || { echo invalid; exit 1; }
-    exec python3 "$session" status
-    ;;
-  mcp)
-    [[ -f "$toolchain/scripts/plane-mcp.sh" ]] || { echo "$missing" >&2; exit 1; }
-    # mise supplies the toolchain's pinned Node for mcp-remote.
-    if command -v mise >/dev/null 2>&1; then
-      exec mise -C "$toolchain" exec -- bash "$toolchain/scripts/plane-mcp.sh"
-    fi
-    exec bash "$toolchain/scripts/plane-mcp.sh"
-    ;;
-  enable | disable)
-    [[ -f "$session" ]] || { echo "$missing" >&2; exit 1; }
-    cd "$toolchain"
-    exec uv run --locked python -m plane_toolchain.config "$1"
-    ;;
-  *)
-    echo "Usage: .plane/plane.sh mcp|session|status|enable|disable" >&2
-    exit 2
-    ;;
+session)
+  # Startup hooks report problems but never block the client.
+  [[ -f "$session" ]] && exec python3 "$session"
+  printf '{"systemMessage": "Plane: invalid (%s)."}\n' "$missing"
+  ;;
+status)
+  [[ -f "$session" ]] || {
+    echo invalid
+    exit 1
+  }
+  exec python3 "$session" status
+  ;;
+mcp)
+  [[ -f "$toolchain/scripts/plane-mcp.sh" ]] || {
+    echo "$missing" >&2
+    exit 1
+  }
+  # mise supplies the toolchain's pinned Node for mcp-remote.
+  if command -v mise >/dev/null 2>&1; then
+    exec mise -C "$toolchain" exec -- bash "$toolchain/scripts/plane-mcp.sh"
+  fi
+  exec bash "$toolchain/scripts/plane-mcp.sh"
+  ;;
+enable | disable)
+  [[ -f "$session" ]] || {
+    echo "$missing" >&2
+    exit 1
+  }
+  cd "$toolchain"
+  exec uv run --locked python -m plane_toolchain.config "$1"
+  ;;
+*)
+  echo "Usage: .plane/plane.sh mcp|session|status|enable|disable" >&2
+  exit 2
+  ;;
 esac

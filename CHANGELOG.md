@@ -35,6 +35,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Project install revert accepts installs reformatted by the target's prettier and shfmt hooks. The installed `.mcp.json`, hook JSON and receipt are compared as parsed JSON, not bytes; `.plane/plane.sh` is now shfmt-stable, and the previous (unformatted) shim is still accepted on revert. Content changes are still refused as edits (PTC-54).
 - The Plane bridge and session status resolve git-ignored `config/local.env`, `config/plane.enc.env` and `tools/mcp-remote/node_modules` from the main checkout when a linked worktree lacks them (`config/local.env` merges per key, the worktree overriding). Only linked worktrees fall back.
 - Pages revert accepts a derived container built from older source, so an upgrade can run revert, then apply.
 - Restoring the original API (revert, reconcile) checks API health only: the upstream image has no Pages route, so the Pages probe made every revert roll back.

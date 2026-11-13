@@ -434,3 +434,50 @@ def test_repeat_apply_on_pre_worktree_shim_reports_outdated_without_rewriting(tm
     apply(tmp_path)
     assert "predates the worktree fallback" in capsys.readouterr().out
     assert (tmp_path / ".plane/plane.sh").read_text() == installer["LEGACY_SHIM"]
+
+
+def relayout(path, style):
+    data = json.loads(path.read_text())
+    layouts = {
+        "wide": json.dumps(data, indent=4, separators=(", ", ": ")),
+        "compact": json.dumps(data, separators=(",", ":")),
+    }
+    path.write_text(layouts[style])
+
+
+@pytest.mark.parametrize("style", ["wide", "compact"])
+def test_revert_survives_prettier_style_json_and_shfmt_stable_shell(tmp_path, style):
+    apply(tmp_path)
+    for rel in (".mcp.json", ".claude/settings.json", ".codex/hooks.json", ".plane/install.json"):
+        relayout(tmp_path / rel, style)
+    shim = tmp_path / ".plane/plane.sh"
+    assert shim.read_text() == (ROOT / "tests/fixtures/plane.sh.shfmt").read_text()
+    revert(tmp_path)
+    assert not (tmp_path / ".mcp.json").exists()
+    assert not (tmp_path / ".plane/plane.sh").exists()
+    assert not (tmp_path / ".plane/install.json").exists()
+
+
+def test_revert_accepts_shfmt_formatted_pre_ptc54_shim(tmp_path):
+    apply(tmp_path)
+    old = (ROOT / "templates/project/plane.sh.pre-shfmt").read_text()
+    (tmp_path / ".plane/plane.sh").write_text(old)
+    revert(tmp_path)
+    assert not (tmp_path / ".plane/plane.sh").exists()
+
+
+def test_revert_refuses_semantically_changed_json(tmp_path):
+    apply(tmp_path)
+    path = tmp_path / ".mcp.json"
+    data = json.loads(path.read_text())
+    data["mcpServers"]["plane"]["args"] = [".plane/plane.sh", "other"]
+    path.write_text(json.dumps(data, indent=4))
+    before = snapshot(tmp_path)
+    with pytest.raises(ValueError, match=r"\.mcp\.json"):
+        revert(tmp_path)
+    assert snapshot(tmp_path) == before
+
+
+def test_shipped_shim_equals_shfmt_output_fixture():
+    shipped = (ROOT / "templates/project/plane.sh").read_text()
+    assert shipped == (ROOT / "tests/fixtures/plane.sh.shfmt").read_text()

@@ -26,7 +26,7 @@ Without mise, run `python3 /path/to/plane-toolchain/scripts/install_project.py a
 
 Apply refuses, without writing anything, when a target already has a `plane` MCP server, a Plane block, a `.plane/plane.sh`, a symlinked path or a file it cannot parse. JSON files it edits are rewritten with two-space indentation. Repeating apply on an intact installation does nothing.
 
-Revert removes only artefacts that are still exactly as installed, and restores files the installer created or appended to. If anything was edited, it refuses and changes nothing; reconcile the file by hand first. Revert keeps ignored local files under `.plane/`, together with the `.gitignore` that protects them, and lists them.
+Revert removes only artefacts that are still as installed. JSON files (`.mcp.json`, hook files, the receipt) are compared as parsed JSON, so a prettier reformat does not block revert, and the shim ships shfmt-stable so a shfmt hook leaves it unchanged; any other edit is refused. Revert restores files the installer created or appended to. If anything was edited, it refuses and changes nothing; reconcile the file by hand first. Revert keeps ignored local files under `.plane/`, together with the `.gitignore` that protects them, and lists them.
 
 ## Provisioning the awaiting-decision label
 

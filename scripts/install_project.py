@@ -49,6 +49,9 @@ SHIM = (TEMPLATES / "plane.sh").read_text()
 # Shim as installed by PTC-48, before the worktree fallback. Installs made then still carry it:
 # revert accepts it, and apply reports it as outdated without rewriting it.
 LEGACY_SHIM = (TEMPLATES / "plane.sh.legacy").read_text()
+# Shim as installed before it was made shfmt-stable (PTC-54). Revert accepts it; target
+# repos whose shfmt hook reformatted it carry the current shim instead.
+PRE_SHFMT_SHIM = (TEMPLATES / "plane.sh.pre-shfmt").read_text()
 GITIGNORE = (
     "# Local Plane values, secrets and switch state; never commit them.\n"
     "local.env\n*.enc.env\nenable-backup.json\n.plane-*\n.backup-*\n"
@@ -128,6 +131,8 @@ def remove_block(text, created):
 
 
 def load(old):
+    """Parse a JSON object artefact. Revert compares parsed values, never bytes, so a
+    formatter's layout changes (indent, spacing, trailing newline) are accepted."""
     data = json.loads(old) if old is not None else {}
     if not isinstance(data, dict):
         raise ValueError("is not a JSON object")
@@ -195,7 +200,7 @@ def remove_codex(text, created):
 
 
 KINDS = {
-    "shim": insert_file(SHIM, also=(LEGACY_SHIM,)),
+    "shim": insert_file(SHIM, also=(LEGACY_SHIM, PRE_SHFMT_SHIM)),
     "gitignore": insert_file(GITIGNORE, reuse=True),
     "include": insert_file("@AGENTS.md\n"),
     "block": (insert_block, remove_block),
