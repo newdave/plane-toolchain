@@ -66,14 +66,14 @@ def test_task_list_passes_paging(tmp_path):
 
 
 def test_task_show_resolves_lowercase_identifier(tmp_path):
-    fake = Fake([{"project": OTHER, "id": "w1"}, {"id": "w1"}])
+    fake = Fake([{"project": OTHER, "id": W1}, {"id": W1}])
     code, out, _ = run(["task", "show", "ptc-12"], fake, tmp_path)
     assert code == 0
     assert fake.calls == [
         ("workitem", {"action": "retrieve_by_identifier", "workitem_identifier": "PTC-12"}),
-        ("workitem", {"action": "retrieve", "project_id": OTHER, "workitem_id": "w1"}),
+        ("workitem", {"action": "retrieve", "project_id": OTHER, "workitem_id": W1}),
     ]
-    assert json.loads(out) == {"id": "w1"}
+    assert json.loads(out) == {"id": W1}
 
 
 def test_task_show_uuid_uses_default_project(tmp_path):
@@ -524,3 +524,25 @@ def test_missing_ce_tool_exits_4(tmp_path):
     code, _, err = run(["page", "list"], fake, tmp_path)
     assert code == 4
     assert err == "plane: Required MCP tool unavailable\n"
+
+
+def test_relation_add_uppercase_uuid_target_confirms(tmp_path):
+    fake = Fake([{}, relations("blocked_by", W2)])
+    code, _, _ = run(["relation", "add", W1, W2.upper()], fake, tmp_path)
+    assert code == 0
+    assert fake.calls[0][1]["workitem_ids"] == [W2]
+
+
+def test_relation_add_case_mixed_self_and_duplicate_rejected(tmp_path):
+    fake = Fake()
+    assert run(["relation", "add", W1, W1.upper()], fake, tmp_path)[0] == 2
+    assert run(["relation", "add", W1, W2, W2.upper()], fake, tmp_path)[0] == 2
+    assert fake.calls == []
+
+
+def test_relation_add_rejects_targets_in_another_project(tmp_path):
+    fake = Fake([{"project": OTHER, "id": W2}])
+    code, _, err = run(["relation", "add", W1, "PTC-2"], fake, tmp_path)
+    assert code == 2
+    assert "one project" in err
+    assert [c[0] for c in fake.calls] == ["workitem"]

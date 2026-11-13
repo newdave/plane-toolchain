@@ -29,6 +29,10 @@ def is_uuid(value: str) -> bool:
     return True
 
 
+def canonical(value: str) -> str:
+    return str(UUID(value))
+
+
 def task_reference(ref: str) -> None:
     """Raise UsageError unless ref is a UUID or an identifier such as PTC-12."""
     if not (is_uuid(ref) or IDENTIFIER.fullmatch(ref)):
@@ -39,12 +43,12 @@ async def resolve_task(call: Call, project: str, ref: str) -> tuple[str, str]:
     """Return (project_id, workitem_id) for a UUID or identifier reference."""
     task_reference(ref)
     if is_uuid(ref):
-        return project, ref
+        return canonical(project), canonical(ref)
     found = await call(
         "workitem",
         {"action": "retrieve_by_identifier", "workitem_identifier": ref.upper()},
     )
-    return found["project"], found["id"]
+    return canonical(found["project"]), canonical(found["id"])
 
 
 def read_body(namespace: argparse.Namespace, option: str) -> str:
@@ -72,12 +76,16 @@ def validate(namespace: argparse.Namespace) -> None:
     """Check arguments that need no connection; raise UsageError."""
     if getattr(namespace, "project", None) and not is_uuid(namespace.project):
         raise UsageError("--project must be a UUID")
+    if getattr(namespace, "project", None):
+        namespace.project = canonical(namespace.project)
     key = (namespace.group, namespace.action)
     if key in {("task", "show"), ("task", "update"), ("comment", "list"), ("comment", "add")}:
         task_reference(namespace.ref)
     if key == ("task", "update"):
         if getattr(namespace, "state", None) and not is_uuid(namespace.state):
             raise UsageError("--state must be a UUID")
+        if getattr(namespace, "state", None):
+            namespace.state = canonical(namespace.state)
         has_body = namespace.html is not None or namespace.file is not None
         if not has_body and not any(
             value is not None for value in (namespace.name, namespace.state, namespace.priority)
@@ -88,6 +96,8 @@ def validate(namespace: argparse.Namespace) -> None:
         namespace.body = read_body(namespace, "--html or --file")
     if key == ("page", "show") and not is_uuid(namespace.page_id):
         raise UsageError("Page must be a UUID")
+    if key == ("page", "show"):
+        namespace.page_id = canonical(namespace.page_id)
     if key == ("page", "create"):
         if not namespace.name.strip():
             raise UsageError("--name must not be empty")
@@ -222,11 +232,14 @@ async def relation_list(call: Call, project: str, namespace: argparse.Namespace)
 
 async def relation_add(call: Call, project: str, namespace: argparse.Namespace) -> Any:
     project_id, workitem_id = await resolve_task(call, project, namespace.ref)
-    targets = [(await resolve_task(call, project, ref))[1] for ref in namespace.others]
+    resolved = [await resolve_task(call, project, ref) for ref in namespace.others]
+    targets = [target for _, target in resolved]
     if workitem_id in targets:
         raise UsageError("A task cannot be related to itself")
     if len(set(targets)) != len(targets):
         raise UsageError("Relation tasks must be distinct")
+    if any(other != project_id for other, _ in resolved):
+        raise UsageError("Relation tasks must be in one project")
     ids = {"project_id": project_id, "workitem_id": workitem_id}
     await call(
         "ce_workitem_relation",

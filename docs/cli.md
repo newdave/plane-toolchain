@@ -19,14 +19,14 @@ The CLI reads the values in [configuration](configuration.md):
 | Variable | Purpose |
 | --- | --- |
 | `PLANE_ENABLED` | Literal `true` to permit remote access |
-| `PLANE_MCP_URL` | HTTPS MCP endpoint, for example `https://plane.example.com/mcp` |
+| `PLANE_MCP_URL` | HTTPS MCP endpoint, for example `https://plane.example.com/http/api-key/mcp` |
 | `PLANE_WORKSPACE` | Workspace slug, for example `example-workspace` |
 | `PLANE_PROJECT` | Default project UUID, for example `00000000-0000-0000-0000-000000000001` |
 | `PLANE_API_KEY` | Secret API key |
 
 Exported values win. If a non-secret value is not exported, the CLI falls back to `config/local.env`. `PLANE_ENABLED` falls back to the `plane:enable` switch. The API key comes only from the environment. It is never read from arguments or files, and never printed.
 
-Every command accepts `--project UUID` to override `PLANE_PROJECT`.
+Every command accepts `--project UUID` to override `PLANE_PROJECT`. It must be a UUID.
 
 ## Task references
 
@@ -46,7 +46,7 @@ mise run plane:cli -- task update PTC-12 --file description.html
 
 `task update` takes `--name`, `--state` (a state UUID), `--priority` (`urgent`, `high`, `medium`, `low`, `none`) and a body from `--html` or `--file`. It needs at least one. `task list` takes `--per-page` and `--cursor`. It never sends a PQL filter, because Plane CE rejects PQL.
 
-Comments:
+Comments (`comment list` takes `--per-page` and `--cursor`):
 
 ```sh
 mise run plane:cli -- comment list PTC-12
@@ -99,6 +99,7 @@ On success the CLI prints one JSON document to standard output, with sorted keys
 
 - No Page editing. `ce_page` update is not exposed.
 - No relation deletion.
+- Relation tasks must all be in one project.
 - No retries. After a failed or uncertain write, check the remote state first.
 - Task comments and Pages are written as HTML you supply. The CLI does not convert Markdown.
 - `page` and `relation` need the CE extensions deployed. If the server lacks them, the CLI exits 4 with `Required MCP tool unavailable`. See [extensions](extensions.md).
