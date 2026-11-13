@@ -16,8 +16,10 @@ script = '(( ! $+functions[_plane_toolchain_prompt_remove] )) || _plane_toolchai
 
 [tasks.setup]
 run = ["uv sync --locked", "npm ci --ignore-scripts --no-audit --no-fund --prefix tools/mcp-remote"]
+env = { VIRTUAL_ENV = false }
 [tasks.lint]
 run = ["uv run --locked ruff check .", "uv run --locked ruff format --check ."]
+env = { VIRTUAL_ENV = false }
 [tasks."lint:ci"]
 run = [
   "actionlint .github/workflows/*.yml examples/github/*.yml",
@@ -27,49 +29,71 @@ run = [
 ]
 [tasks.test]
 run = "uv run --locked pytest -q"
+env = { VIRTUAL_ENV = false }
 [tasks.check]
 depends = ["lint", "lint:ci", "test"]
 [tasks."plane:cli"]
 run = "uv run --locked python -m plane_toolchain.cli"
+env = { VIRTUAL_ENV = false }
 [tasks."plane:enable"]
 run = "uv run --locked python -m plane_toolchain.config enable"
+env = { VIRTUAL_ENV = false }
 [tasks."plane:disable"]
 run = "uv run --locked python -m plane_toolchain.config disable"
+env = { VIRTUAL_ENV = false }
 [tasks."plane:status"]
 run = "python3 src/plane_toolchain/session.py status"
 [tasks."owner:plane:apply"]
 run = "uv run --locked python -m plane_toolchain.config apply"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:plane:revert"]
 run = "uv run --locked python -m plane_toolchain.config revert"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-mcp-compat:apply"]
 run = "uv run --locked python -m plane_toolchain.mcp_deploy apply"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-mcp-compat:revert"]
 run = "uv run --locked python -m plane_toolchain.mcp_deploy revert"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-mcp-compat:check"]
 run = "uv run --locked python -m plane_toolchain.mcp_deploy check"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-pages:apply"]
 run = "uv run --locked python -m plane_toolchain.pages_deploy apply"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-pages:build"]
 run = "uv run --locked python -m plane_toolchain.pages_deploy build"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-pages:revert"]
 run = "uv run --locked python -m plane_toolchain.pages_deploy revert"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-pages:check"]
 run = "uv run --locked python -m plane_toolchain.pages_deploy check"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-workspace-rename:check"]
 run = "uv run --locked python -m plane_toolchain.workspace_rename check"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-workspace-rename:apply"]
 run = "uv run --locked python -m plane_toolchain.workspace_rename apply"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-workspace-rename:revert"]
 run = "uv run --locked python -m plane_toolchain.workspace_rename revert"
+env = { VIRTUAL_ENV = false }
 [tasks."plane:example"]
 run = "uv run --locked python examples/github/plane_event.py"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:github-examples:apply"]
 run = "uv run --locked python scripts/github_examples.py apply"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:github-examples:revert"]
 run = "uv run --locked python scripts/github_examples.py revert"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:project:apply"]
 run = "uv run --locked python scripts/install_project.py apply"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:project:label"]
 run = "uv run --locked python scripts/install_project.py label"
+env = { VIRTUAL_ENV = false }
 [tasks."owner:project:revert"]
 run = "uv run --locked python scripts/install_project.py revert"
+env = { VIRTUAL_ENV = false }

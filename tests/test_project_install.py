@@ -1,5 +1,6 @@
 """Project installer adds Plane integration without overwriting another project's work."""
 
+import hashlib
 import json
 import os
 import runpy
@@ -432,5 +433,297 @@ def test_repeat_apply_on_pre_worktree_shim_reports_outdated_without_rewriting(tm
     legacy_shim_install(tmp_path)
     capsys.readouterr()
     apply(tmp_path)
-    assert "predates the worktree fallback" in capsys.readouterr().out
+    assert "shim is not the current version" in capsys.readouterr().out
     assert (tmp_path / ".plane/plane.sh").read_text() == installer["LEGACY_SHIM"]
+
+
+def relayout(path, style):
+    data = json.loads(path.read_text())
+    layouts = {
+        "wide": json.dumps(data, indent=4, separators=(", ", ": ")),
+        "compact": json.dumps(data, separators=(",", ":")),
+    }
+    path.write_text(layouts[style])
+
+
+@pytest.mark.parametrize("style", ["wide", "compact"])
+def test_revert_survives_prettier_style_json_and_shfmt_stable_shell(tmp_path, style):
+    apply(tmp_path)
+    for rel in (".mcp.json", ".claude/settings.json", ".codex/hooks.json", ".plane/install.json"):
+        relayout(tmp_path / rel, style)
+    shim = tmp_path / ".plane/plane.sh"
+    assert shim.read_text() == (ROOT / "tests/fixtures/plane.sh.shfmt").read_text()
+    revert(tmp_path)
+    assert not (tmp_path / ".mcp.json").exists()
+    assert not (tmp_path / ".plane/plane.sh").exists()
+    assert not (tmp_path / ".plane/install.json").exists()
+
+
+SHFMT_STYLES = ("i0", "i2ci", "i4")
+SHIM_SOURCES = ("plane.sh", "plane.sh.pre-venv", "plane.sh.pre-shfmt", "plane.sh.legacy")
+# Every non-current form revert must accept: older templates, and each source in the shfmt
+# styles `-i 0`, `-i 2` (the .shfmt fixtures), `-i 2 -ci` and `-i 4`.
+SHIM_FORMS = [
+    *(f"templates/project/{name}" for name in SHIM_SOURCES[1:]),
+    *(f"tests/fixtures/{name}.shfmt" for name in SHIM_SOURCES[1:]),
+    *(f"tests/fixtures/{name}.shfmt-{style}" for name in SHIM_SOURCES for style in SHFMT_STYLES),
+]
+
+
+@pytest.mark.parametrize("form", SHIM_FORMS)
+def test_revert_accepts_every_known_shim_form(tmp_path, form):
+    apply(tmp_path)
+    (tmp_path / ".plane/plane.sh").write_text((ROOT / form).read_text())
+    revert(tmp_path)
+    assert not (tmp_path / ".plane/plane.sh").exists()
+
+
+@pytest.mark.parametrize("form", SHIM_FORMS)
+def test_revert_refuses_one_character_edit_of_any_shim_form(tmp_path, form):
+    apply(tmp_path)
+    shim = tmp_path / ".plane/plane.sh"
+    shim.write_text((ROOT / form).read_text().replace("exit 2", "exit 3", 1))
+    before = snapshot(tmp_path)
+    with pytest.raises(ValueError, match="plane.sh"):
+        revert(tmp_path)
+    assert snapshot(tmp_path) == before
+
+
+def test_known_shim_digests_equal_non_current_forms():
+    current = hashlib.sha256(installer["SHIM"].encode()).hexdigest()
+    forms = {hashlib.sha256((ROOT / form).read_bytes()).hexdigest() for form in SHIM_FORMS}
+    assert installer["KNOWN_SHIM_SHA256"] == forms - {current}
+    # -i 2 of the current template is the shipped shim itself.
+    shipped = (ROOT / "tests/fixtures/plane.sh.shfmt").read_text()
+    assert shipped == installer["SHIM"]
+
+
+def test_revert_refuses_semantically_changed_json(tmp_path):
+    apply(tmp_path)
+    path = tmp_path / ".mcp.json"
+    data = json.loads(path.read_text())
+    data["mcpServers"]["plane"]["args"] = [".plane/plane.sh", "other"]
+    path.write_text(json.dumps(data, indent=4))
+    before = snapshot(tmp_path)
+    with pytest.raises(ValueError, match=r"\.mcp\.json"):
+        revert(tmp_path)
+    assert snapshot(tmp_path) == before
+
+
+def test_shipped_shim_equals_shfmt_output_fixture():
+    shipped = (ROOT / "templates/project/plane.sh").read_text()
+    assert shipped == (ROOT / "tests/fixtures/plane.sh.shfmt").read_text()
+
+
+def enabled(target):
+    return json.loads((target / ".claude/settings.json").read_text()).get("enabledMcpjsonServers")
+
+
+def test_fresh_install_preapproves_plane_and_revert_removes_file_and_dir(tmp_path):
+    apply(tmp_path)
+    assert enabled(tmp_path) == ["plane"]
+    (tmp_path / ".plane/local.env").unlink()
+    revert(tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
+def test_existing_settings_keep_other_keys_and_revert_restores_them(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    original = (
+        json.dumps({"model": "m", "enabledMcpjsonServers": ["other"], "x": {"y": [1]}}, indent=2)
+        + "\n"
+    )
+    (tmp_path / ".claude/settings.json").write_text(original)
+    apply(tmp_path)
+    assert enabled(tmp_path) == ["other", "plane"]
+    assert json.loads((tmp_path / ".claude/settings.json").read_text())["model"] == "m"
+    (tmp_path / ".plane/local.env").unlink()
+    revert(tmp_path)
+    assert (tmp_path / ".claude/settings.json").read_text() == original
+
+
+def test_plane_already_listed_is_kept_by_revert(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    original = json.dumps({"enabledMcpjsonServers": ["plane", "other"]}, indent=2) + "\n"
+    (tmp_path / ".claude/settings.json").write_text(original)
+    apply(tmp_path)
+    assert enabled(tmp_path) == ["plane", "other"]
+    (tmp_path / ".plane/local.env").unlink()
+    revert(tmp_path)
+    assert (tmp_path / ".claude/settings.json").read_text() == original
+
+
+def test_settings_edited_after_apply_lose_only_plane(tmp_path):
+    apply(tmp_path)
+    path = tmp_path / ".claude/settings.json"
+    data = json.loads(path.read_text())
+    data["enabledMcpjsonServers"].append("mine")
+    data["model"] = "m"
+    path.write_text(json.dumps(data))
+    revert(tmp_path)
+    after = json.loads(path.read_text())
+    assert after == {"enabledMcpjsonServers": ["mine"], "model": "m"}
+
+
+def test_plane_removed_by_user_after_apply_is_not_readded_by_revert(tmp_path):
+    apply(tmp_path)
+    path = tmp_path / ".claude/settings.json"
+    data = json.loads(path.read_text())
+    data["enabledMcpjsonServers"] = ["mine"]
+    path.write_text(json.dumps(data))
+    revert(tmp_path)
+    assert json.loads(path.read_text()) == {"enabledMcpjsonServers": ["mine"]}
+
+
+def old_install(path):
+    """Install as made before PTC-55 and PTC-56: old shim, hooks-json receipt, no approval."""
+    apply(path)
+    receipt = path / ".plane/install.json"
+    data = json.loads(receipt.read_text())
+    data["entries"][".claude/settings.json"]["kind"] = "hooks-json"
+    receipt.write_text(json.dumps(data))
+    settings = path / ".claude/settings.json"
+    old = json.loads(settings.read_text())
+    del old["enabledMcpjsonServers"]
+    settings.write_text(json.dumps(old, indent=2) + "\n")
+    (path / ".plane/plane.sh").write_text(
+        (ROOT / "templates/project/plane.sh.pre-venv").read_text()
+    )
+
+
+def test_repeat_apply_on_old_install_names_both_updates_and_changes_nothing(tmp_path, capsys):
+    old_install(tmp_path)
+    capsys.readouterr()
+    before = snapshot(tmp_path)
+    apply(tmp_path)
+    out = capsys.readouterr().out
+    assert "plane.sh: shim is not the current version" in out
+    assert "settings.json: plane is not pre-approved" in out
+    assert out.count("Revert, then apply again to update this installation.") == 2
+    assert snapshot(tmp_path) == before
+
+
+def test_repeat_apply_on_current_install_has_no_update_notice(tmp_path, capsys):
+    apply(tmp_path)
+    capsys.readouterr()
+    apply(tmp_path)
+    assert "update this installation" not in capsys.readouterr().out
+
+
+def test_receipt_without_server_record_still_reverts(tmp_path):
+    apply(tmp_path)
+    receipt = tmp_path / ".plane/install.json"
+    data = json.loads(receipt.read_text())
+    data["entries"][".claude/settings.json"]["kind"] = "hooks-json"
+    receipt.write_text(json.dumps(data))
+    path = tmp_path / ".claude/settings.json"
+    old = json.loads(path.read_text())
+    del old["enabledMcpjsonServers"]
+    path.write_text(json.dumps(old))
+    (tmp_path / ".plane/local.env").unlink()
+    revert(tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
+def test_invalid_settings_json_refused_without_writing(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text("{nope")
+    with pytest.raises(ValueError, match="settings.json"):
+        apply(tmp_path)
+    assert snapshot(tmp_path) == {".claude/settings.json": "{nope"}
+
+
+def test_non_list_enabled_servers_refused(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text('{"enabledMcpjsonServers": "plane"}')
+    with pytest.raises(ValueError, match="enabledMcpjsonServers"):
+        apply(tmp_path)
+
+
+def test_shim_clears_virtual_env_for_uv(tmp_path):
+    apply(tmp_path)
+    toolchain = tmp_path / "tc"
+    (toolchain / "src/plane_toolchain").mkdir(parents=True)
+    (toolchain / "src/plane_toolchain/session.py").write_text("")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    out = tmp_path / "uv.out"
+    fake = bin_dir / "uv"
+    fake.write_text(f'#!/bin/sh\necho "${{VIRTUAL_ENV-unset}}" > {out}\n')
+    fake.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "VIRTUAL_ENV": "/somewhere/else",
+        "PLANE_TOOLCHAIN": str(toolchain),
+    }
+    subprocess.run([str(tmp_path / ".plane/plane.sh"), "enable"], env=env, check=True)  # noqa: S603
+    assert out.read_text().strip() == "unset"
+
+
+def test_every_uv_command_clears_virtual_env():
+    mise = tomllib.loads((ROOT / "mise.toml").read_text())
+    for name, task in mise["tasks"].items():
+        runs = task.get("run", [])
+        runs = [runs] if isinstance(runs, str) else runs
+        assert isinstance(runs, list), name
+        commands = []
+        for item in runs:
+            if isinstance(item, str):
+                commands.append(item)
+            elif isinstance(item, dict):
+                commands.append(str(item.get("run", "")))
+                assert set(item) <= {"run", "task", "tasks"}, (name, item)
+            else:
+                raise AssertionError(f"{name}: unknown run shape {item!r}")
+        for command in commands:
+            if "uv run" in command or "uv sync" in command:
+                unset = task.get("env", {}).get("VIRTUAL_ENV") is False
+                assert unset or "env -u VIRTUAL_ENV uv " in command, name
+    for line in (ROOT / "scripts/plane-mcp.sh").read_text().splitlines():
+        if "uv run" in line:
+            assert "env -u VIRTUAL_ENV uv run" in line
+
+
+def test_mise_has_no_global_virtual_env_unset():
+    # A top-level [env] entry would also unset it in activated shells.
+    assert "VIRTUAL_ENV" not in tomllib.loads((ROOT / "mise.toml").read_text()).get("env", {})
+
+
+def next_step(tmp_path, capsys, values):
+    apply(tmp_path, values)
+    return capsys.readouterr().out.split("Next:", 1)[1]
+
+
+def test_hint_names_only_missing_values(tmp_path, capsys):
+    out = next_step(tmp_path, capsys, {"PLANE_WORKSPACE": "demo"})
+    assert "Set PLANE_MCP_URL and PLANE_PROJECT in .plane/local.env" in out
+    assert "PLANE_WORKSPACE" not in out
+
+
+def test_hint_lists_all_when_nothing_seeded(tmp_path, capsys):
+    out = next_step(tmp_path, capsys, None)
+    assert "Set PLANE_MCP_URL, PLANE_WORKSPACE and PLANE_PROJECT in .plane/local.env" in out
+
+
+def test_no_set_hint_when_all_seeded(tmp_path, capsys):
+    values = {"PLANE_MCP_URL": "https://x.example", "PLANE_WORKSPACE": "w", "PLANE_PROJECT": "p"}
+    out = next_step(tmp_path, capsys, values)
+    assert "Set PLANE" not in out
+    assert ".plane/plane.sh enable" in out
+
+
+def test_hint_when_local_env_preexists(tmp_path, capsys):
+    (tmp_path / ".plane").mkdir()
+    (tmp_path / ".plane/local.env").write_text("PLANE_WORKSPACE=w\nPLANE_PROJECT=\n")
+    out = next_step(tmp_path, capsys, None)
+    assert "Set PLANE_MCP_URL and PLANE_PROJECT in .plane/local.env" in out
+
+
+def test_hint_accepts_export_prefix_and_whitespace(tmp_path, capsys):
+    (tmp_path / ".plane").mkdir()
+    (tmp_path / ".plane/local.env").write_text(
+        "  export PLANE_MCP_URL=https://x.example  \n\texport PLANE_WORKSPACE=w\nPLANE_PROJECT=\n"
+    )
+    out = next_step(tmp_path, capsys, None)
+    assert "Set PLANE_PROJECT in .plane/local.env" in out

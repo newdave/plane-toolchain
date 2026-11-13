@@ -64,7 +64,7 @@ if [[ -z "${PLANE_API_KEY:-}" && -f "$secrets" ]]; then
     [[ "$line" == PLANE_API_KEY=* ]] && export PLANE_API_KEY="${line#PLANE_API_KEY=}"
   done < <("${sops_cmd[@]}" decrypt --output-type dotenv "$secrets")
 fi
-uv run --locked python -m plane_toolchain.settings
+env -u VIRTUAL_ENV uv run --locked python -m plane_toolchain.settings
 # Locked tree from tools/mcp-remote (npm ci); never fetched or resolved at runtime.
 bin="$(pick tools/mcp-remote/node_modules/.bin/mcp-remote link)"
 # A reused main-checkout tree must match this checkout's lockfile, else it never runs.

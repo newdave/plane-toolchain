@@ -11,6 +11,7 @@ Plane configuration; revert removes only what is still exactly as installed.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -49,6 +50,44 @@ SHIM = (TEMPLATES / "plane.sh").read_text()
 # Shim as installed by PTC-48, before the worktree fallback. Installs made then still carry it:
 # revert accepts it, and apply reports it as outdated without rewriting it.
 LEGACY_SHIM = (TEMPLATES / "plane.sh.legacy").read_text()
+# SHA-256 of every shim version revert accepts besides the current template (exact bytes, no
+# normalisation, so an edited shim is still refused). A target shfmt hook can reformat the
+# shim, so each accepted source is also covered in these shfmt v3.14.1 styles, generated in a
+# directory with no .editorconfig: `-i 0` (tabs, the defaults), `-i 2`, `-i 2 -ci`, `-i 4`.
+# Any other style is refused: `git checkout` (or reconcile by hand) .plane/plane.sh before
+# revert. TO ADD A VERSION: when plane.sh changes, keep the outgoing template in the set
+# (its bytes plus the four shfmt forms) with fixtures under tests/fixtures; the test checks
+# the set equals exactly the digests of the non-current fixture forms.
+KNOWN_SHIM_SHA256 = {
+    # plane.sh.legacy (PTC-48 shim; also matched as LEGACY_SHIM text), raw.
+    "553f99744e23a956517c92da48625430921c7fda30f4b46ab8ec86c47cca9308",
+    # plane.sh.legacy, shfmt -i 0.
+    "2f64f488538f08c4d1cf7f395e19923aa9f94f8e0e69c23726cd8d4ba2b4cbe8",
+    # plane.sh.legacy, shfmt -i 2.
+    "915912c27ab6315ac4963a6da4737671b79330ec24da8eb1a5840e2cf57de867",
+    # plane.sh.legacy, shfmt -i 2 -ci.
+    "6a73817b925470f93e9fbb9442b8ed811d05e36dab3057b5d6f7af945c2bbeaf",
+    # plane.sh.legacy, shfmt -i 4.
+    "8b828c55a6399beda01812c860f08954300249c4420c1cbb105619e611c15e54",
+    # plane.sh.pre-shfmt (shim before PTC-54, PTC-47 worktree fallback), raw.
+    "35124f25fcdf23a3c5b300915cf752161e4721201d2cdc19f1fae30be2c73710",
+    # plane.sh.pre-venv (PTC-54 shim before VIRTUAL_ENV clearing), raw. It is also the
+    # shfmt -i 2 form of plane.sh.pre-venv and of plane.sh.pre-shfmt (shfmt-stable).
+    "ba068b6d1f6ad6b1e09c1e6d1e979587eda7ddc675bdfa9dd2d715ef079b97a9",
+    # plane.sh.pre-venv and plane.sh.pre-shfmt, shfmt -i 0 (same bytes from both).
+    "17285686487c6c95aec80260927f4ef7cedf74e1a8d078d5cd630127790eb05e",
+    # plane.sh.pre-venv and plane.sh.pre-shfmt, shfmt -i 2 -ci (same bytes from both).
+    "67c0a37573d63a7ad8a40bd0825a74287ff23b5d8305b78295fd19018aca3d51",
+    # plane.sh.pre-venv and plane.sh.pre-shfmt, shfmt -i 4 (same bytes from both).
+    "fccb403454719381d6e607105361d1feee74465063b67a2730172376b1be43db",
+    # plane.sh (current template), shfmt -i 0. Its raw and -i 2 form is SHIM itself.
+    "5ee180219ba62a63a99622bcf6ed63b1d59004114bd7ab5b7abf16a457b7ad97",
+    # plane.sh (current template), shfmt -i 2 -ci.
+    "3d333a638bc32443f40203e6d3e035de8aebc2205136890ee46dd030d2ceaf60",
+    # plane.sh (current template), shfmt -i 4.
+    "bf5d23d0062e49a0c79b817fa8f42d5a5ae8cb550f0b0ef62f87986badbdd598",
+}
+SETTING_NAMES = ("PLANE_MCP_URL", "PLANE_WORKSPACE", "PLANE_PROJECT")
 GITIGNORE = (
     "# Local Plane values, secrets and switch state; never commit them.\n"
     "local.env\n*.enc.env\nenable-backup.json\n.plane-*\n.backup-*\n"
@@ -85,7 +124,7 @@ class Changed(ValueError):
     """An installed artefact no longer matches what the installer wrote."""
 
 
-def insert_file(content, *, reuse=False, also=()):
+def insert_file(content, *, reuse=False, also=(), digests=()):
     def insert(old):
         # Revert keeps an identical .gitignore while ignored local files remain.
         if old is not None and not (reuse and old == content):
@@ -93,7 +132,8 @@ def insert_file(content, *, reuse=False, also=()):
         return content
 
     def remove(text, created):
-        if text != content and text not in also:
+        known = hashlib.sha256(text.encode()).hexdigest() in digests
+        if text != content and text not in also and not known:
             raise Changed("changed since installation")
         return None
 
@@ -128,6 +168,8 @@ def remove_block(text, created):
 
 
 def load(old):
+    """Parse a JSON object artefact. Revert compares parsed values, never bytes, so a
+    formatter's layout changes (indent, spacing, trailing newline) are accepted."""
     data = json.loads(old) if old is not None else {}
     if not isinstance(data, dict):
         raise ValueError("is not a JSON object")
@@ -167,8 +209,8 @@ def insert_hook(old):
     return dump(data)
 
 
-def remove_hook(text, created):
-    data = load(text)
+def remove_hook(text, created, data=None):
+    data = load(text) if data is None else data
     groups = data.get("hooks", {}).get("SessionStart", [])
     if HOOK_GROUP not in groups:
         raise Changed("Plane SessionStart hook changed since installation")
@@ -178,6 +220,32 @@ def remove_hook(text, created):
     if not data["hooks"]:
         del data["hooks"]
     return None if created and not data else dump(data)
+
+
+def approved(data):
+    """Return the enabledMcpjsonServers list; refuse any other shape."""
+    servers = data.setdefault("enabledMcpjsonServers", [])
+    if not isinstance(servers, list):
+        raise ValueError("enabledMcpjsonServers is not a list")
+    return servers
+
+
+def insert_settings(old):
+    """Hook plus pre-approval of the plane MCP server, so Claude does not prompt for it."""
+    data = load(old)
+    approved(data).append("plane")
+    return insert_hook(dump(data))
+
+
+def remove_settings(text, created):
+    """Drop the hook and the plane approval this install added; other edits stay."""
+    data = load(text)
+    servers = data.get("enabledMcpjsonServers")
+    if isinstance(servers, list) and "plane" in servers:
+        servers.remove("plane")
+    if servers == []:
+        del data["enabledMcpjsonServers"]
+    return remove_hook(None, created, data)
 
 
 def insert_codex(old):
@@ -195,12 +263,13 @@ def remove_codex(text, created):
 
 
 KINDS = {
-    "shim": insert_file(SHIM, also=(LEGACY_SHIM,)),
+    "shim": insert_file(SHIM, also=(LEGACY_SHIM,), digests=KNOWN_SHIM_SHA256),
     "gitignore": insert_file(GITIGNORE, reuse=True),
     "include": insert_file("@AGENTS.md\n"),
     "block": (insert_block, remove_block),
     "mcp-json": (insert_server, remove_server),
     "hooks-json": (insert_hook, remove_hook),
+    "settings-json": (insert_settings, remove_settings),
     "codex-toml": (insert_codex, remove_codex),
 }
 
@@ -234,6 +303,18 @@ def guard(target, rel):
     raise ValueError(f"{rel}: outside target")
 
 
+def settings_kind(target):
+    """Pre-approval is recorded as its own kind, so revert removes `plane` only when apply
+    added it. Receipts from before it (hooks-json) and installs that found it listed never
+    touch the list. Unreadable settings fall through; apply then refuses with the reason."""
+    try:
+        text = read(guard(target, ".claude/settings.json"))
+        servers = load(text).get("enabledMcpjsonServers", [])
+        return "hooks-json" if isinstance(servers, list) and "plane" in servers else "settings-json"
+    except ValueError:
+        return "settings-json"
+
+
 def plan(target):
     """Return (relative path, kind) pairs for this target's current layout."""
     claude = read(guard(target, "CLAUDE.md"))
@@ -248,7 +329,7 @@ def plan(target):
         steps.append(("CLAUDE.md", "block"))
     return steps + [
         (".mcp.json", "mcp-json"),
-        (".claude/settings.json", "hooks-json"),
+        (".claude/settings.json", settings_kind(target)),
         (".codex/config.toml", "codex-toml"),
         (".codex/hooks.json", "hooks-json"),
     ]
@@ -285,6 +366,16 @@ def local_env(toolchain, values):
     )
 
 
+def missing_values(text):
+    """Names of the settings still unset or empty in local.env text (values are never shown)."""
+    found = {}
+    for line in text.splitlines():
+        match = re.fullmatch(r"\s*(?:export\s+)?(PLANE_[A-Z_]+)=(.*?)\s*", line)
+        if match:
+            found[match[1]] = match[2].split(" #", 1)[0].strip().strip("\"'")
+    return [name for name in SETTING_NAMES if not found.get(name)]
+
+
 def apply(target, values=None, toolchain=SOURCE):
     target = target.resolve(strict=True)
     receipt_path = guard(target, RECEIPT)
@@ -312,8 +403,12 @@ def apply(target, values=None, toolchain=SOURCE):
     receipt = {"version": 1, "directories": created, "entries": entries}
     write(receipt_path, json.dumps(receipt, indent=2) + "\n")
     print("Installed Plane integration; review the diff before committing.")
-    print("Next: run 'mise run setup' in the toolchain, set .plane/local.env values,")
-    print("run '.plane/plane.sh enable', then restart Codex or Claude sessions.")
+    print("Next: run 'mise run setup' in the toolchain.")
+    missing = missing_values(seeded if seeded is not None else local.read_text())
+    if missing:
+        names = ", ".join(missing[:-1]) + (" and " if len(missing) > 1 else "") + missing[-1]
+        print(f"Set {names} in .plane/local.env.")
+    print("Then run '.plane/plane.sh enable' and restart Codex or Claude sessions.")
 
 
 def settings(target, env):
@@ -423,7 +518,7 @@ def label(target, env=None, client=None):
 
 
 def outdated(target, receipt):
-    """Say so when an intact install still has the pre-rule block; never rewrite it."""
+    """Say so when an intact install predates the current files; never rewrite anything."""
     for rel, entry in receipt["entries"].items():
         text = read(target / rel)
         if entry["kind"] == "block" and BLOCK not in text and LEGACY_BLOCK in text:
@@ -431,11 +526,20 @@ def outdated(target, receipt):
                 f"{rel}: Plane block predates the awaiting-decision rule. Revert, then apply "
                 "again to get the current block."
             )
-        if entry["kind"] == "shim" and text == LEGACY_SHIM:
-            print(
-                f"{rel}: shim predates the worktree fallback. Revert, then apply again "
-                "to get the current shim."
-            )
+        if entry["kind"] == "shim" and text != SHIM:
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            if text == LEGACY_SHIM or digest in KNOWN_SHIM_SHA256:
+                print(
+                    f"{rel}: shim is not the current version. Revert, then apply again "
+                    "to update this installation."
+                )
+        if rel == ".claude/settings.json" and entry["kind"] == "hooks-json":
+            servers = json.loads(text).get("enabledMcpjsonServers")
+            if not isinstance(servers, list) or "plane" not in servers:
+                print(
+                    f"{rel}: plane is not pre-approved in enabledMcpjsonServers. Revert, then "
+                    "apply again to update this installation."
+                )
 
 
 def revert(target):
