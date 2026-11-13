@@ -233,6 +233,9 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
             raise ValueError("No compatibility backup available")
         previous = backup.read_bytes()
         if current == previous:
+            if "reverting" in recorded:  # killed after the rewrite: the marker has no meaning now
+                recorded.pop("reverting")
+                write_atomic(receipt, json.dumps(recorded))
             return "Original MCP entry point already restored"
         if sha256(current) not in owned_digests(recorded):
             if not interrupted_write(current, desired, recorded, previous):
