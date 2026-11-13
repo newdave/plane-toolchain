@@ -614,19 +614,14 @@ def test_shim_clears_virtual_env_for_uv(tmp_path):
     assert out.read_text().strip() == "unset"
 
 
-def test_uv_run_tasks_and_bridge_clear_virtual_env():
-    tasks = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]
-    names = [
-        "plane:enable",
-        "plane:disable",
-        "owner:plane:apply",
-        "owner:plane:revert",
-        "owner:project:apply",
-        "owner:project:label",
-        "owner:project:revert",
-    ]
-    for name in names:
-        assert tasks[name]["run"].startswith("env -u VIRTUAL_ENV uv run "), name
+def test_every_uv_run_clears_virtual_env():
+    mise = tomllib.loads((ROOT / "mise.toml").read_text())
+    covered = mise.get("env", {}).get("VIRTUAL_ENV") is False
+    for name, task in mise["tasks"].items():
+        commands = task.get("run", [])
+        for command in [commands] if isinstance(commands, str) else commands:
+            if "uv run" in command:
+                assert covered or "env -u VIRTUAL_ENV uv run" in command, name
     for line in (ROOT / "scripts/plane-mcp.sh").read_text().splitlines():
         if "uv run" in line:
             assert "env -u VIRTUAL_ENV uv run" in line
@@ -660,3 +655,12 @@ def test_hint_when_local_env_preexists(tmp_path, capsys):
     (tmp_path / ".plane/local.env").write_text("PLANE_WORKSPACE=w\nPLANE_PROJECT=\n")
     out = next_step(tmp_path, capsys, None)
     assert "Set PLANE_MCP_URL and PLANE_PROJECT in .plane/local.env" in out
+
+
+def test_hint_accepts_export_prefix_and_whitespace(tmp_path, capsys):
+    (tmp_path / ".plane").mkdir()
+    (tmp_path / ".plane/local.env").write_text(
+        "  export PLANE_MCP_URL=https://x.example  \n\texport PLANE_WORKSPACE=w\nPLANE_PROJECT=\n"
+    )
+    out = next_step(tmp_path, capsys, None)
+    assert "Set PLANE_PROJECT in .plane/local.env" in out

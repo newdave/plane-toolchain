@@ -349,9 +349,9 @@ def missing_values(text):
     """Names of the settings still unset or empty in local.env text (values are never shown)."""
     found = {}
     for line in text.splitlines():
-        name, sep, value = line.partition("=")
-        if sep:
-            found[name.strip()] = value.strip()
+        match = re.fullmatch(r"\s*(?:export\s+)?(PLANE_[A-Z_]+)=(.*?)\s*", line)
+        if match:
+            found[match[1]] = match[2].split(" #", 1)[0].strip().strip("\"'")
     return [name for name in SETTING_NAMES if not found.get(name)]
 
 
