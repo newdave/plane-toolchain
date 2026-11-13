@@ -28,7 +28,7 @@ Exported values win. A non-secret value that is not exported falls back to these
 
 1. `config/defaults.env`
 2. `.env`
-3. In a linked worktree, the main checkout's `config/local.env`, then the worktree's own `config/local.env`. A plain checkout uses its `config/local.env`. A checkout that has `.deploy/env` and no `config/local.env` uses `.deploy/env` instead.
+3. In a linked worktree, the main checkout's `config/local.env`, then the worktree's own `config/local.env`. A plain checkout uses its `config/local.env`. A checkout that has the legacy `.deploy/env` and no `config/local.env` uses `.deploy/env` instead (and no main-checkout fallback); see [configuration](configuration.md#config-file-locations).
 
 A project installed by `scripts/install_project.py` (it has `.plane/plane.sh`) reads only the main checkout's `.plane/local.env`, then its own `.plane/local.env`.
 
