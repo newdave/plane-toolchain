@@ -3,6 +3,7 @@
 Stdlib only, so an external checkout can run it with any python3 >= 3.11:
 
     python3 /path/to/plane-toolchain/scripts/install_project.py apply .
+    python3 /path/to/plane-toolchain/scripts/install_project.py label .
     python3 /path/to/plane-toolchain/scripts/install_project.py revert .
 
 Every change is recorded in .plane/install.json. Apply never overwrites existing
@@ -16,7 +17,10 @@ import re
 import sys
 import tempfile
 import tomllib
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
+from uuid import UUID
 
 SOURCE = Path(__file__).resolve().parents[1]
 TEMPLATES = SOURCE / "templates/project"
@@ -46,6 +50,12 @@ CODEX_BLOCK = (
     'args = [".plane/plane.sh", "mcp"]\n'
     "# plane-toolchain:end\n"
 )
+# Must match the awaiting-decision label definition used in the toolchain's own project.
+LABEL = {
+    "name": "awaiting-decision",
+    "color": "#EF4444",
+    "description": "Agent is blocked until a human answers the question in the latest comment.",
+}
 # Directories the installer may create and, once empty, remove again.
 DIRECTORIES = (".plane", ".claude", ".codex")
 
@@ -282,6 +292,111 @@ def apply(target, values=None, toolchain=SOURCE):
     print("run '.plane/plane.sh enable', then restart Codex or Claude sessions.")
 
 
+def settings(target, env):
+    """Return (api base, workspace, project, key); refuse before any network call."""
+    local = guard(target, ".plane/local.env")
+    if not local.is_file():
+        raise ValueError(".plane/local.env not found; run apply first")
+    values = {}
+    for line in local.read_text().splitlines():
+        match = re.fullmatch(r"\s*(?:export\s+)?(PLANE_[A-Z_]+)=(.*?)\s*", line)
+        if match:
+            values[match[1]] = match[2].split(" #", 1)[0].strip().strip("\"'")
+    # Exported values win, as they do for the MCP bridge. The key is never read from files.
+    for name in ("PLANE_ENABLED", "PLANE_WORKSPACE", "PLANE_PROJECT", "PLANE_API_URL"):
+        if env.get(name):
+            values[name] = env[name]
+    if values.get("PLANE_ENABLED") != "true":
+        raise ValueError("Plane integration disabled; run .plane/plane.sh enable")
+    try:
+        project = str(UUID(values.get("PLANE_PROJECT", "")))
+    except ValueError:
+        raise ValueError("PLANE_PROJECT must be set to a UUID in .plane/local.env") from None
+    workspace = values.get("PLANE_WORKSPACE", "")
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", workspace):
+        raise ValueError("PLANE_WORKSPACE must be set in .plane/local.env")
+    base = values.get("PLANE_API_URL", "")
+    parts = urlsplit(base)
+    local_host = parts.hostname in {"localhost", "127.0.0.1", "::1"}
+    if (
+        not parts.hostname
+        or parts.username
+        or parts.query
+        or parts.fragment
+        or parts.scheme not in {"https", "http"}
+        or (parts.scheme == "http" and not local_host)
+    ):
+        raise ValueError("PLANE_API_URL (Plane REST base, HTTPS) must be set")
+    key = env.get("PLANE_API_KEY", "")
+    if not key or any(ord(c) < 33 or ord(c) > 126 for c in key):
+        raise ValueError("PLANE_API_KEY must be exported in the environment")
+    return base.rstrip("/"), workspace, project, key
+
+
+def http_client(base, key):
+    """Return request(method, path, body) -> parsed JSON using the Plane REST API."""
+
+    def request(method, path, body=None):
+        data = None if body is None else json.dumps(body).encode()
+        req = urllib.request.Request(base + path, data=data, method=method)  # noqa: S310
+        req.add_header("X-API-Key", key)
+        req.add_header("Accept", "application/json")
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=30) as response:  # noqa: S310
+            return json.load(response)
+
+    return request
+
+
+def list_labels(request, path):
+    """Return every label, following Plane's cursor pagination when present."""
+    labels, cursor = [], None
+    for _ in range(100):
+        page = request("GET", path + "?per_page=100" + (f"&cursor={cursor}" if cursor else ""))
+        if isinstance(page, list):
+            return labels + page
+        labels += page.get("results", [])
+        cursor = page.get("next_cursor")
+        if not page.get("next_page_results") or not cursor:
+            return labels
+    raise ValueError("Label list did not end; refusing to continue")
+
+
+def label(target, env=None, client=None):
+    """Ensure the awaiting-decision label exists in the target's Plane project.
+
+    client(base, key) returns request(method, path, body); tests inject a fake.
+    """
+    target = target.resolve(strict=True)
+    receipt_path = guard(target, RECEIPT)
+    if not receipt_path.is_file():
+        raise ValueError("No installation receipt; run apply first")
+    receipt = json.loads(receipt_path.read_text())
+    base, workspace, project, key = settings(target, os.environ if env is None else env)
+    request = (client or http_client)(base, key)
+    path = f"/api/v1/workspaces/{workspace}/projects/{project}/labels/"
+    found = [x for x in list_labels(request, path) if x.get("name") == LABEL["name"]]
+    if found:
+        existing = found[0]
+        if any(existing.get(k) != v for k, v in LABEL.items()):
+            print(
+                f"Label {LABEL['name']} exists with a different colour or description; "
+                "left unchanged. Reconcile it in Plane."
+            )
+            return
+        print(f"Label {LABEL['name']} already exists ({existing['id']}); nothing created")
+    else:
+        request("POST", path, LABEL)
+        found = [x for x in list_labels(request, path) if x.get("name") == LABEL["name"]]
+        if len(found) != 1 or any(found[0].get(k) != v for k, v in LABEL.items()):
+            raise ValueError("Label write could not be verified by rereading; check Plane")
+        existing = found[0]
+        print(f"Created and verified label {LABEL['name']} ({existing['id']})")
+    receipt["label"] = {"name": LABEL["name"], "id": existing["id"]}
+    write(receipt_path, json.dumps(receipt, indent=2) + "\n")
+
+
 def revert(target):
     target = target.resolve(strict=True)
     receipt_path = guard(target, RECEIPT)
@@ -313,7 +428,7 @@ def revert(target):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("operation", choices=["apply", "revert"])
+    parser.add_argument("operation", choices=["apply", "revert", "label"])
     parser.add_argument("target", type=Path, help="target project checkout")
     parser.add_argument("--url", help="hosted MCP endpoint written to .plane/local.env")
     parser.add_argument("--workspace", help="workspace slug written to .plane/local.env")
@@ -327,6 +442,8 @@ def main(argv=None):
                 "PLANE_PROJECT": args.project,
             }
             apply(args.target, values)
+        elif args.operation == "label":
+            label(args.target)
         else:
             revert(args.target)
     except (ValueError, OSError) as error:

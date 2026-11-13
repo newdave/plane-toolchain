@@ -178,3 +178,122 @@ def test_disabled_hint_names_installed_shim():
         Settings.from_env({"PLANE_CONFIG_ROOT": "/project"})
     with pytest.raises(ValueError, match="mise run plane:enable"):
         Settings.from_env({})
+
+
+PROJECT = "11111111-1111-4111-8111-111111111111"
+LABEL = installer["LABEL"]
+ENV = {"PLANE_API_KEY": "fake-key", "PLANE_API_URL": "https://plane.example.test"}
+
+
+class FakePlane:
+    """Stands in for the Plane REST API; records calls and never touches the network."""
+
+    def __init__(self, labels=()):
+        self.labels, self.calls, self.keys = list(labels), [], []
+
+    def __call__(self, base, key):
+        self.keys.append(key)
+
+        def request(method, path, body=None):
+            self.calls.append((method, path, body))
+            if method == "POST":
+                self.labels.append(dict(body, id="label-1"))
+            return {"results": list(self.labels), "next_page_results": False}
+
+        return request
+
+
+def labelled(tmp_path, enabled="true", **values):
+    values = {"PLANE_WORKSPACE": "demo", "PLANE_PROJECT": PROJECT, **values}
+    apply(tmp_path, {k: v for k, v in values.items() if v is not None})
+    local = tmp_path / ".plane/local.env"
+    local.write_text(local.read_text().replace("PLANE_ENABLED=false", f"PLANE_ENABLED={enabled}"))
+    return tmp_path
+
+
+def receipt(path):
+    return json.loads((path / ".plane/install.json").read_text())
+
+
+def test_rule_in_fresh_agents_block(tmp_path):
+    apply(tmp_path)
+    text = (tmp_path / "AGENTS.md").read_text()
+    assert "`awaiting-decision`" in text
+    assert "Remove the label when answered and resume." in text
+
+
+def test_label_created_once_verified_and_recorded(tmp_path, capsys):
+    labelled(tmp_path)
+    plane = FakePlane()
+    installer["label"](tmp_path, ENV, plane)
+    posts = [c for c in plane.calls if c[0] == "POST"]
+    assert posts == [("POST", f"/api/v1/workspaces/demo/projects/{PROJECT}/labels/", LABEL)]
+    assert plane.calls[-1][0] == "GET"  # reread after the write
+    assert plane.keys == ["fake-key"]
+    assert receipt(tmp_path)["label"] == {"name": "awaiting-decision", "id": "label-1"}
+    assert "fake-key" not in capsys.readouterr().out
+    assert "fake-key" not in (tmp_path / ".plane/install.json").read_text()
+
+    installer["label"](tmp_path, ENV, plane)
+    assert len([c for c in plane.calls if c[0] == "POST"]) == 1
+    assert "already exists" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("field", ["color", "description"])
+def test_label_with_different_definition_reported_and_unchanged(tmp_path, capsys, field):
+    labelled(tmp_path)
+    plane = FakePlane([dict(LABEL, id="other", **{field: "different"})])
+    installer["label"](tmp_path, ENV, plane)
+    assert [c for c in plane.calls if c[0] != "GET"] == []
+    assert plane.labels[0][field] == "different"
+    assert "different colour or description" in capsys.readouterr().out
+    assert "label" not in receipt(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("setup", "env", "message"),
+    [
+        ({"enabled": "false"}, ENV, "disabled"),
+        ({"PLANE_PROJECT": None}, ENV, "PLANE_PROJECT"),
+        ({}, {"PLANE_API_KEY": "fake-key"}, "PLANE_API_URL"),
+        ({}, {"PLANE_API_URL": ENV["PLANE_API_URL"]}, "PLANE_API_KEY"),
+        ({}, {**ENV, "PLANE_API_URL": "http://plane.example.test"}, "PLANE_API_URL"),
+    ],
+)
+def test_label_refuses_before_any_network_call(tmp_path, setup, env, message):
+    labelled(tmp_path, **setup)
+    plane = FakePlane()
+    with pytest.raises(ValueError, match=message):
+        installer["label"](tmp_path, env, plane)
+    assert plane.calls == [] and plane.keys == []
+
+
+def test_label_refuses_without_installation(tmp_path):
+    plane = FakePlane()
+    with pytest.raises(ValueError, match="receipt"):
+        installer["label"](tmp_path, ENV, plane)
+    assert plane.calls == []
+
+
+def test_label_not_verified_is_an_error(tmp_path):
+    labelled(tmp_path)
+    plane = FakePlane()
+
+    def lossy(base, key):
+        request = plane(base, key)
+        return lambda method, path, body=None: (
+            {"results": []} if method == "GET" else request(method, path, body)
+        )
+
+    with pytest.raises(ValueError, match="verified"):
+        installer["label"](tmp_path, ENV, lossy)
+
+
+def test_revert_keeps_label_and_drops_receipt(tmp_path):
+    labelled(tmp_path)
+    plane = FakePlane()
+    installer["label"](tmp_path, ENV, plane)
+    (tmp_path / ".plane/local.env").unlink()
+    revert(tmp_path)
+    assert not list(tmp_path.iterdir())
+    assert [c for c in plane.calls if c[0] == "DELETE"] == []

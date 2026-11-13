@@ -61,5 +61,7 @@ run = "uv run --locked python scripts/github_examples.py apply"
 run = "uv run --locked python scripts/github_examples.py revert"
 [tasks."owner:project:apply"]
 run = "uv run --locked python scripts/install_project.py apply"
+[tasks."owner:project:label"]
+run = "uv run --locked python scripts/install_project.py label"
 [tasks."owner:project:revert"]
 run = "uv run --locked python scripts/install_project.py revert"
