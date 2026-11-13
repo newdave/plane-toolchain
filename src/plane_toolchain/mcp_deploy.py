@@ -38,9 +38,12 @@ def sha256(value):
 def rewrite(target, content):
     """Overwrite target in place so the bind-mounted inode survives; flush and fsync.
 
-    Not atomic: a crash between truncate and fsync leaves a partial file. The backup
-    (`NEUTRAL_MCP_BACKUP_NAME`, see legacy.py) holds the upstream original, not the previous
-    install: restore it by hand, or re-apply.
+    Deliberately not atomic: `server.py` is bind-mounted into the MCP container, and os.replace
+    would give it a new inode the container may never see. A crash between truncate and fsync
+    leaves an empty file or a prefix of `content`; `deploy` recognises that state through its
+    pending receipt (or a prefix of the backup) and recovers from the backup, so apply and
+    revert both still work. The backup (`NEUTRAL_MCP_BACKUP_NAME`, see legacy.py) holds the
+    upstream original, not the previous install.
     """
     with open(target, "r+b") as handle:
         handle.truncate(0)
@@ -49,12 +52,18 @@ def rewrite(target, content):
         os.fsync(handle.fileno())
 
 
-def write_atomic(path, text):
-    """Write text next to path, fsync, then os.replace so readers see old or new, never partial."""
+def write_atomic(path, data, mode=None):
+    """Write str or bytes next to path, fsync, then os.replace: readers see old or new, never partial.
+
+    The temporary file is created 0600 and given `mode` (if any) before it is renamed into place.
+    """
     temporary = str(path) + ".tmp"
-    with open(temporary, "w") as handle:
-        handle.write(text)
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(data.encode() if isinstance(data, str) else data)
         handle.flush()
+        if mode is not None:
+            os.fchmod(handle.fileno(), mode)
         os.fsync(handle.fileno())
     os.replace(temporary, path)
     # Sync the directory so a power loss cannot bring back the older file.
@@ -83,6 +92,19 @@ def owned_digests(recorded):
         digests.add(recorded.get("previous"))
     digests.discard(None)
     return digests
+
+
+def interrupted_write(current, desired, recorded, backup):
+    """Return whether current is what a killed in-place write of server.py leaves behind.
+
+    That is an empty file or a prefix of the bytes being written: the desired entry point while
+    the receipt is pending for it, or the backup (a killed rollback or revert). Foreign content
+    never matches, so a host edit is still refused.
+    """
+    if recorded.get("pending") and recorded.get("installed") == sha256(desired):
+        if desired.startswith(current):
+            return True
+    return backup is not None and backup.startswith(current)
 
 
 def plain_entry_point(content):
@@ -179,8 +201,12 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
                     write_atomic(receipt, json.dumps(final))
             return "MCP compatibility entry point already applied"
         if backup.exists():
-            if current != backup.read_bytes() and sha256(current) not in owned_digests(recorded):
-                raise ValueError("Host entry point changed; preserve it and reconcile")
+            saved = backup.read_bytes()
+            if current != saved and sha256(current) not in owned_digests(recorded):
+                if not interrupted_write(current, desired, recorded, saved):
+                    raise ValueError("Host entry point changed; preserve it and reconcile")
+                # Killed mid-write: the backup is the safe state to return to on failure.
+                current = saved
         else:
             # Digest first: a receipt that recorded the original is authoritative.
             if "original" in recorded:
@@ -189,8 +215,7 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
                 known = plain_entry_point(current)
             if not known:
                 raise ValueError("Unexpected original entry point; review before replacing")
-            backup.write_bytes(current)
-            backup.chmod(target.stat().st_mode & 0o777)
+            write_atomic(backup, current, target.stat().st_mode & 0o777)
         content = desired
     elif operation == "revert":
         if not backup.exists() or not receipt.exists():
@@ -199,7 +224,9 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         if current == previous:
             return "Original MCP entry point already restored"
         if sha256(current) not in owned_digests(recorded):
-            raise ValueError("Host entry point changed; refusing overwrite")
+            if not interrupted_write(current, desired, recorded, previous):
+                raise ValueError("Host entry point changed; refusing overwrite")
+            current = previous  # Killed mid-write; a failed revert must not restore the stub.
         content = previous
     else:
         raise ValueError("Expected apply, revert or check")
@@ -273,6 +300,7 @@ REMOTE = program(
         legacy_state,
         refusal,
         owned_digests,
+        interrupted_write,
         plain_entry_point,
         inspect_state,
         wait_healthy,

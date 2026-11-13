@@ -3,6 +3,7 @@
 import ast
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -816,3 +817,170 @@ def test_module_entry_prints_one_line_for_invalid_destination(monkeypatch, capsy
     seen = capsys.readouterr()
     assert seen.err.count("\n") == 1 and "Traceback" not in seen.err
     assert "ProxyCommand" not in seen.err
+
+
+# PTC-65: kill injection. A SIGKILL leaves the directory exactly as it was at that instant, so
+# each test snapshots the directory at the kill point, raises, then puts the snapshot back.
+
+
+class Killed(BaseException):
+    """Stands in for SIGKILL: rollbacks that catch BaseException must not be trusted."""
+
+
+def freeze(root):
+    return {p.name: (p.read_bytes(), p.stat().st_mode & 0o777) for p in root.iterdir()}
+
+
+def thaw(root, state):
+    for path in root.iterdir():
+        path.unlink()
+    for name, (content, mode) in state.items():
+        (root / name).write_bytes(content)
+        (root / name).chmod(mode)
+
+
+def kill_at_call(root, monkeypatch, kind, nth, operation="apply", source=DESIRED):
+    """Run the operation until the nth os.`kind` call, restore the frozen directory; False if none."""
+    fake = mcp_host()
+    seen = {"n": 0}
+    real = getattr(mcp_deploy.os, kind)
+
+    def hook(*args, **kw):
+        seen["n"] += 1
+        if seen["n"] == nth:
+            seen["state"] = freeze(root)
+            raise Killed
+        return real(*args, **kw)
+
+    monkeypatch.setattr(mcp_deploy.os, kind, hook)
+    try:
+        deploy(operation, root, fake, source=source)
+    except Killed:
+        pass
+    finally:
+        monkeypatch.setattr(mcp_deploy.os, kind, real)
+    if "state" not in seen:
+        return False
+    thaw(root, seen["state"])
+    return True
+
+
+def kill_rewrite(root, monkeypatch, cut, operation="apply", source=DESIRED):
+    """Kill in the middle of the in-place write of server.py after `cut` bytes."""
+    real = mcp_deploy.rewrite
+    state = {}
+
+    def partial(target, content):
+        if state:  # the process is dead: rollback handlers in this test must not write
+            raise Killed
+        with open(target, "r+b") as handle:
+            handle.truncate(0)
+            handle.write(content[:cut])
+        state["state"] = freeze(root)
+        raise Killed
+
+    monkeypatch.setattr(mcp_deploy, "rewrite", partial)
+    try:
+        deploy(operation, root, mcp_host(), source=source)
+    except Killed:
+        pass
+    finally:
+        monkeypatch.setattr(mcp_deploy, "rewrite", real)
+    thaw(root, state["state"])
+
+
+def assert_recovers(root):
+    """From a killed state: apply completes, then revert restores the original."""
+    fake = mcp_host()
+    assert deploy("apply", root, fake).startswith(("MCP entry point apply", "MCP compat"))
+    assert (root / "server.py").read_text() == DESIRED
+    receipt = json.loads((root / "plane-toolchain-ce-receipt.json").read_text())
+    assert receipt == {"installed": sha(DESIRED.encode()), "original": sha(ORIGINAL)}
+    assert deploy("revert", root, fake).startswith("MCP entry point revert verified")
+    assert (root / "server.py").read_bytes() == ORIGINAL
+
+
+@pytest.mark.parametrize("kind", ["fsync", "replace"])
+@pytest.mark.parametrize("nth", range(1, 9))
+def test_kill_at_each_apply_write_step_recovers(root, monkeypatch, kind, nth):
+    if not kill_at_call(root, monkeypatch, kind, nth):
+        pytest.skip("fewer steps than this index")
+    assert (root / "server.py").read_bytes() in (ORIGINAL, DESIRED.encode())
+    assert_recovers(root)
+
+
+@pytest.mark.parametrize("cut", [0, 5, len(DESIRED) - 1])
+def test_kill_mid_server_write_leaves_empty_or_prefix_and_apply_recovers(root, monkeypatch, cut):
+    kill_rewrite(root, monkeypatch, cut)
+    assert (root / "server.py").read_bytes() == DESIRED.encode()[:cut]
+    assert_recovers(root)
+
+
+@pytest.mark.parametrize("cut", [0, 5, len(DESIRED) - 1])
+def test_kill_mid_server_write_then_revert_recovers(root, monkeypatch, cut):
+    kill_rewrite(root, monkeypatch, cut)
+    assert deploy("revert", root, mcp_host()).startswith("MCP entry point revert verified")
+    assert (root / "server.py").read_bytes() == ORIGINAL
+
+
+@pytest.mark.parametrize("cut", [0, 7, len(ORIGINAL) - 1])
+def test_kill_mid_revert_write_leaves_prefix_of_backup_and_both_recover(root, monkeypatch, cut):
+    deploy("apply", root, mcp_host())
+    kill_rewrite(root, monkeypatch, cut, operation="revert")
+    assert (root / "server.py").read_bytes() == ORIGINAL[:cut]
+    assert deploy("revert", root, mcp_host()).startswith("MCP entry point revert verified")
+    assert (root / "server.py").read_bytes() == ORIGINAL
+
+
+@pytest.mark.parametrize("cut", [0, 7, len(ORIGINAL) - 1])
+def test_kill_mid_revert_write_then_apply_recovers(root, monkeypatch, cut):
+    deploy("apply", root, mcp_host())
+    kill_rewrite(root, monkeypatch, cut, operation="revert")
+    deploy("apply", root, mcp_host())
+    assert (root / "server.py").read_text() == DESIRED
+
+
+def test_recovery_still_refuses_a_foreign_file_after_a_partial_write(root, monkeypatch):
+    kill_rewrite(root, monkeypatch, 5)
+    (root / "server.py").write_text("print('host edit')\n")
+    with pytest.raises(ValueError, match="reconcile"):
+        deploy("apply", root, mcp_host())
+    with pytest.raises(ValueError, match="refusing overwrite"):
+        deploy("revert", root, mcp_host())
+
+
+def test_failed_health_after_recovery_does_not_write_the_partial_bytes_back(root, monkeypatch):
+    kill_rewrite(root, monkeypatch, 5)
+    fake = mcp_host()
+    fake.containers["plane-mcp"]["health"] = "starting"
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        deploy("apply", root, fake)
+    assert (root / "server.py").read_bytes() == ORIGINAL
+    assert_recovers(root)
+
+
+def test_backup_is_written_atomically_with_the_entry_point_mode(root, monkeypatch):
+    seen = []
+    real = mcp_deploy.os.replace
+    backup = root / "server.py.before-plane-toolchain-ce"
+
+    def replace(source, destination):
+        if str(destination) == str(backup):
+            seen.append(
+                (
+                    str(source),
+                    (root / "server.py").read_bytes(),
+                    oct(os.stat(source).st_mode & 0o777),
+                )
+            )
+        real(source, destination)
+
+    monkeypatch.setattr(mcp_deploy.os, "replace", replace)
+    deploy("apply", root, mcp_host())
+    assert len(seen) == 1
+    source, server_then, mode = seen[0]
+    assert source.startswith(str(backup)) and source != str(backup)  # temp beside it
+    assert server_then == ORIGINAL  # server.py untouched until the backup is whole
+    assert mode == "0o640"
+    assert not list(root.glob("*.tmp"))
+    assert backup.read_bytes() == ORIGINAL and backup.stat().st_mode & 0o777 == 0o640
