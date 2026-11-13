@@ -1,0 +1,38 @@
+tests/test_workspace_rename_deploy.py
+  s_ede55e2c788ed0::t_b613843b2cc00f 622
+  s_ede55e2c788ed0::t_2fb473b7a6259e 594-601
+  s_ede55e2c788ed0::t_01571398861a50 1239-1240
+  s_ede55e2c788ed0::t_50a075b4f7b67c 507,512-513
+  s_ede55e2c788ed0::t_f9a25ae5269c3b 1
+  s_ede55e2c788ed0::t_7d5c863e52cf50 676-677
+  s_ede55e2c788ed0::t_f8fb2243f7b353 993-995
+  s_ede55e2c788ed0::t_bab230a807e7e9 987-992,996-1238,1241-1316
+  s_ede55e2c788ed0::t_1d7402734b0153 7
+  s_ede55e2c788ed0::t_cdaed31e78b082 910,918
+  s_ede55e2c788ed0::t_048e2148b88768 612-613
+  s_ede55e2c788ed0::t_2f70ccf0972f1e 1317-1318
+src/plane_toolchain/workspace_rename.py
+  s_ede55e2c788ed0::t_a0ef077bbecf0c 31-33
+  s_ede55e2c788ed0::t_f8f3aca6619325 380-383
+  s_ede55e2c788ed0::t_4167ba677eebf2 274-277,280-283,285-286
+  s_ede55e2c788ed0::t_068779d0c303a4 512-572,574,576-580,583-586,590,598,602,605-631,643-653,655,665,670-672,686-687,689-696,698-699,713-717,721,724,751-795,801-802,804-815,817-819,821-823
+  s_ede55e2c788ed0::t_80e320e97b58b2 869-870
+  s_ede55e2c788ed0::t_953ec613ccd5ba 891,893-895,901-903
+  s_ede55e2c788ed0::t_5cb1a69902a0b0 868,872,883,890
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "509e9c82b22f3d0a576c29a7858bcf1bf625f59f",
+  "prompts": {},
+  "sessions": {
+    "s_ede55e2c788ed0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0efdfaa0-8892-4410-bfde-2ef5da9736c1",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
