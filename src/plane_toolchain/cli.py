@@ -46,8 +46,32 @@ def environment(env: Mapping[str, str], root: Path) -> dict[str, str]:
     merged = dict(env)
     merged.update(session.connection(root, env))
     if "PLANE_ENABLED" not in env:
-        merged["PLANE_ENABLED"] = "true" if session.switch(root, env) == "enabled" else "false"
+        state = session.switch(root, env)
+        merged["PLANE_ENABLED"] = {"enabled": "true", "disabled": "false"}.get(state, "invalid")
     return merged
+
+
+def leaves(error: BaseException) -> list[BaseException]:
+    """Flatten exception groups, which anyio task groups wrap around session errors."""
+    if isinstance(error, BaseExceptionGroup):
+        return [leaf for inner in error.exceptions for leaf in leaves(inner)]
+    return [error]
+
+
+def classify(error: BaseException) -> tuple[int, str | None]:
+    """Map a raised error, possibly a group, to (exit code, message)."""
+    found = leaves(error)
+    for kind, code, message in (
+        (ReadbackError, 5, "write not confirmed by readback; check the remote state"),
+        (UsageError, 2, None),
+        (ValueError, 4, None),
+    ):
+        hits = [leaf for leaf in found if isinstance(leaf, kind)]
+        if hits:
+            return code, message or str(hits[0])
+    if any(isinstance(leaf, KeyboardInterrupt) for leaf in found):
+        return 130, None
+    return 4, FAILED
 
 
 async def execute(namespace: argparse.Namespace, call, project: str) -> Any:
@@ -85,21 +109,18 @@ def main(
         merged = environment(env, root)
         if namespace.project:
             merged["PLANE_PROJECT"] = namespace.project
+        if merged["PLANE_ENABLED"] not in {"true", "false"}:
+            return fail(3, "Invalid PLANE_ENABLED")
         try:
             settings = Settings.from_env(merged)
         except ValueError as error:
             return fail(3, str(error))
         data = asyncio.run(run(namespace, merged, settings.project, connect))
-    except UsageError as error:
-        return fail(2, str(error))
-    except ReadbackError:
-        return fail(5, "write not confirmed by readback; check the remote state")
-    except KeyboardInterrupt:
-        return 130
-    except ValueError as error:
-        return fail(4, str(error))
-    except Exception:  # noqa: BLE001 - transport text may hold secrets; print fixed text only
-        return fail(4, FAILED)
+    except SystemExit:
+        raise
+    except BaseException as error:  # noqa: BLE001 - map everything; never print a traceback
+        code, message = classify(error)
+        return 130 if code == 130 else fail(code, message or FAILED)
     out.write(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
     return 0
 

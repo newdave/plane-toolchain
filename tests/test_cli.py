@@ -1,9 +1,11 @@
+import asyncio
 import io
 import json
 from contextlib import asynccontextmanager
 
+import anyio
 import pytest
-from plane_toolchain.cli import environment, main
+from plane_toolchain.cli import ReadbackError, UsageError, classify, environment, main
 
 PROJECT = "00000000-0000-0000-0000-000000000001"
 OTHER = "00000000-0000-0000-0000-000000000002"
@@ -163,3 +165,63 @@ def test_environment_enabled_falls_back_to_switch(tmp_path):
     (tmp_path / "config/local.env").write_text("PLANE_ENABLED=true\n")
     assert environment({}, tmp_path)["PLANE_ENABLED"] == "true"
     assert environment({"PLANE_ENABLED": "false"}, tmp_path)["PLANE_ENABLED"] == "false"
+
+
+def grouped(error):
+    """A connect whose body runs in a real anyio task group, like the transport."""
+
+    class Grouped(Fake):
+        @asynccontextmanager
+        async def connect(self, env=None):
+            self.entered += 1
+
+            async def call(name, args):
+                raise error
+
+            async with anyio.create_task_group():
+                yield call
+
+    return Grouped()
+
+
+def test_grouped_value_error_keeps_message_and_exit_4(tmp_path):
+    fake = grouped(ValueError("Required MCP tool unavailable"))
+    code, _, err = run(["task", "list"], fake, tmp_path)
+    assert (code, err) == (4, "plane: Required MCP tool unavailable\n")
+
+
+def test_grouped_readback_error_is_exit_5(tmp_path):
+    code, _, err = run(["task", "list"], grouped(ReadbackError()), tmp_path)
+    assert code == 5
+    assert err.startswith("plane: write not confirmed")
+
+
+def test_grouped_usage_error_is_exit_2(tmp_path):
+    code, _, err = run(["task", "list"], grouped(UsageError("bad")), tmp_path)
+    assert (code, err) == (2, "plane: bad\n")
+
+
+def test_grouped_cancelled_error_is_exit_4_without_traceback(tmp_path):
+    code, out, err = run(["task", "list"], grouped(asyncio.CancelledError()), tmp_path)
+    assert code == 4
+    assert err == "plane: Plane MCP request failed; remote outcome must be checked\n"
+    assert "Traceback" not in out + err
+
+
+def test_readback_outranks_value_error_in_a_group():
+    group = BaseExceptionGroup("g", [ValueError("v"), ExceptionGroup("h", [ReadbackError()])])
+    assert classify(group)[0] == 5
+
+
+def test_missing_key_is_configuration_error_without_connecting(tmp_path):
+    fake = Fake()
+    env = {k: v for k, v in ENV.items() if k != "PLANE_API_KEY"}
+    code, _, err = run(["task", "list"], fake, tmp_path, env)
+    assert code == 3
+    assert err == "plane: Missing or invalid PLANE_API_KEY\n"
+    assert fake.entered == 0
+
+
+def test_invalid_enabled_value_is_named(tmp_path):
+    code, _, err = run(["task", "list"], Fake(), tmp_path, {**ENV, "PLANE_ENABLED": "maybe"})
+    assert (code, err) == (3, "plane: Invalid PLANE_ENABLED\n")
