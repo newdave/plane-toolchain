@@ -24,9 +24,20 @@ REWRITE_SCOPE = (
     ("pages", "page", (("description_html", "html"),)),
     ("issue_comments", "comment", (("comment_html", "html"),)),
     ("notifications", "notification", (("data", "json"),)),
+    # ASSUMPTION: comments link to a `Description` row (model `Description`, table
+    # `descriptions`) that carries its own description_html and a workspace_id.
+    ("descriptions", "description", (("description_html", "html"),)),
 )
 REBUILD_FIELDS = ("description_json", "description_binary", "description_stripped")
-REBUILD_TABLES = ("issues", "pages")
+REBUILD_TABLES = ("issues", "pages", "descriptions")
+# Columns apply derives from a rewritten column on in-scope rows; never unfixed.
+DERIVED_COLUMNS = {
+    "issues": REBUILD_FIELDS,
+    "pages": REBUILD_FIELDS,
+    "descriptions": REBUILD_FIELDS,
+    "issue_comments": ("comment_json", "comment_stripped", "comment_binary"),
+}
+MAX_IDS = 50
 
 
 def _count(value, kind, old, hosts):
@@ -83,13 +94,14 @@ def _plan(orm, workspace_id, old, hosts, emit):
 def _unfixed(orm, old, hosts, emit):
     """Report hits outside the rewrite scope by table and column; never change them."""
     in_scope = {(t, c) for t, _, cols in REWRITE_SCOPE for c, _ in cols}
+    in_scope |= {(t, c) for t, cols in DERIVED_COLUMNS.items() for c in cols}
     total = 0
     for db_table, model, column, kind in orm.text_columns():
         if (db_table, column) in in_scope:
             continue
         ids = [
             str(r["pk"])
-            for r in model.all_objects.values("pk", column)
+            for r in model.all_objects.values("pk", column).iterator()
             if _count(r[column], kind, old, hosts)
         ]
         if ids:
@@ -100,7 +112,8 @@ def _unfixed(orm, old, hosts, emit):
                     "table": db_table,
                     "column": column,
                     "count": len(ids),
-                    "ids": ids,
+                    "ids": ids[:MAX_IDS],
+                    **({"truncated": True} if len(ids) > MAX_IDS else {}),
                 }
             )
     return total
@@ -140,7 +153,14 @@ def _django_orm():
     from django.core.cache import cache
     from django.db import models as dj
     from django.db import transaction
-    from plane.db.models import Issue, IssueComment, Notification, Page, Workspace
+    from plane.db.models import (
+        Description,
+        Issue,
+        IssueComment,
+        Notification,
+        Page,
+        Workspace,
+    )
     from plane.utils.constants import RESTRICTED_WORKSPACE_SLUGS
 
     class Unfiltered:  # soft-delete managers hide deleted rows; fall back to the base manager
@@ -157,6 +177,7 @@ def _django_orm():
         "page": Page,
         "comment": IssueComment,
         "notification": Notification,
+        "description": Description,
     }
     orm.models = {key: Unfiltered(model) for key, model in models.items()}
     orm.settings, orm.restricted_slugs = settings, set(RESTRICTED_WORKSPACE_SLUGS)
@@ -177,6 +198,7 @@ def _django_orm():
     return orm
 
 
+# The tail's exit status is always 0: the host must read the final `summary` event's `ok`.
 if "RENAME_REQUEST" in globals():  # the host prepends this only when piping to manage.py shell
     import json as _json
 

@@ -35,7 +35,7 @@ def make_orm(**extra):
                     "id": "i1",
                     "workspace_id": "w1",
                     "description_html": html,
-                    "description_json": {},
+                    "description_json": {"type": "link", "href": URL},
                     "deleted_at": None,
                 },
                 {
@@ -91,6 +91,26 @@ def make_orm(**extra):
                 }
             ],
         ),
+        "description": (
+            "descriptions",
+            {"description_html": "text", "description_json": "json"},
+            [
+                {
+                    "id": "d1",
+                    "workspace_id": "w1",
+                    "description_html": f'<a href="{URL}">x</a>',
+                    "description_json": {"type": "link", "href": URL},
+                    "deleted_at": None,
+                },
+                {  # row of a deleted comment
+                    "id": "d2",
+                    "workspace_id": "w1",
+                    "description_html": f'<a href="{URL}">x</a>',
+                    "description_json": {},
+                    "deleted_at": "2026-01-01",
+                },
+            ],
+        ),
         "webhook_log": (
             "webhook_logs",
             {"response_body": "text"},
@@ -130,13 +150,15 @@ def test_check_reports_planned_rewrites_per_record_and_field():
         ("pages", "p1", "description_html"),
         ("issue_comments", "c1", "comment_html"),
         ("notifications", "n1", "data"),
+        ("descriptions", "d1", "description_html"),
+        ("descriptions", "d2", "description_html"),
     }
     assert plans[("issues", "i1", "description_html")]["count"] == 1
     assert "description_binary" in plans[("issues", "i1", "description_html")]["rebuild"]
     assert "rebuild" not in plans[("notifications", "n1", "data")]
     summary = events[-1]
-    assert summary["event"] == "summary" and summary["ok"] and summary["planned"] == 4
-    assert summary["rebuild"] == 2
+    assert summary["event"] == "summary" and summary["ok"] and summary["planned"] == 6
+    assert summary["rebuild"] == 4
 
 
 def test_check_includes_deleted_and_archived_rows():
@@ -145,6 +167,33 @@ def test_check_includes_deleted_and_archived_rows():
     ok, events = run_check(orm)
     ids = {e["id"] for e in events if e["event"] == "plan"}
     assert ok and {"i1", "p1"} <= ids  # deleted issue and archived page
+
+
+def test_check_plans_description_rows_and_does_not_report_them_unfixed():
+    ok, events = run_check(make_orm())
+    assert ok
+    assert not any(e["event"] == "unfixed" and e["table"] == "descriptions" for e in events)
+
+
+def test_check_does_not_report_rebuilt_columns_of_in_scope_rows_as_unfixed():
+    # i1, p1-style rows carry a matching description_json that apply rebuilds
+    ok, events = run_check(make_orm())
+    assert ok
+    unfixed = {(e["table"], e["column"]) for e in events if e["event"] == "unfixed"}
+    assert ("issues", "description_json") not in unfixed
+    assert ("descriptions", "description_json") not in unfixed
+
+
+def test_check_streams_unfixed_scan_and_caps_ids():
+    rows = [
+        {"id": f"v{n}", "description_html": f'<a href="{URL}">x</a>', "deleted_at": None}
+        for n in range(60)
+    ]
+    orm = make_orm(version=("issue_versions", {"description_html": "text"}, rows))
+    ok, events = run_check(orm)
+    event = next(e for e in events if e["event"] == "unfixed" and e["table"] == "issue_versions")
+    assert event["count"] == 60 and len(event["ids"]) == 50 and event["truncated"] is True
+    assert orm.models["version"].streamed >= 1
 
 
 def test_check_refuses_new_slug_taken_by_soft_deleted_workspace():
@@ -197,6 +246,7 @@ def test_check_never_emits_row_content():
         "ids",
         "ok",
         "planned",
+        "truncated",
         "unfixed",
         "reason",
         "detail",

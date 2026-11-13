@@ -19,7 +19,8 @@ class QuerySet:
         return QuerySet(self.table, keep)
 
     def values(self, *cols):
-        return [{c: r["id"] if c == "pk" else r[c] for c in cols} for r in self.rows]
+        rows = [{c: r["id"] if c == "pk" else r[c] for c in cols} for r in self.rows]
+        return ValuesSet(self.table, rows)
 
     def update(self, **kw):
         for r in self.rows:
@@ -29,6 +30,18 @@ class QuerySet:
 
     def __iter__(self):
         return iter(self.rows)
+
+
+class ValuesSet(list):
+    """Result of `values()`: a list of dicts that also streams through `iterator()`."""
+
+    def __init__(self, table, rows):
+        super().__init__(rows)
+        self.table = table
+
+    def iterator(self):
+        self.table.streamed += 1
+        return iter(list(self))
 
 
 class Manager:
@@ -52,6 +65,7 @@ class Table:
     def __init__(self, db_table, rows, columns):
         self.db_table, self.rows, self.columns = db_table, rows, columns
         self.updates = []
+        self.streamed = 0
         self.objects = Manager(self, False)
         self.all_objects = Manager(self, True)
 
