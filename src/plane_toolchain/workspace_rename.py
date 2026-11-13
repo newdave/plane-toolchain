@@ -18,6 +18,7 @@ import os
 import pathlib
 import stat
 import subprocess
+import sys
 import time
 
 from plane_toolchain import workspace_rename_backend, workspace_rename_match
@@ -1166,5 +1167,100 @@ def entry(seams="host_seams()"):
     )
 
 
-# The host program. T9's main sends it over SSH with the payload (snippet included) on stdin.
+# The host program. main() sends it over SSH with the payload (snippet included) on stdin.
 REMOTE = program(IMPORTS, FUNCTIONS, entry(), SHIPPED_CONSTANTS)
+
+# Owner side only (not shipped): the CLI that sends REMOTE and the payload over SSH.
+SERVICE_VARIABLES = (
+    "PLANE_DB_CONTAINER",
+    "PLANE_REDIS_CONTAINER",
+    "PLANE_WEB_CONTAINER",
+    "PLANE_SPACE_CONTAINER",
+    "PLANE_ADMIN_CONTAINER",
+    "PLANE_WORKER_CONTAINER",
+    "PLANE_BEAT_CONTAINER",
+    "PLANE_LIVE_CONTAINER",
+    "PLANE_MQ_CONTAINER",
+)
+LOCAL_INTERRUPTED = (
+    "Interrupted locally. The host program may still be running or have stopped part way. "
+    "Check the receipt on the host, then rerun the same task to resume or run the revert task."
+)
+
+
+def container_name_ok(name):
+    return (
+        bool(name) and not name.startswith("-") and name.replace("-", "").replace("_", "").isalnum()
+    )
+
+
+def main(argv=None):
+    """Owner CLI: check, apply or revert. Values come from the environment, are validated
+    before SSH and are never printed. The payload (snippet included) goes on stdin; the remote
+    exit code becomes ours."""
+    from plane_toolchain.pages_deploy import valid_live_url
+    from plane_toolchain.remote import require_env, ssh_argv
+
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) != 1 or argv[0] not in ("check", "apply", "revert"):
+        sys.exit("Usage: workspace_rename check|apply|revert")
+    operation = argv[0]
+    old, new, host, api, live_url = require_env(
+        "PLANE_RENAME_FROM",
+        "PLANE_RENAME_TO",
+        "PLANE_MCP_SSH",
+        "PLANE_API_CONTAINER",
+        "PLANE_LIVE_URL",
+    )
+    for name, slug in (("PLANE_RENAME_FROM", old), ("PLANE_RENAME_TO", new)):
+        if not workspace_rename_match.SLUG_RE.match(slug):
+            sys.exit("Invalid " + name)
+    if old == new:
+        sys.exit("PLANE_RENAME_FROM and PLANE_RENAME_TO must differ")
+    if host.startswith("-") or not container_name_ok(api):
+        sys.exit("Invalid deployment destination")
+    if not valid_live_url(live_url):
+        sys.exit("Invalid PLANE_LIVE_URL")
+    api_url = os.environ.get("PLANE_API_URL") or None
+    if api_url and not valid_live_url(api_url):
+        sys.exit("Invalid PLANE_API_URL")
+    services = {}
+    for variable in SERVICE_VARIABLES:
+        value = os.environ.get(variable)
+        if value and not container_name_ok(value):
+            sys.exit("Invalid " + variable)
+        if value:
+            services[variable] = value
+    directory = os.environ.get("PLANE_RENAME_RECEIPT_DIR") or None
+    if directory and (not directory.startswith("/") or any(c.isspace() for c in directory)):
+        sys.exit("Invalid PLANE_RENAME_RECEIPT_DIR")
+    payload = {
+        "operation": operation,
+        "from": old,
+        "to": new,
+        "api": api,
+        "snippet": snippet_source(),
+        "live_url": live_url,
+    }
+    for key, value in (("receipt_dir", directory), ("api_url", api_url), ("services", services)):
+        if value:
+            payload[key] = value
+    try:
+        result = subprocess.run(  # noqa: S603 - validated owner host; fixed remote program
+            ssh_argv(host, REMOTE), input=json.dumps(payload), text=True
+        )
+    except KeyboardInterrupt:
+        print(LOCAL_INTERRUPTED, file=sys.stderr)
+        sys.exit(130)
+    sys.exit(result.returncode)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        print(
+            "Workspace rename failed before or during SSH. No runtime configuration logged.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
