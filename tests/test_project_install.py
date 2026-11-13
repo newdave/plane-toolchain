@@ -616,15 +616,31 @@ def test_shim_clears_virtual_env_for_uv(tmp_path):
 
 def test_every_uv_run_clears_virtual_env():
     mise = tomllib.loads((ROOT / "mise.toml").read_text())
-    covered = mise.get("env", {}).get("VIRTUAL_ENV") is False
     for name, task in mise["tasks"].items():
-        commands = task.get("run", [])
-        for command in [commands] if isinstance(commands, str) else commands:
+        runs = task.get("run", [])
+        runs = [runs] if isinstance(runs, str) else runs
+        assert isinstance(runs, list), name
+        commands = []
+        for item in runs:
+            if isinstance(item, str):
+                commands.append(item)
+            elif isinstance(item, dict):
+                commands.append(str(item.get("run", "")))
+                assert set(item) <= {"run", "task", "tasks"}, (name, item)
+            else:
+                raise AssertionError(f"{name}: unknown run shape {item!r}")
+        for command in commands:
             if "uv run" in command:
-                assert covered or "env -u VIRTUAL_ENV uv run" in command, name
+                unset = task.get("env", {}).get("VIRTUAL_ENV") is False
+                assert unset or "env -u VIRTUAL_ENV uv run" in command, name
     for line in (ROOT / "scripts/plane-mcp.sh").read_text().splitlines():
         if "uv run" in line:
             assert "env -u VIRTUAL_ENV uv run" in line
+
+
+def test_mise_has_no_global_virtual_env_unset():
+    # A top-level [env] entry would also unset it in activated shells.
+    assert "VIRTUAL_ENV" not in tomllib.loads((ROOT / "mise.toml").read_text()).get("env", {})
 
 
 def next_step(tmp_path, capsys, values):
