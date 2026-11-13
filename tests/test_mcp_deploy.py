@@ -984,3 +984,55 @@ def test_backup_is_written_atomically_with_the_entry_point_mode(root, monkeypatc
     assert mode == "0o640"
     assert not list(root.glob("*.tmp"))
     assert backup.read_bytes() == ORIGINAL and backup.stat().st_mode & 0o777 == 0o640
+
+
+# Fix round 1: the backup-prefix rule needs a pending or reverting marker.
+
+
+def test_a_shortened_server_py_with_a_final_receipt_is_refused_not_overwritten(root):
+    deploy("apply", root, mcp_host())
+    (root / "server.py").write_bytes(ORIGINAL[: len(ORIGINAL) // 2])
+    with pytest.raises(ValueError, match="reconcile"):
+        deploy("apply", root, mcp_host())
+    with pytest.raises(ValueError, match="refusing overwrite"):
+        deploy("revert", root, mcp_host())
+    assert (root / "server.py").read_bytes() == ORIGINAL[: len(ORIGINAL) // 2]
+
+
+def test_revert_marks_the_receipt_before_its_rewrite_and_clears_it_after(root):
+    fake = mcp_host()
+    deploy("apply", root, fake)
+    final = (root / "plane-toolchain-ce-receipt.json").read_text()
+    seen = []
+    real = mcp_deploy.rewrite
+    mcp_deploy.rewrite = lambda t, c: (
+        seen.append(json.loads((root / "plane-toolchain-ce-receipt.json").read_text())),
+        real(t, c),
+    )
+    try:
+        deploy("revert", root, fake)
+    finally:
+        mcp_deploy.rewrite = real
+    assert seen[0].get("reverting") is True and seen[0]["installed"] == sha(DESIRED.encode())
+    assert (root / "plane-toolchain-ce-receipt.json").read_text() == final
+
+
+def test_failed_revert_restores_the_unmarked_receipt(root):
+    fake = mcp_host()
+    deploy("apply", root, fake)
+    final = (root / "plane-toolchain-ce-receipt.json").read_text()
+    fake.containers["plane-mcp"]["health"] = "starting"
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        deploy("revert", root, fake)
+    assert (root / "plane-toolchain-ce-receipt.json").read_text() == final
+    assert (root / "server.py").read_text() == DESIRED
+
+
+def test_revert_killed_mid_write_then_apply_and_revert_both_recover(root, monkeypatch):
+    deploy("apply", root, mcp_host())
+    kill_rewrite(root, monkeypatch, 9, operation="revert")
+    receipt = json.loads((root / "plane-toolchain-ce-receipt.json").read_text())
+    assert receipt["reverting"] is True
+    assert deploy("revert", root, mcp_host()).startswith("MCP entry point revert verified")
+    assert (root / "server.py").read_bytes() == ORIGINAL
+    assert "reverting" not in json.loads((root / "plane-toolchain-ce-receipt.json").read_text())

@@ -30,6 +30,8 @@ if config["kind"] == "pages":
 else:
     fake.add("plane-mcp")
     fake.containers["plane-mcp"]["health"] = "starting"
+    if config.get("fail_restart"):
+        fake.fail.append("restart")  # the first restart fails: a failure-triggered rollback
     program = mcp_deploy.REMOTE
 
 real_sleep = time.sleep
@@ -40,7 +42,7 @@ def sleep(seconds):
     if not blocked:
         blocked.append(True)
         pathlib.Path(config["marker"]).write_text("waiting")
-        real_sleep(60)
+        real_sleep(config.get("block", 60))
 
 
 subprocess.run = fake.subprocess_run

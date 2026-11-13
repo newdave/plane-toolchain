@@ -213,7 +213,7 @@ def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypat
     remote("apply", host, monkeypatch)
     assert capsys.readouterr().out == (
         "Pages derived image applied; API healthy; original container retained for rollback"
-        "; retained containers: " + BACKUP + "\n"
+        "; retained containers: " + BACKUP + REMIND + "\n"
     )
     assert host.calls == [
         *LOOKUP,
@@ -605,13 +605,20 @@ def running(fake):
 
 
 NOTE = "Restart policy set to unless-stopped; adjust if your deployment differs\n"
+REMIND = "; run revert before any Compose or orchestrator update of this service"
 APPLIED = (
     "Pages derived image applied; API healthy; original container retained for rollback"
-    "; retained containers: " + BACKUP + "\n"
+    "; retained containers: " + BACKUP + REMIND + "\n"
 )
 APPLIED_WITH_FAILED = (
-    APPLIED.rstrip("\n").replace(BACKUP, BACKUP + ", api-pages-failed-" + str(NOW))
-    + "; run prune to remove retired ones\n"
+    "Pages derived image applied; API healthy; original container retained for rollback"
+    "; retained containers: "
+    + BACKUP
+    + ", api-pages-failed-"
+    + str(NOW)
+    + "; run prune to remove retired ones"
+    + REMIND
+    + "\n"
 )
 
 
@@ -1466,7 +1473,7 @@ def test_build_image_is_a_single_shipped_helper():
 
 def park_retired(fake):
     for name in ("api-pages-reverted-1", "api-pages-failed-2", "api-pages-failed-2-1"):
-        fake.add(name, running=False, RestartPolicy={"Name": "no"})
+        fake.add(name, labels={LABEL: DIGEST}, running=False, RestartPolicy={"Name": "no"})
 
 
 def test_apply_and_revert_results_list_retained_container_names(host):
@@ -1484,34 +1491,69 @@ def test_revert_result_lists_retained_container_names(applied):
     assert "api-pages-reverted-1" in message and "api-pages-failed-2" in message
 
 
-def test_prune_removes_only_stopped_retired_containers(host):
+def prune(fake, confirm=False):
+    data = dict(payload("prune"), confirm=confirm)
+    return pages_deploy.deploy(data, now=lambda: NOW + 0.5, **seams(fake))
+
+
+def test_prune_is_a_dry_run_by_default(host):
     park_retired(host)
-    host.add("api-pages-failed-3", running=True)
-    host.add(BACKUP, running=False)
-    host.add("api-other-pages-failed-9", running=False)
-    message = deploy("prune", host)
+    before = set(host.containers)
+    message = prune(host)
+    assert set(host.containers) == before
+    assert "Dry run" in message and "PLANE_PAGES_PRUNE=yes" in message
+    assert "api-pages-reverted-1" in message and "api-pages-failed-2-1" in message
+    assert "rm" not in {call[0] for call in host.calls}
+
+
+def test_prune_with_confirmation_removes_only_stopped_labelled_retired_containers(host):
+    park_retired(host)
+    host.add("api-pages-failed-3", labels={LABEL: DIGEST}, running=True)
+    host.add(BACKUP, labels={LABEL: DIGEST}, running=False)
+    host.add("api-other-pages-failed-9", labels={LABEL: DIGEST}, running=False)
+    message = prune(host, confirm=True)
     assert set(host.containers) == {"api", BACKUP, "api-pages-failed-3", "api-other-pages-failed-9"}
-    assert "api-pages-reverted-1" in message and "api-pages-failed-3" in message
-    assert "kept running" in message
+    assert "Pruned: " in message and "api-pages-reverted-1" in message
+    assert "kept running: api-pages-failed-3" in message
+
+
+def test_prune_never_removes_an_unlabelled_aside_container(host):
+    # restore_any parks the unlabelled upstream original as `<reverted>-aside`.
+    host.add("api-pages-reverted-1-aside", running=False)
+    assert prune(host, confirm=True) == "No retired containers to prune"
+    assert "api-pages-reverted-1-aside" in host.containers
+
+
+def test_prune_never_removes_a_labelled_aside_container(host):
+    host.add("api-pages-reverted-1-aside", labels={LABEL: DIGEST}, running=False)
+    prune(host, confirm=True)
+    assert "api-pages-reverted-1-aside" in host.containers
+
+
+def test_prune_never_removes_an_unlabelled_failed_container(host):
+    host.add("api-pages-failed-5", running=False)
+    host.add("api-pages-reverted-6", running=False)
+    prune(host, confirm=True)
+    assert {"api-pages-failed-5", "api-pages-reverted-6"} <= set(host.containers)
 
 
 def test_prune_leaves_the_live_api_and_rollback_container(applied):
     park_retired(applied)
-    deploy("prune", applied)
+    prune(applied, confirm=True)
     assert set(applied.containers) == {"api", BACKUP}
     assert applied.containers["api"]["running"]
     assert ("stop", "api") not in applied.calls and ("rm", "api") not in applied.calls
 
 
 def test_prune_with_nothing_retired_changes_nothing(host):
-    assert deploy("prune", host) == "No retired containers to prune"
+    assert prune(host, confirm=True) == "No retired containers to prune"
     assert not {call[0] for call in host.calls} & {"rm", "stop", "rename", "update"}
 
 
 def test_prune_reports_a_container_that_would_not_go(host):
     park_retired(host)
     host.fail.append(("rm", "api-pages-failed-2"))
-    message = deploy("prune", host)
+    message = prune(host, confirm=True)
     assert "api-pages-failed-2" in message and "could not remove" in message
     assert "api-pages-reverted-1" not in host.containers
 
@@ -1519,7 +1561,7 @@ def test_prune_reports_a_container_that_would_not_go(host):
 def test_prune_refuses_legacy_named_state(host):
     host.add(LEGACY_BACKUP, running=False)
     with pytest.raises(ValueError, match="Legacy-named state"):
-        deploy("prune", host)
+        prune(host, confirm=True)
 
 
 def test_main_prune_needs_no_live_url(monkeypatch):
@@ -1530,7 +1572,14 @@ def test_main_prune_needs_no_live_url(monkeypatch):
     monkeypatch.delenv("PLANE_LIVE_URL", raising=False)
     monkeypatch.setattr(subprocess, "run", lambda *args, **kw: calls.append((args, kw)))
     pages_deploy.main()
-    assert json.loads(calls[0][1]["input"]) == {"operation": "prune", "container": "plane-api_1"}
+    assert json.loads(calls[0][1]["input"]) == {
+        "operation": "prune",
+        "container": "plane-api_1",
+        "confirm": False,
+    }
+    monkeypatch.setenv("PLANE_PAGES_PRUNE", "yes")
+    pages_deploy.main()
+    assert json.loads(calls[1][1]["input"])["confirm"] is True
 
 
 def test_failed_restart_policy_update_warns_on_stderr(host, capsys):
@@ -1646,3 +1695,19 @@ def test_replacement_adds_no_label_other_than_the_source_label():
     body = pages_deploy.replacement(original.document("api"), IMAGE, "http://live:3000", DIGEST)
     assert set(body["Labels"]) - set(COMPOSE) == {LABEL}
     assert all(body["Labels"][key] == value for key, value in COMPOSE.items())
+
+
+def test_build_failure_hides_the_base_image_registry(host):
+    host.error_output = (
+        b"ERROR: failed to pull registry.example/plane-backend@sha256:abc\n"
+        b"manifest for registry.example/plane-backend unknown\n"
+    )
+    host.fail.append("build")
+    host.images["sha256:base"] = ["registry.example/plane-backend@sha256:abc"]
+    with pytest.raises(ValueError, match="Image build failed") as error:
+        deploy("apply", host)
+    assert "registry.example" not in str(error.value) and "<base image>" in str(error.value)
+
+
+def test_health_probe_exec_has_a_timeout_in_the_shipped_entry():
+    assert "timeout=20" in pages_deploy.REMOTE

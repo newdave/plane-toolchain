@@ -18,7 +18,16 @@ from plane_toolchain.legacy import (
     NEUTRAL_MCP_RECEIPT_NAME,
     refusal,
 )
-from plane_toolchain.remote import docker, guarded, program, require_env, run_remote, say
+from plane_toolchain.remote import (
+    docker,
+    guarded,
+    hold_sigterm,
+    program,
+    release_sigterm,
+    require_env,
+    run_remote,
+    say,
+)
 
 
 def git_tracked(root):
@@ -98,13 +107,15 @@ def interrupted_write(current, desired, recorded, backup):
     """Return whether current is what a killed in-place write of server.py leaves behind.
 
     That is an empty file or a prefix of the bytes being written: the desired entry point while
-    the receipt is pending for it, or the backup (a killed rollback or revert). Foreign content
-    never matches, so a host edit is still refused.
+    the receipt is pending for it, or the backup while the receipt is pending or marked
+    `reverting` (a killed apply rollback or revert writes one of those first). With a final
+    receipt a shortened file is a host edit and never matches, nor does any foreign content.
     """
     if recorded.get("pending") and recorded.get("installed") == sha256(desired):
         if desired.startswith(current):
             return True
-    return backup is not None and backup.startswith(current)
+    marked = recorded.get("pending") or recorded.get("reverting")
+    return bool(marked) and backup is not None and backup.startswith(current)
 
 
 def plain_entry_point(content):
@@ -242,10 +253,12 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
             receipt.unlink()
 
     def restore():
-        """Put the previous bytes and receipt back, restart; return whether MCP came back."""
+        """Put the previous bytes and receipt back, restart; return whether MCP came back.
+
+        Callers hold SIGTERM off around this (`hold_sigterm`), so it and their report finish first.
+        """
         rewrite(target, current)
-        if operation == "apply":
-            restore_receipt()
+        restore_receipt()
         docker("restart", data["container"], check=False, stdout=subprocess.DEVNULL)
         return wait_healthy(probe, sleep)
 
@@ -259,23 +272,39 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
             "pending": True,
         }
         write_atomic(receipt, json.dumps(pending))
+    else:
+        # A kill mid-revert leaves a prefix of the backup; this marker is what lets a later
+        # apply or revert recognise it (a final receipt never does).
+        write_atomic(receipt, json.dumps(dict(recorded, reverting=True)))
     # This file contains code only; Docker credentials and configuration stay untouched.
     try:
         rewrite(target, content)
     except BaseException:
-        rewrite(target, current)
-        if operation == "apply":
+        mask = hold_sigterm()
+        try:
+            rewrite(target, current)
             restore_receipt()
+        finally:
+            release_sigterm(mask)
         raise
     try:
         docker("restart", data["container"], stdout=subprocess.DEVNULL)
         healthy = wait_healthy(probe, sleep)
     except BaseException:
-        if not restore():
-            say("MCP still unhealthy after rollback", sys.stderr)
+        mask = hold_sigterm()  # A SIGTERM now waits until the rollback and its report are done.
+        try:
+            if not restore():
+                say("MCP still unhealthy after rollback", sys.stderr)
+        finally:
+            release_sigterm(mask)
         raise
     if not healthy:
-        if restore():
+        mask = hold_sigterm()
+        try:
+            came_back = restore()
+        finally:
+            release_sigterm(mask)
+        if came_back:
             raise RuntimeError("MCP did not become healthy; previous entry point restored")
         raise RuntimeError(
             "MCP did not become healthy; previous entry point restored; MCP still unhealthy"
@@ -283,6 +312,13 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
     if operation == "apply":
         final = {"installed": sha256(content), "original": sha256(backup.read_bytes())}
         write_atomic(receipt, json.dumps(final))
+    else:
+        # Clear the `reverting` marker: the receipt is as before the revert.
+        if "reverting" in recorded:  # a recovered revert: the old receipt carried the marker
+            recorded.pop("reverting")
+            write_atomic(receipt, json.dumps(recorded))
+        else:
+            restore_receipt()
     if target.read_bytes() != content:
         raise ValueError("Entry point write not verified")
     return "MCP entry point " + operation + " verified; verify authenticated MCP access separately"
@@ -296,6 +332,8 @@ REMOTE = program(
         sha256,
         rewrite,
         write_atomic,
+        hold_sigterm,
+        release_sigterm,
         fsync_directory,
         legacy_state,
         refusal,

@@ -10,6 +10,7 @@ import http.client
 import io
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -33,7 +34,9 @@ from plane_toolchain.remote import (
     docker,
     docker_ok,
     guarded,
+    hold_sigterm,
     program,
+    release_sigterm,
     require_env,
     run_remote,
     say,
@@ -227,7 +230,11 @@ def build_image(base, source, digest, docker):
             stderr=subprocess.PIPE,
         )
     except subprocess.CalledProcessError as failure:
-        lines = (failure.stderr or b"").decode(errors="replace").splitlines()
+        text = (failure.stderr or b"").decode(errors="replace")
+        # Docker echoes the base image reference; keep the registry host out of the message.
+        for reference in (base, base.partition("@")[0], base.partition("/")[0]):
+            text = text.replace(reference, "<base image>") if reference else text
+        lines = text.splitlines()
         tail = " | ".join(line.strip()[:200] for line in lines[-5:] if line.strip())
         raise ValueError(
             "Image build failed (exit "
@@ -265,28 +272,37 @@ def retained_note(name, docker):
     return note
 
 
-def prune(name, docker, probe):
-    """Remove stopped `-pages-reverted-*` and `-pages-failed-*` containers of `name`.
+def prune(name, docker, probe, confirm=False):
+    """Remove (or, without `confirm`, list) stopped retired derived containers of `name`.
 
-    Never touches the live API, the rollback container, a running container, or anything outside
-    those two name prefixes. Reports what was removed, kept running or could not be removed.
+    Only a container that carries the Pages source label and is named exactly
+    `<name>-pages-(reverted|failed)-<digits>[-<digits>...]` qualifies: never the live API, the
+    rollback container, a running container, an `-aside` parking name or anything unlabelled
+    (an unlabelled one may be the upstream original).
     """
-    retired = [n for n in retained_names(name, docker) if n != backup_name(name)]
-    if not retired:
+    exact = re.compile(re.escape(name) + r"-pages-(reverted|failed)-\d+(-\d+)*")
+    candidates = [n for n in retained_names(name, docker) if exact.fullmatch(n)]
+    eligible, running = [], []
+    for container in candidates:
+        held = json.loads(docker("inspect", container))[0]
+        if source_label(held) is None:
+            continue
+        (running if held["State"].get("Running") else eligible).append(container)
+    if not eligible and not running:
         return "No retired containers to prune"
-    removed, running, stuck = [], [], []
-    for container in retired:
-        if json.loads(docker("inspect", container))[0]["State"].get("Running"):
-            running.append(container)
-        elif probe("rm", container):
-            removed.append(container)
-        else:
-            stuck.append(container)
-    parts = ["Pruned: " + ", ".join(removed) if removed else "Nothing pruned"]
+    parts = []
+    if not confirm:
+        parts.append("Dry run, nothing removed. Would remove: " + (", ".join(eligible) or "none"))
+    else:
+        removed = [c for c in eligible if probe("rm", c)]
+        stuck = [c for c in eligible if c not in removed]
+        parts.append("Pruned: " + ", ".join(removed) if removed else "Nothing pruned")
+        if stuck:
+            parts.append("could not remove: " + ", ".join(stuck))
     if running:
         parts.append("kept running: " + ", ".join(running))
-    if stuck:
-        parts.append("could not remove: " + ", ".join(stuck))
+    if not confirm and eligible:
+        parts.append("set PLANE_PAGES_PRUNE=yes to remove them")
     return "; ".join(parts)
 
 
@@ -388,18 +404,22 @@ def revert(current, payload, backup, docker, probe, health, now):
         docker("start", name)
         health(name, pages=False)
     except BaseException as error:
+        mask = hold_sigterm()  # A SIGTERM now waits until the recovery is done.
         try:
-            if "original" in done:
-                docker("stop", name)
-                docker("rename", name, backup)
-                set_restart(probe, "no", backup)
-            if "derived" in done:
-                docker("rename", reverted, name)
-            set_restart(probe, policy, name)
-            docker("start", name)
-        except Exception:
-            restore_any(name, backup, reverted, probe, docker, policy)
-            raise error  # Recovery error stays as __context__.
+            try:
+                if "original" in done:
+                    docker("stop", name)
+                    docker("rename", name, backup)
+                    set_restart(probe, "no", backup)
+                if "derived" in done:
+                    docker("rename", reverted, name)
+                set_restart(probe, policy, name)
+                docker("start", name)
+            except Exception:
+                restore_any(name, backup, reverted, probe, docker, policy)
+                raise error  # Recovery error stays as __context__.
+        finally:
+            release_sigterm(mask)
         raise
     return "Original API container restored; derived container retained stopped" + retained_note(
         name, docker
@@ -491,18 +511,23 @@ def apply(current, payload, backup, docker, probe, create, health, now):
         docker("start", name)
         health(name)
     except BaseException:
-        if probe("inspect", name):
-            probe("stop", name)
-            failed = failed_name(name, probe, now)
-            docker("rename", name, failed)
-            set_restart(probe, "no", failed)
-        docker("rename", backup, name)
-        set_restart(probe, policy, name)
-        docker("start", name)
+        mask = hold_sigterm()  # A SIGTERM now waits until the rollback is done.
+        try:
+            if probe("inspect", name):
+                probe("stop", name)
+                failed = failed_name(name, probe, now)
+                docker("rename", name, failed)
+                set_restart(probe, "no", failed)
+            docker("rename", backup, name)
+            set_restart(probe, policy, name)
+            docker("start", name)
+        finally:
+            release_sigterm(mask)
         raise
     return (
         "Pages derived image applied; API healthy; original container retained for rollback"
         + retained_note(name, docker)
+        + "; run revert before any Compose or orchestrator update of this service"
     )
 
 
@@ -548,7 +573,7 @@ def deploy(payload, docker, probe, create, health, now):
     if found:
         raise ValueError(refusal(found))
     if operation == "prune":
-        return prune(name, docker, probe)
+        return prune(name, docker, probe, payload.get("confirm", False))
     if missing is not None:
         # A missing API with a rollback container is a half-finished apply or revert.
         if operation not in ("apply", "revert") or not probe("inspect", backup):
@@ -563,7 +588,7 @@ def deploy(payload, docker, probe, create, health, now):
 
 
 REMOTE = program(
-    ["http.client", "io", "json", "socket", "subprocess", "sys", "tarfile", "time"],
+    ["http.client", "io", "json", "re", "socket", "subprocess", "sys", "tarfile", "time"],
     [
         docker,
         docker_ok,
@@ -578,6 +603,8 @@ REMOTE = program(
         build_context,
         docker_create,
         build_image,
+        hold_sigterm,
+        release_sigterm,
         retained_names,
         retained_note,
         prune,
@@ -597,7 +624,9 @@ REMOTE = program(
     ],
     guarded(
         "say(deploy(json.load(sys.stdin), docker, docker_ok, docker_create,\n"
-        "    lambda name, pages=True: healthy(name, docker_ok, time.sleep, pages=pages), time.time))\n"
+        "    lambda name, pages=True: healthy(\n"
+        "        name, lambda *a: docker_ok(*a, timeout=20), time.sleep, pages=pages\n"
+        "    ), time.time))\n"
     ),
     PAGES,
 )
@@ -640,7 +669,8 @@ def main():
         host, container = require_env("PLANE_MCP_SSH", "PLANE_API_CONTAINER")
         if host.startswith("-") or not container.replace("-", "").replace("_", "").isalnum():
             raise ValueError("Invalid deployment destination")
-        run_remote(host, REMOTE, dict(operation=operation, container=container))
+        confirm = os.environ.get("PLANE_PAGES_PRUNE") == "yes"
+        run_remote(host, REMOTE, dict(operation=operation, container=container, confirm=confirm))
         return
     host, container, live_url = require_env(
         "PLANE_MCP_SSH", "PLANE_API_CONTAINER", "PLANE_LIVE_URL"

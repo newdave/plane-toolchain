@@ -68,6 +68,7 @@ env = { VIRTUAL_ENV = false }
 run = "uv run --locked python -m plane_toolchain.pages_deploy revert"
 env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-pages:prune"]
+description = "Dry run by default; PLANE_PAGES_PRUNE=yes removes retired derived containers"
 run = "uv run --locked python -m plane_toolchain.pages_deploy prune"
 env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-pages:check"]

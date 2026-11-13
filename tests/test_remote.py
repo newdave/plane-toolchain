@@ -381,3 +381,22 @@ def test_mcp_apply_sigterm_restores_bytes_and_receipt(tmp_path):
     assert (host / "server.py").read_bytes() == ORIGINAL
     assert not (host / "plane-toolchain-ce-receipt.json").exists()
     assert state["calls"].count(["restart", "plane-mcp"]) == 2  # apply, then the rollback
+
+
+def test_mcp_sigterm_during_a_failure_triggered_rollback_does_not_abort_it(tmp_path):
+    from test_mcp_deploy import DESIRED, ORIGINAL
+
+    host = tmp_path / "host"
+    host.mkdir()
+    (host / "server.py").write_bytes(ORIGINAL)
+    payload = dict(operation="apply", directory=str(host), container="plane-mcp", source=DESIRED)
+    config = {"kind": "mcp", "payload": payload, "fail_restart": True, "block": 3}
+    code, state, err = run_harness(tmp_path, config)  # SIGTERM lands in the rollback's health wait
+    assert state is not None, err
+    # The rollback ran to its end (it reports on stderr only after its health wait) ...
+    assert "MCP still unhealthy after rollback" in err and "Traceback" not in err
+    assert (host / "server.py").read_bytes() == ORIGINAL
+    assert not (host / "plane-toolchain-ce-receipt.json").exists()
+    assert state["calls"].count(["restart", "plane-mcp"]) == 2
+    # ... and the deferred SIGTERM was delivered afterwards.
+    assert code == 143 and "Terminated (SIGTERM)" in err
