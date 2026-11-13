@@ -107,7 +107,7 @@ The remote helpers ignore SIGHUP and a closed SSH channel, so a dropped session 
 
 ## Workspace slug rename
 
-Owner tasks rename a Plane workspace slug in place on a live host. `check` is read-only and the safe default. `apply` and `revert` stop services, so obtain deployment authority first.
+Owner tasks rename a Plane workspace slug in place on a live host. The full owner runbook (prerequisites, pre-live verification, failure handling, revert and the manual `pg_restore` last resort) is [Workspace slug rename runbook](workspace-rename.md). `check` is read-only and the safe default. `apply` and `revert` stop services, so obtain deployment authority first.
 
 ```sh
 mise run owner:plane-workspace-rename:check
