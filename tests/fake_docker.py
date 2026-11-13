@@ -11,6 +11,10 @@ import time
 from urllib.parse import parse_qs, urlparse
 
 
+class Killed(BaseException):
+    """Simulated process death: not an Exception, so no handler in the code under test eats it."""
+
+
 class FakeDocker:
     """Model containers (name, labels, running state, restart policy) and record calls."""
 
@@ -25,6 +29,14 @@ class FakeDocker:
         self.builds = []
         self.tracked = False
         self.created_healthy = True
+        # Rename host seams. on_manage_shell(stdin_text) -> (stdout, returncode) serves
+        # `exec ... manage.py shell`; pg_dump* serve the backup stream; queue_depths is one
+        # RabbitMQ depth per probe (the last repeats); crash_at arms a one-shot Killed.
+        self.on_manage_shell = None
+        self.pg_dump = b"PGDMP-fake-dump"
+        self.pg_dump_code = 0
+        self.queue_depths = [0]
+        self.crash_label = None
 
     def add(self, name, labels=None, running=True, healthy=True, hostname=None, **host_config):
         ident = self.new_id()
@@ -117,6 +129,10 @@ class FakeDocker:
             self.containers[rest[1]]["host_config"]["RestartPolicy"] = policy
             return 0, b""
         if command == "exec":
+            routed = self.route_rename_exec(rest, input)
+            if routed is not None:
+                return routed
+        if command == "exec":
             container = self.containers.get(rest[0])
             ok = bool(container and container["running"] and container["healthy"])
             if ok and "/ce-pages/" in rest[-1]:
@@ -134,6 +150,54 @@ class FakeDocker:
             self.builds.append((rest[1], files))
             return 0, b""
         raise AssertionError(f"Unexpected docker call {args}")
+
+    def route_rename_exec(self, rest, input):
+        """Serve manage.py shell, pg_dump and the RabbitMQ queue probe; None for other execs."""
+        rest = list(rest)
+        while rest and rest[0].startswith("-"):  # exec flags such as -i
+            rest.pop(0)
+        container = self.containers.get(rest[0]) if rest else None
+        if container is None:
+            return None
+        if not container["running"]:
+            return 1, b""
+        if "manage.py" in rest and "shell" in rest:
+            assert self.on_manage_shell is not None, "no manage.py shell handler set"
+            stdout, code = self.on_manage_shell((input or b"").decode())
+            return code, stdout if isinstance(stdout, bytes) else stdout.encode()
+        if rest[-1].startswith("pg_dump"):
+            return self.pg_dump_code, self.pg_dump
+        if "rabbitmqctl" in rest and "list_queues" in rest:
+            depths = self.queue_depths
+            depth = depths.pop(0) if len(depths) > 1 else depths[0]
+            return 0, f"celery\t{depth}\nother\t0\n".encode()
+        return None
+
+    def crash_at(self, label):
+        self.crash_label = label
+
+    def checkpoint(self, label):
+        """Orchestration seam: raise Killed once at the armed label."""
+        if self.crash_label == label:
+            self.crash_label = None
+            raise Killed(label)
+
+    def popen(self, argv, **kw):
+        """Streaming stand-in for subprocess.Popen on a docker argv."""
+        assert argv[0] == "docker"
+        self.streams[tuple(argv[1:])] = (kw.get("stdout"), kw.get("stderr"))
+        code, stdout = self.execute(*argv[1:], input=None)
+        process = io.BytesIO(stdout)
+
+        class Process:
+            stdout = process
+            returncode = None
+
+            def wait(self):
+                self.returncode = code
+                return code
+
+        return Process()
 
     def failing(self, args):
         for entry in self.fail:
