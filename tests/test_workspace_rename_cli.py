@@ -160,6 +160,7 @@ def test_entry_wrapper_failure_message_leaks_no_config(run, monkeypatch, capsys)
     )
     import runpy
 
+    monkeypatch.delitem(sys.modules, "plane_toolchain.workspace_rename")
     with pytest.raises(SystemExit) as stop:
         runpy.run_module("plane_toolchain.workspace_rename", run_name="__main__")
     assert stop.value.code == 1
