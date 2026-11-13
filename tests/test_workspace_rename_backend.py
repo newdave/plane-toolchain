@@ -1349,6 +1349,7 @@ def run_flush(orm, **extra):
 
 def test_flush_cache_clears_cache():
     orm = make_orm()
+    orm.settings.SESSION_ENGINE = "django.contrib.sessions.backends.db"
     orm.cache.update({"/api/workspaces/": "old-slug", "/api/users/me/workspaces/": "x"})
     ok, events = run_flush(orm)
     assert ok and orm.cache == {}
@@ -1370,8 +1371,37 @@ def test_flush_cache_dry_run_reports_session_cache_without_clearing():
     ok, events = run_flush(orm, dry_run=True)
     assert ok and orm.cache == {"k": "v"}
     assert events[-1]["cleared"] is False and events[-1]["sessions_in_cache"] is True
-    orm.settings.SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"  # db survives
-    assert run_flush(orm, dry_run=True)[1][-1]["sessions_in_cache"] is False
+
+
+@pytest.mark.parametrize(
+    "engine,expected",
+    [
+        ("django.contrib.sessions.backends.cache", True),
+        ("django.contrib.sessions.backends.db", False),
+        ("django.contrib.sessions.backends.cached_db", False),  # the db copy survives
+        ("django.contrib.sessions.backends.file", False),
+        ("django.contrib.sessions.backends.signed_cookies", False),
+        ("plane.custom.backends.cache", "unknown"),  # never guessed from the name
+        (None, "unknown"),
+    ],
+)
+def test_flush_cache_maps_known_session_engines_only(engine, expected):
+    orm = make_orm()
+    if engine is not None:
+        orm.settings.SESSION_ENGINE = engine
+    summary = run_flush(orm, dry_run=True)[1][-1]
+    assert summary["sessions_in_cache"] == expected
+    assert "session_cache_alias" not in summary
+    assert "backends" not in json.dumps(summary)  # the engine name is never emitted
+
+
+@pytest.mark.parametrize("alias,reported", [("default", False), ("sessions", True)])
+def test_flush_cache_reports_a_non_default_session_cache_alias(alias, reported):
+    orm = make_orm()
+    orm.settings.SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+    orm.settings.SESSION_CACHE_ALIAS = alias
+    summary = run_flush(orm, dry_run=True)[1][-1]
+    assert summary.get("session_cache_alias") == (alias if reported else None)
 
 
 def test_flush_cache_failure_ends_with_summary_false():

@@ -654,13 +654,25 @@ def health(args, orm, emit, convert=None, probe=None):
     return ok
 
 
+# Whether each built-in Django session engine keeps sessions only in the cache.
+SESSION_ENGINES = {
+    "django.contrib.sessions.backends.cache": True,
+    "django.contrib.sessions.backends.db": False,
+    "django.contrib.sessions.backends.cached_db": False,  # the db copy survives a clear
+    "django.contrib.sessions.backends.file": False,
+    "django.contrib.sessions.backends.signed_cookies": False,
+}
+
+
 def flush_cache(args, orm, emit, convert=None):
     """Clear the whole Django cache (`cache.clear()`), not pattern deletes, during the outage.
 
-    `sessions_in_cache` tells the operator whether sign-ins are lost with it: only the pure
-    cache session engine keeps sessions there. `dry_run` reports it without clearing. The
+    `sessions_in_cache` tells the operator whether sign-ins are lost with it, from the known
+    Django engines only (SESSION_ENGINES); any other engine is "unknown", never guessed. A
+    non-default SESSION_CACHE_ALIAS is reported too. `dry_run` reports without clearing. The
     engine name itself is never emitted."""
-    engine = str(getattr(orm.settings, "SESSION_ENGINE", ""))
+    engine = getattr(orm.settings, "SESSION_ENGINE", None)
+    alias = getattr(orm.settings, "SESSION_CACHE_ALIAS", "default")
     summary = {"event": "summary", "ok": False, "step": "cache"}
     cleared = not args.get("dry_run")
     if cleared:
@@ -670,8 +682,11 @@ def flush_cache(args, orm, emit, convert=None):
             emit({"event": "error", "reason": "cache_clear_failed", "detail": type(exc).__name__})
             emit(summary)
             return False
-    sessions = engine.endswith("backends.cache")
-    emit({**summary, "ok": True, "cleared": cleared, "sessions_in_cache": sessions})
+    done = {**summary, "ok": True, "cleared": cleared}
+    done["sessions_in_cache"] = SESSION_ENGINES.get(engine, "unknown")
+    if alias != "default":
+        done["session_cache_alias"] = str(alias)
+    emit(done)
     return True
 
 
