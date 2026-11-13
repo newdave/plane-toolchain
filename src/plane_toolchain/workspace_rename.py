@@ -2,30 +2,35 @@
 
 These functions run on the host inside the stdlib-only REMOTE built by program(), so they take
 every path as an argument and use the standard library only. SHIPPED lists what program()
-ships: fsync_directory and write_atomic (from mcp_deploy), and the receipt, Docker and backup
-functions below.
+ships: fsync_directory and write_atomic (from mcp_deploy), and the receipt, Docker, backup and
+apply state machine functions below. REMOTE is the assembled host program; `deploy` is its
+entry point. `snippet_source` (owner side, not shipped) builds the Django snippet that the
+payload carries to `manage.py shell`.
 `say` and the `docker` helper come from remote.py; program() adds `say` itself.
 
 Messages never carry receipt or journal content.
 """
 
 import hashlib
+import inspect
 import json
 import os
 import pathlib
 import stat
 import subprocess
+import time
 
+from plane_toolchain import workspace_rename_backend, workspace_rename_match
 from plane_toolchain.mcp_deploy import (
     fsync_directory,
     write_atomic,
 )  # shipped to the host by program()
-from plane_toolchain.remote import say  # shipped to the host by program()
+from plane_toolchain.remote import docker, program, say  # docker and say are shipped
 
 # Outage-window Docker orchestration. Only `docker stop`, `start`, `restart` and `exec` (plus
-# read-only `inspect`) are used; nothing here changes a container definition. The program()
-# shipping list is SHIPPED (functions) and SHIPPED_CONSTANTS, with imports hashlib, json, os,
-# pathlib, stat and subprocess. `docker` is remote.docker; `crash` is a test seam.
+# read-only `inspect`) are used; nothing here changes a container definition. REMOTE ships
+# FUNCTIONS (remote.docker plus SHIPPED) with SHIPPED_CONSTANTS and IMPORTS (hashlib, json, os,
+# pathlib, stat, subprocess and time). `crash(label)` is a test seam, a no-op on the host.
 PG_DUMP = 'pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB"'
 SALTBOX_LABEL = "com.github.saltbox.saltbox_managed"
 DRAIN_SECONDS = 60
@@ -266,11 +271,19 @@ def stop_services(names, docker, clock, sleep, crash=lambda label: None):
 
 
 def start_services(names, docker, crash=lambda label: None):
-    """Start the stopped services in reverse stop order. Live was restarted, not stopped."""
+    """Start the stopped services in reverse stop order. Live was restarted, not stopped.
+
+    Every service is tried; failures are collected and raised together, by service key."""
+    failed = []
     for key in ("admin", "space", "web", "worker", "beat"):
         crash("before_start_" + names[key])
-        docker("start", names[key])
+        try:
+            docker("start", names[key])
+        except Exception:  # noqa: BLE001 - try the rest, then report every failure
+            failed.append(key)
         crash("after_start_" + names[key])
+    if failed:
+        raise RuntimeError("could not start: " + ", ".join(failed))
 
 
 def detect_saltbox(names, docker):
@@ -360,6 +373,514 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None):
     return digest.hexdigest()
 
 
+# --- T7: the apply state machine -------------------------------------------------------------
+
+SHELL = ("python", "manage.py", "shell")
+APPLY_OPS = ("step_slug", "step_rows")  # the only operations that emit journal events
+INTERRUPTED = (
+    "Rename interrupted ({}). Services may be stopped. The receipt keeps the last completed "
+    "step: rerun apply to resume (it stops services first), or run revert."
+)
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def journal_workspace(records):
+    """The renamed workspace id from the journal's workspace record, or None. Two ids refuse."""
+    ids = {r.get("id") for r in records if isinstance(r, dict) and r.get("kind") == "workspace"}
+    if len(ids) > 1:
+        raise RuntimeError("journal names more than one workspace; refusing")
+    return ids.pop() if ids else None
+
+
+def run_snippet(api, snippet, op, args, directory, popen, uid=None):
+    """Run one snippet operation through `docker exec -i <api> python manage.py shell`.
+
+    Stdin is one request line (`RENAME_REQUEST = ...`) and then the snippet source. Stdout is
+    read line by line; non-JSON lines are ignored and never echoed. Each `journal` event is
+    appended to the journal (fsynced) before the next line is read, and is never kept or
+    printed. Returns (summary or None, other events). A non-zero exit gives no summary.
+    """
+    request = json.dumps({"op": op, "args": args}, sort_keys=True)
+    source = "RENAME_REQUEST = __import__('json').loads(" + repr(request) + ")\n" + snippet
+    process = popen(
+        ["docker", "exec", "-i", api, *SHELL],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    summary, events = None, []
+    try:
+        process.stdin.write(source.encode())
+        process.stdin.close()
+        for raw in process.stdout:
+            try:
+                event = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("event") == "journal":
+                if op not in APPLY_OPS or not isinstance(event.get("record"), dict):
+                    raise RuntimeError("unexpected journal event from " + op + "; refusing")
+                append_journal(directory, event["record"], uid)
+            elif event.get("event") == "summary":
+                summary = event
+            else:
+                events.append(event)
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    if process.wait() != 0:
+        summary = None
+    return summary, events
+
+
+def report(op, summary, events):
+    """Tell the operator every refusal, error, skip, unfixed hit and health result, by id only."""
+    planned = 0
+    for event in events:
+        kind = event.get("event")
+        where = " ".join(str(event[k]) for k in ("table", "id") if k in event)
+        if kind == "plan":
+            planned += 1
+        elif kind == "refuse":
+            say("Refused: " + str(event.get("reason")))
+        elif kind == "error":
+            detail = " (" + str(event["detail"]) + ")" if "detail" in event else ""
+            say("Error: " + str(event.get("reason")) + (" at " + where if where else "") + detail)
+        elif kind == "skip":
+            say("Skipped " + where + " (" + str(event.get("reason")) + ")")
+        elif kind == "unfixed":
+            say(
+                f"Not rewritten: {event.get('count')} in {event.get('table')}."
+                f"{event.get('column')} ({event.get('reason')})"
+            )
+        elif kind == "health":
+            say(
+                "Health " + str(event.get("check")) + ": " + ("ok" if event.get("ok") else "FAILED")
+            )
+    if summary is None:
+        say(op + ": no summary from the snippet")
+        return
+    if op == "check" and summary.get("ok"):
+        say(
+            f"check: {summary.get('planned', planned)} values planned, "
+            f"{summary.get('rebuild', 0)} editor rebuilds, {summary.get('unfixed', 0)} not rewritten"
+        )
+    for key in ("rewritten", "not_rebuilt", "restored", "already_restored", "skipped"):
+        if key in summary:
+            say(f"{op}: {key} {summary[key]}")
+    if summary.get("already"):
+        say(op + ": already done")
+    if "sessions_in_cache" in summary:
+        cleared = "cleared" if summary.get("cleared") else "not cleared (dry run)"
+        say(f"Cache {cleared}; sessions kept in the cache: {summary['sessions_in_cache']}")
+    if "session_cache_alias" in summary:
+        say("Sessions use cache alias " + summary["session_cache_alias"])
+    if summary.get("partial"):
+        say(f"Partial restore: {summary.get('skipped', 0)} rows skipped; this is not a full revert")
+
+
+def snippet_ok(api, snippet, op, args, directory, popen, uid=None):
+    """run_snippet and report; return the summary. A missing summary or ok:false raises."""
+    summary, events = run_snippet(api, snippet, op, args, directory, popen, uid)
+    report(op, summary, events)
+    if summary is None:
+        raise RuntimeError(op + " gave no summary")
+    if summary.get("ok") is not True:
+        raise RuntimeError(op + " failed")
+    return summary
+
+
+def inspect_services(names, api, docker):
+    """Refuse unless every service container exists. Messages name the service, not the host."""
+    for key, name in sorted({**names, "api": api}.items()):
+        try:
+            docker("inspect", name)
+        except subprocess.CalledProcessError:
+            raise RuntimeError("container not found for service " + key) from None
+
+
+def read_receipt(directory, uid):
+    """The raw receipt of `directory`, after the private-file checks."""
+    path = pathlib.Path(directory) / "receipt.json"
+    secure_receipt_dir(directory, uid)
+    private_file_check(path, uid, False)
+    try:
+        return json.loads(path.read_text())
+    except ValueError:
+        raise RuntimeError("receipt is unreadable") from None
+
+
+def finish_rotation(directory, uid):
+    """Complete the rotations a reset recorded in `rotating` ({file: new name}); never delete.
+
+    Link, then unlink, so a kill at any point leaves each file under at least one name."""
+    directory = pathlib.Path(directory)
+    receipt = read_receipt(directory, uid)
+    rotating = receipt.get("rotating") or {}
+    for source, target in sorted(rotating.items()):
+        current, rotated = directory / source, directory / target
+        if os.path.lexists(current):
+            private_file_check(current, uid, False)
+            if not os.path.lexists(rotated):
+                os.link(current, rotated)
+            elif not os.path.samefile(current, rotated):
+                raise RuntimeError("rotated file name is taken; refusing")
+            os.unlink(current)
+            fsync_directory(directory)
+        elif not os.path.lexists(rotated):
+            raise RuntimeError("file set aside by the reset is missing; refusing")
+    if "rotating" in receipt:
+        receipt.pop("rotating")
+        write_receipt(directory, receipt)
+
+
+def reset_receipt(directory, clock, uid, crash=lambda label: None):
+    """Explicitly put an apply receipt back to `pending` after a pre-slug failure.
+
+    `advance` never moves backward; this is the one deliberate exception. The backup and the
+    journal are rotated to timestamped names (kept, never deleted; listed in `rotated_backups`
+    and `rotated_journals`) and the backup SHA-256 cleared, so the next apply stops services
+    again, takes a fresh dump and journals the originals it actually rewrites. A pre-slug
+    journal is safe to set aside: the slug transaction rolled back, so nothing it names was
+    changed. The receipt is written first, naming the rotations; finish_rotation completes them
+    now or on the next run."""
+    directory = pathlib.Path(directory)
+    receipt = read_receipt(directory, uid)
+    if receipt.get("phase") != "apply":
+        raise RuntimeError("only an apply receipt can be reset")
+    rotating = dict(receipt.get("rotating") or {})
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(clock()))
+    rotations = {"backup.dump": "rotated_backups", "records.jsonl": "rotated_journals"}
+    for source, field in sorted(rotations.items()):
+        if source in rotating or not os.path.lexists(directory / source):
+            continue
+        stem, _, suffix = source.partition(".")
+        name, serial = stem + "-" + stamp + "." + suffix, 0
+        taken = set(receipt.get(field) or [])
+        while name in taken or os.path.lexists(directory / name):
+            serial += 1
+            name = stem + "-" + stamp + "-" + str(serial) + "." + suffix
+        rotating[source] = name
+        receipt[field] = [*(receipt.get(field) or []), name]
+    if rotating:
+        receipt["rotating"] = rotating
+    receipt["step"] = "pending"
+    receipt.pop("backup_sha256", None)
+    write_receipt(directory, receipt)
+    crash("after_reset_receipt")
+    finish_rotation(directory, uid)
+
+
+def verify_backup(directory, receipt, uid):
+    """Check backup.dump against the receipt before anything runs; return the action needed.
+
+    "rotate": a reset recorded a rotation that a kill interrupted. "adopt": a dump without a
+    recorded SHA-256 at `stopped`, because backup_database links the dump only after a
+    complete, fsynced pg_dump, so a crash between the link and the receipt write leaves exactly
+    that state. None: nothing to do. A recorded SHA-256 must match the file; anything else
+    refuses.
+    """
+    dump = pathlib.Path(directory) / "backup.dump"
+    receipt = receipt or {}
+    if receipt.get("rotating") and receipt.get("step") == "pending":
+        return "rotate"
+    recorded = receipt.get("backup_sha256")
+    present = os.path.lexists(dump)
+    if present:
+        private_file_check(dump, uid, False)
+    step = receipt.get("step")
+    order = step_order("apply")
+    taken = step in order and order.index(step) >= order.index("backed_up")
+    if recorded:
+        if not present:
+            raise RuntimeError("backup.dump is missing; refusing")
+        if sha256_file(dump) != recorded:
+            raise RuntimeError("backup.dump does not match the recorded SHA-256; refusing")
+        return None
+    if present:
+        if step != "stopped":
+            raise RuntimeError("backup.dump has no recorded SHA-256; refusing")
+        return "adopt"
+    if taken:
+        raise RuntimeError("receipt is past the backup but has no backup SHA-256; refusing")
+    return None
+
+
+def slug_state(api, snippet, old, new, workspace_id, directory, popen, uid=None):
+    """Read-only probe of the slug after an unclear step_slug: "renamed", "original" or
+    "unknown".
+
+    With the journalled `workspace_id`, health reports whether NEW is held by exactly that
+    workspace and OLD by none ("renamed"), and, with the slugs swapped, whether OLD is held by
+    it and NEW by none ("original"). Without an id, a passing `check` (OLD live, NEW free) is
+    "original". Health's API check is ignored here; only the slug checks count."""
+
+    def held(first, second):
+        args = {"old": first, "new": second, "workspace_id": workspace_id}
+        summary, events = run_snippet(api, snippet, "health", args, directory, popen, uid)
+        checks = {e.get("check"): e.get("ok") for e in events if e.get("event") == "health"}
+        return summary is not None and checks.get("new_present") and checks.get("old_absent")
+
+    try:
+        if workspace_id:
+            if held(old, new):
+                return "renamed"
+            return "original" if held(new, old) else "unknown"
+        summary, _ = run_snippet(api, snippet, "check", {"old": old, "new": new}, directory, popen)
+        return "original" if summary is not None and summary.get("ok") is True else "unknown"
+    except Exception:  # noqa: BLE001 - a failed probe is an unknown state, never a guess
+        return "unknown"
+
+
+def deploy(data, seams):
+    """Run `check` (read-only) or `apply` (resumable) for one workspace rename on the host.
+
+    data: operation, from, to, api (container), snippet (source), optional receipt_dir,
+    services (PLANE_*_CONTAINER overrides), live_url and api_url. seams: docker, popen, clock,
+    sleep, optional crash(label) and uid. Returns the operator message; raises RuntimeError.
+
+    Apply writes the pending receipt first, then runs each step as effect, then advance:
+    pending, stopped, backed_up, slug_done, rows_done, cache_done, started, complete. Every
+    refusal comes before the first stop. A resume between stopped and cache_done stops the
+    services again first (idempotent). A failure before the slug change restarts the services
+    and resets the receipt to pending with the backup and journal rotated, so the next apply
+    stops again and takes a fresh dump; a kill keeps the receipt, and its matching backup is
+    reused unless a service ran again before the slug change (then it is rotated too). A
+    failure to stop again on resume after a possible slug commit is probed, never reset. An
+    unclear step_slug is probed read-only: renamed continues, original is a pre-slug failure,
+    anything else stops with services down. After the slug change, a failure stops with
+    services down for the operator to resume (apply) or revert. There is no automatic rollback.
+
+    Known risk: a kill of this process between the snippet's print of a journal line and the
+    host's fsync of it can leave a written row without a journal entry; only the pg_dump backup
+    recovers that row. Closing it needs an acknowledgement channel, which this does not have.
+    """
+    docker, popen, clock = seams["docker"], seams["popen"], seams["clock"]
+    crash = seams.get("crash") or (lambda label: None)
+    uid = os.geteuid() if seams.get("uid") is None else seams["uid"]
+    operation = data.get("operation")
+    if operation not in ("check", "apply"):
+        raise RuntimeError("expected check or apply")
+    old, new, api, snippet = data["from"], data["to"], data["api"], data["snippet"]
+    directory = pathlib.Path(data.get("receipt_dir") or receipt_dir(os.environ))
+    names = service_names(data.get("services") or {})
+    options = {key: data[key] for key in ("live_url", "api_url") if data.get(key)}
+    order = step_order("apply")
+
+    def call(op, args):
+        return snippet_ok(api, snippet, op, args, directory, popen, uid)
+
+    def at_or_past(step, mark):
+        return step in order and order.index(step) >= order.index(mark)
+
+    # Preflight: read-only, and it writes nothing (not even the receipt directory) for check.
+    try:
+        inspect_services(names, api, docker)
+        receipt = None
+        if operation == "apply" or os.path.lexists(directory):
+            receipt = load_receipt(directory, old, new, uid)
+        if receipt is not None and receipt.get("phase") != "apply":
+            raise RuntimeError("receipt is in the revert phase; run revert")
+        step = receipt["step"] if receipt else None
+        if step == "complete":
+            return "Rename already complete"
+        records = load_journal(directory, uid) if receipt else []
+        workspace_id = journal_workspace(records)
+        backup_action = verify_backup(directory, receipt, uid)
+        if workspace_id is None and at_or_past(step, "slug_done"):
+            raise RuntimeError("journal has no workspace record; refusing")
+        # The full check runs unless the slug step is done: at or past slug_done, or at
+        # backed_up when a probe shows NEW held by the journalled workspace (kill after commit).
+        slug_committed = at_or_past(step, "slug_done") or (
+            step == "backed_up"
+            and workspace_id is not None
+            and slug_state(api, snippet, old, new, workspace_id, directory, popen, uid) == "renamed"
+        )
+        if not slug_committed:
+            call("check", {"old": old, "new": new})
+        call("flush_cache", {"dry_run": True})
+        detect_saltbox(names, docker)
+    except RuntimeError as failure:
+        text = str(failure)
+        raise RuntimeError(text if text.startswith("Refused") else "Refused: " + text) from None
+    if operation == "check":
+        if step:
+            say("A receipt for this rename is at step " + step + "; apply resumes from there")
+        return "Check passed: apply may run"
+
+    receipt = new_receipt(directory, old, new, uid)  # pending receipt first
+    step = receipt["step"]
+    if step != "pending":
+        say("Resuming the rename from step " + step)
+
+    def stop():
+        remaining = stop_services(names, docker, clock, seams["sleep"], crash)
+        if remaining is None:  # wrong or empty vhost: the drain was never verified
+            raise RuntimeError("celery queue not found; drain not verified")
+
+    def effect(target):
+        nonlocal workspace_id
+        if target == "stopped":
+            stop()
+        elif target == "backed_up":
+            dump = directory / "backup.dump"
+            if backup_action == "adopt" and os.path.lexists(dump):
+                set_receipt_field(directory, "backup_sha256", sha256_file(dump), uid)
+                say("Adopted backup.dump with no recorded SHA-256 (crash after the dump)")
+            elif os.path.lexists(dump):
+                say("Backup already taken; SHA-256 matches")
+            else:
+                backup_database(names["db"], directory, popen, crash, uid)
+                say("Database backed up")
+        elif target == "slug_done":
+            args = {"old": old, "new": new}
+            if workspace_id:
+                args["workspace_id"] = workspace_id
+            summary = call("step_slug", args)
+            renamed = summary.get("workspace_id")
+            journalled = journal_workspace(load_journal(directory, uid))
+            if not renamed or journalled != renamed or workspace_id not in (None, renamed):
+                raise RuntimeError("slug step workspace does not match the journal")
+            workspace_id = renamed
+        elif target == "rows_done":
+            call("step_rows", {"old": old, "new": new, "workspace_id": workspace_id, **options})
+        elif target == "cache_done":
+            call("flush_cache", {})
+        elif target == "started":
+            start_services(names, docker, crash)
+        elif target == "complete":
+            call("health", {"old": old, "new": new, "workspace_id": workspace_id, **options})
+
+    def reason_of(failure):
+        return str(failure) if isinstance(failure, RuntimeError) else type(failure).__name__
+
+    def pre_slug_failure(target, reason):
+        """Restart services and reset the receipt; never returns."""
+        notes = []
+        try:
+            start_services(names, docker, crash)
+        except Exception as problem:  # noqa: BLE001 - report it with the original failure
+            notes.append(reason_of(problem) + "; start the remaining services by hand")
+        try:
+            reset_receipt(directory, clock, uid, crash)
+        except Exception as problem:  # noqa: BLE001
+            notes.append("receipt reset failed: " + reason_of(problem))
+        restarted = "Services restarted" if not notes else "Services not all restarted"
+        raise RuntimeError(
+            f"Rename failed before the slug change ({target}): {reason}. {restarted}; no data "
+            "changed. The receipt is back at pending and the backup was set aside, so the next "
+            "apply stops services and takes a fresh backup. Fix the cause and rerun apply."
+            + "".join(" Warning: " + note + "." for note in notes)
+        )
+
+    def post_slug_failure(target, reason):
+        if target == "complete":
+            raise RuntimeError(
+                f"Rename health check failed: {reason}. Receipt left at started; services "
+                "are running. Investigate, then rerun apply to recheck, or run revert."
+            )
+        if target == "started":
+            state = "Some services did not start"
+        elif target == step:  # stopping services again on resume failed
+            state = "Some services may still be running; stop them by hand"
+        else:
+            state = "Services stay stopped"
+        moving = "" if target == step else f" (moving to {target})"
+        raise RuntimeError(
+            f"Rename stopped at {step}{moving}: {reason}. {state}. Rerun apply to resume, "
+            "or run revert; nothing is rolled back automatically."
+        )
+
+    def any_running():
+        for key in ("beat", "worker", "web", "space", "admin"):
+            state = json.loads(docker("inspect", names[key]))[0].get("State") or {}
+            if state.get("Running"):
+                return True
+        return False
+
+    try:
+        if backup_action == "rotate":
+            finish_rotation(directory, uid)
+        if at_or_past(step, "stopped") and not at_or_past(step, "started"):
+            # A service running again since the kill may have changed data after the backup.
+            if not at_or_past(step, "slug_done") and not slug_committed and any_running():
+                say("Services ran again since the kill; setting the backup aside for a fresh one")
+                reset_receipt(directory, clock, uid, crash)
+                step, workspace_id, backup_action = "pending", None, None
+            else:
+                say("Making sure services are stopped before resuming")
+                stop()
+    except Exception as failure:  # noqa: BLE001
+        reason = reason_of(failure)
+        if at_or_past(step, "slug_done"):
+            post_slug_failure(step, reason)
+        if workspace_id is not None:  # a slug step may have committed: never guess
+            state = slug_state(api, snippet, old, new, workspace_id, directory, popen, uid)
+            if state == "renamed":
+                post_slug_failure(step, reason)
+            if state != "original":
+                raise RuntimeError(
+                    f"Rename resume failed at {step}: {reason}; slug state unknown. Services "
+                    "were left as they are and nothing was reset. Check which workspace holds "
+                    "each slug and which services run, then rerun apply or run revert."
+                ) from None
+        pre_slug_failure(step, reason)
+
+    while step != "complete":
+        target = order[order.index(step) + 1]
+        crash("before_" + target)
+        try:
+            effect(target)
+            crash("after_" + target)
+            advance(directory, target, uid)
+        except Exception as failure:  # Killed and other BaseExceptions propagate untouched
+            reason = reason_of(failure)
+            if target in ("stopped", "backed_up"):
+                pre_slug_failure(target, reason)
+            if target != "slug_done":
+                post_slug_failure(target, reason)
+            # step_slug's outcome is unclear (no summary, non-zero exit, mismatch, or a
+            # failed advance): probe it read-only before deciding anything.
+            journalled = journal_workspace(load_journal(directory, uid))
+            state = slug_state(api, snippet, old, new, journalled, directory, popen, uid)
+            if state == "original":
+                pre_slug_failure(target, reason)
+            if state != "renamed":
+                raise RuntimeError(
+                    f"Rename slug step outcome unknown: {reason}. Services stay stopped; the "
+                    "receipt is at backed_up. Check which workspace holds each slug, then rerun "
+                    "apply or run revert."
+                ) from None
+            say("Slug step unclear, but NEW is held by the journalled workspace; continuing")
+            workspace_id = journalled
+            advance(directory, target, uid)
+        step = target
+    return f"Rename complete: {old} is now {new}"
+
+
+def host_seams():
+    return {"docker": docker, "popen": subprocess.Popen, "clock": time.time, "sleep": time.sleep}
+
+
+def snippet_source():
+    """The Django snippet shipped in the payload: the matcher, then the backend (owner side)."""
+    return (
+        inspect.getsource(workspace_rename_match)
+        + "\n"
+        + inspect.getsource(workspace_rename_backend)
+    )
+
+
 SHIPPED = (
     fsync_directory,
     write_atomic,
@@ -378,10 +899,53 @@ SHIPPED = (
     detect_saltbox,
     set_receipt_field,
     backup_database,
+    receipt_dir,
+    append_journal,
+    load_journal,
+    sha256_file,
+    journal_workspace,
+    run_snippet,
+    report,
+    snippet_ok,
+    inspect_services,
+    read_receipt,
+    finish_rotation,
+    reset_receipt,
+    verify_backup,
+    slug_state,
+    deploy,
+    host_seams,
 )
 SHIPPED_CONSTANTS = {
     "PG_DUMP": PG_DUMP,
     "SALTBOX_LABEL": SALTBOX_LABEL,
     "DRAIN_SECONDS": DRAIN_SECONDS,
     "DRAIN_INTERVAL": DRAIN_INTERVAL,
+    "SHELL": SHELL,
+    "APPLY_OPS": APPLY_OPS,
+    "INTERRUPTED": INTERRUPTED,
 }
+IMPORTS = {"hashlib", "json", "os", "pathlib", "stat", "subprocess", "time"}
+FUNCTIONS = (docker, *SHIPPED)
+
+
+def entry(seams="host_seams()"):
+    """Entry stub: the payload is JSON on stdin. A RuntimeError exits 1 with its message only;
+    an OSError, Ctrl-C or SIGTERM exits 1 with restart-or-resume guidance, never a traceback."""
+    return (
+        "def interrupted(signum, frame):\n"
+        "    raise KeyboardInterrupt\n"
+        "signal.signal(signal.SIGTERM, interrupted)\n"
+        "try:\n"
+        f"    say(deploy(json.load(sys.stdin), {seams}))\n"
+        "except RuntimeError as failure:\n"
+        "    say(str(failure), sys.stderr)\n"
+        "    sys.exit(1)\n"
+        "except (OSError, KeyboardInterrupt) as failure:\n"
+        "    say(INTERRUPTED.format(type(failure).__name__), sys.stderr)\n"
+        "    sys.exit(1)\n"
+    )
+
+
+# The host program. T9's main sends it over SSH with the payload (snippet included) on stdin.
+REMOTE = program(IMPORTS, FUNCTIONS, entry(), SHIPPED_CONSTANTS)
