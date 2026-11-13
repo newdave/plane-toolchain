@@ -10,6 +10,9 @@ if dirs="$(git rev-parse --absolute-git-dir --path-format=absolute --git-common-
   gitdir="${dirs%%$'\n'*}"
   common="${dirs#*$'\n'}"
   [[ "$gitdir" == "$common" || "$(basename "$common")" != .git ]] || main="$(dirname "$common")"
+elif git rev-parse --git-dir >/dev/null 2>&1; then
+  # Inside a repository the command only fails on a git without --path-format (before 2.31).
+  echo "plane: git 2.31 or newer is needed to use a main checkout's files from a worktree; none used" >&2
 fi
 # Succeed only when the real path of $1 is inside directory $2 (symlinks resolved).
 inside() {
@@ -53,6 +56,10 @@ if [[ -n "${PLANE_CONFIG_ROOT:-}" ]]; then
     fi
   fi
 fi
+if [[ -z "${PLANE_API_KEY:-}" && -L "$secrets" ]]; then
+  echo "plane: refusing symlinked secrets file $secrets" >&2
+  exit 1
+fi
 if [[ -z "${PLANE_API_KEY:-}" && -f "$secrets" ]]; then
   # Clients launch the bridge outside mise; use the same key path on macOS and Linux.
   if [[ -z "${SOPS_AGE_KEY_FILE:-}" && -f "$HOME/.config/sops/age/keys.txt" ]]; then
@@ -60,11 +67,25 @@ if [[ -z "${PLANE_API_KEY:-}" && -f "$secrets" ]]; then
   fi
   sops_cmd=(sops)
   command -v sops >/dev/null 2>&1 || sops_cmd=(mise exec -- sops)
+  # Capture first: a process substitution would hide sops' exit status.
+  if ! decrypted="$("${sops_cmd[@]}" decrypt --output-type dotenv "$secrets")"; then
+    echo "plane: could not decrypt $secrets with sops; check that sops is installed and SOPS_AGE_KEY_FILE points at your age key" >&2
+    exit 1
+  fi
   while IFS= read -r line; do
     [[ "$line" == PLANE_API_KEY=* ]] && export PLANE_API_KEY="${line#PLANE_API_KEY=}"
-  done < <("${sops_cmd[@]}" decrypt --output-type dotenv "$secrets")
+  done <<<"$decrypted"
+  unset decrypted
 fi
 env -u VIRTUAL_ENV uv run --locked python -m plane_toolchain.settings
+# Succeed only when the mcp-remote installed under node_modules dir $2 has the version that
+# lockfile $1 pins; npm ci keeps them equal, a stale or hand-edited tree does not.
+locked() {
+  python3 -c 'import json,sys
+want = json.load(open(sys.argv[1]))["packages"]["node_modules/mcp-remote"]["version"]
+have = json.load(open(sys.argv[2] + "/mcp-remote/package.json"))["version"]
+sys.exit(0 if want == have else 1)' "$1" "$2" 2>/dev/null
+}
 # Locked tree from tools/mcp-remote (npm ci); never fetched or resolved at runtime.
 bin="$(pick tools/mcp-remote/node_modules/.bin/mcp-remote link)"
 # A reused main-checkout tree must match this checkout's lockfile, else it never runs.
@@ -77,6 +98,10 @@ if [[ "$bin" != tools/* ]]; then
   fi
 fi
 [[ -x "$bin" ]] || { echo "mcp-remote missing: run 'mise run setup'" >&2; exit 1; }
+if ! locked tools/mcp-remote/package-lock.json "$(dirname "$(dirname "$bin")")"; then
+  echo "mcp-remote in $(dirname "$(dirname "$bin")") does not match the lockfile: run 'mise run setup'" >&2
+  exit 1
+fi
 # mcp-remote expands headers from environment, keeping credentials out of argv.
 # shellcheck disable=SC2016  # literal ${VAR}: mcp-remote expands it, not the shell
 exec "$bin" "$PLANE_MCP_URL" \

@@ -176,6 +176,46 @@ def test_shim_reports_status_and_tolerates_missing_toolchain(tmp_path):
     assert run("bogus").returncode == 2
 
 
+@pytest.mark.parametrize("quote", ['"', "'", ""])
+def test_shim_strips_quotes_around_plane_toolchain_like_the_bridge(tmp_path, quote):
+    apply(tmp_path)
+    toolchain = tmp_path / "tool chain"
+    (toolchain / "src/plane_toolchain").mkdir(parents=True)
+    shutil.copy(
+        ROOT / "src/plane_toolchain/session.py", toolchain / "src/plane_toolchain/session.py"
+    )
+    local = tmp_path / ".plane/local.env"
+    local.write_text(f"PLANE_TOOLCHAIN={quote}{toolchain}{quote}\nPLANE_ENABLED=false\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PLANE_")}
+    result = subprocess.run(  # noqa: S603 - fixed local shim
+        ["bash", str(tmp_path / ".plane/plane.sh"), "status"],  # noqa: S607
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.stdout.strip() == "disabled", result.stderr
+
+
+def test_shim_strips_quotes_from_an_exported_plane_toolchain(tmp_path):
+    apply(tmp_path)
+    toolchain = tmp_path / "tool"
+    (toolchain / "src/plane_toolchain").mkdir(parents=True)
+    shutil.copy(
+        ROOT / "src/plane_toolchain/session.py", toolchain / "src/plane_toolchain/session.py"
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PLANE_")}
+    env["PLANE_TOOLCHAIN"] = f'"{toolchain}"'
+    result = subprocess.run(  # noqa: S603 - fixed local shim
+        ["bash", str(tmp_path / ".plane/plane.sh"), "status"],  # noqa: S607
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.stdout.strip() == "disabled", result.stderr
+
+
 def test_disabled_hint_names_installed_shim():
     with pytest.raises(ValueError, match=r"\.plane/plane\.sh enable"):
         Settings.from_env({"PLANE_CONFIG_ROOT": "/project"})
@@ -462,7 +502,13 @@ def test_revert_survives_prettier_style_json_and_shfmt_stable_shell(tmp_path, st
 
 
 SHFMT_STYLES = ("i0", "i2ci", "i4")
-SHIM_SOURCES = ("plane.sh", "plane.sh.pre-venv", "plane.sh.pre-shfmt", "plane.sh.legacy")
+SHIM_SOURCES = (
+    "plane.sh",
+    "plane.sh.pre-quotes",
+    "plane.sh.pre-venv",
+    "plane.sh.pre-shfmt",
+    "plane.sh.legacy",
+)
 # Every non-current form revert must accept: older templates, and each source in the shfmt
 # styles `-i 0`, `-i 2` (the .shfmt fixtures), `-i 2 -ci` and `-i 4`.
 SHIM_FORMS = [

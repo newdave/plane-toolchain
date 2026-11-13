@@ -63,7 +63,7 @@ Revert never deletes the label, because work items may still use it. It drops th
 
 The shim sets `PLANE_CONFIG_ROOT` to the target project. The bridge then reads `PLANE_ENABLED`, `PLANE_MCP_URL`, `PLANE_WORKSPACE` and `PLANE_PROJECT` only from the target's `.plane/local.env`; exported values still take precedence. It does not read the target's `.env` or `config/` files. `PLANE_API_KEY` comes from the environment or SOPS-encrypted `.plane/plane.enc.env`, as described in [configuration](configuration.md).
 
-`PLANE_TOOLCHAIN` in `.plane/local.env`, or exported, locates this checkout. Each developer's machine sets its own path, so committed files contain no absolute paths. When mise is installed, the shim runs the bridge through `mise -C <toolchain> exec` to use the pinned Node.
+`PLANE_TOOLCHAIN` in `.plane/local.env`, or exported, locates this checkout. The shim drops a trailing ` # comment` and one pair of single or double quotes around it, as the session reader does for every other value. Each developer's machine sets its own path, so committed files contain no absolute paths. When mise is installed, the shim runs the bridge through `mise -C <toolchain> exec` to use the pinned Node.
 
 After apply, set the connection values, run `.plane/plane.sh enable` and restart Codex or Claude sessions. `.plane/plane.sh status` reports the local switch offline; it does not contact Plane.
 

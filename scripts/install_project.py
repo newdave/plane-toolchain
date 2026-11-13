@@ -80,12 +80,20 @@ KNOWN_SHIM_SHA256 = {
     "67c0a37573d63a7ad8a40bd0825a74287ff23b5d8305b78295fd19018aca3d51",
     # plane.sh.pre-venv and plane.sh.pre-shfmt, shfmt -i 4 (same bytes from both).
     "fccb403454719381d6e607105361d1feee74465063b67a2730172376b1be43db",
-    # plane.sh (current template), shfmt -i 0. Its raw and -i 2 form is SHIM itself.
+    # plane.sh.pre-quotes (shim before PTC-76 PLANE_TOOLCHAIN quote stripping), raw and -i 2.
+    "9534600d60faf3c8cf343f46690ba794b26d2099033ab1c927a05b620f66ed57",
+    # plane.sh.pre-quotes, shfmt -i 0.
     "5ee180219ba62a63a99622bcf6ed63b1d59004114bd7ab5b7abf16a457b7ad97",
-    # plane.sh (current template), shfmt -i 2 -ci.
+    # plane.sh.pre-quotes, shfmt -i 2 -ci.
     "3d333a638bc32443f40203e6d3e035de8aebc2205136890ee46dd030d2ceaf60",
-    # plane.sh (current template), shfmt -i 4.
+    # plane.sh.pre-quotes, shfmt -i 4.
     "bf5d23d0062e49a0c79b817fa8f42d5a5ae8cb550f0b0ef62f87986badbdd598",
+    # plane.sh (current template), shfmt -i 0. Its raw and -i 2 form is SHIM itself.
+    "0c646a2bfdad71a388b36cdc0717eababe6c318d523d536ad30d533a636c1541",
+    # plane.sh (current template), shfmt -i 2 -ci.
+    "c72cf940db29097839da6d0e56653d2f8031f24dea5eef1c7c3ebafa6224b847",
+    # plane.sh (current template), shfmt -i 4.
+    "b3946f6369659da6f3c9581654758b5f0e580b8ed0bb2747ca4b53258b6d0bdc",
 }
 SETTING_NAMES = ("PLANE_MCP_URL", "PLANE_WORKSPACE", "PLANE_PROJECT")
 GITIGNORE = (

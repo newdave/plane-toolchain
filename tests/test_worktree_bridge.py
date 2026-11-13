@@ -1,5 +1,6 @@
 """Ignored bridge files resolve from the main checkout when running in a git worktree."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -14,6 +15,11 @@ GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.org"]
 
 def git(cwd, *args):
     subprocess.run([*GIT, *args], cwd=cwd, check=True, capture_output=True)  # noqa: S603 - fixed argv
+
+
+def lockfile(tag, version="1.0.0"):
+    """A package-lock.json; the tag makes lockfiles differ without changing the pin."""
+    return json.dumps({"tag": tag, "packages": {"node_modules/mcp-remote": {"version": version}}})
 
 
 def make_repo(path):
@@ -68,7 +74,7 @@ def bridge(tmp_path):
 
     def install(root, lock="lock-a"):
         # The lockfile is tracked in a real checkout, so every worktree has its own.
-        write(root, "tools/mcp-remote/package-lock.json", lock)
+        write(root, "tools/mcp-remote/package-lock.json", lockfile(lock))
         write(root, "scripts/plane-mcp.sh", (REPO / "scripts/plane-mcp.sh").read_text())
         dest = root / "src/plane_toolchain"
         dest.mkdir(parents=True, exist_ok=True)
@@ -77,7 +83,13 @@ def bridge(tmp_path):
     stubs = tmp_path / "stubs"
     stubs.mkdir()
     # sops reports the file it was asked to decrypt; the key is a fixture value.
-    write(stubs, "sops", '#!/bin/sh\necho "SOPS_FILE=$4" >&2\necho PLANE_API_KEY=fixture\n')
+    write(
+        stubs,
+        "sops",
+        '#!/bin/sh\necho "SOPS_FILE=$4" >&2\n'
+        '[ -z "$SOPS_FAIL" ] || { echo "sops: no key could decrypt" >&2; exit 1; }\n'
+        "echo PLANE_API_KEY=fixture\n",
+    )
     write(stubs, "uv", "#!/bin/sh\nexit 0\n")
     for name in ("sops", "uv"):
         (stubs / name).chmod(0o755)
@@ -99,8 +111,13 @@ def bridge(tmp_path):
             text=True,
         )
 
-    def stub_mcp_remote(root, tag, lock="lock-a"):
-        write(root, "tools/mcp-remote/package-lock.json", lock)
+    def stub_mcp_remote(root, tag, lock="lock-a", version="1.0.0"):
+        write(root, "tools/mcp-remote/package-lock.json", lockfile(lock))
+        write(
+            root,
+            "tools/mcp-remote/node_modules/mcp-remote/package.json",
+            json.dumps({"name": "mcp-remote", "version": version}),
+        )
         path = root / "tools/mcp-remote/node_modules/.bin/mcp-remote"
         write(root, "tools/mcp-remote/node_modules/.bin/mcp-remote", f'#!/bin/sh\necho "{tag}"\n')
         path.chmod(0o755)
@@ -292,3 +309,123 @@ def test_script_installed_worktree_reads_key_file_in_place(tmp_path, bridge):
     (project / ".plane/plane.enc.env").unlink()
     (project / ".plane/plane.enc.env").symlink_to(tmp_path / "stubs/sops")
     assert "SOPS_FILE" not in run(toolchain, PLANE_CONFIG_ROOT=str(wt)).stderr
+
+
+def test_script_reports_a_sops_failure_instead_of_a_missing_key(tmp_path, bridge):
+    install, run, stub = bridge
+    main = make_repo(tmp_path / "main")
+    install(main)
+    write(main, "config/plane.enc.env", "x")
+    stub(main, "main-bin")
+    result = run(main, SOPS_FAIL="1")
+    assert result.returncode == 1
+    assert "could not decrypt config/plane.enc.env" in result.stderr
+    assert "SOPS_AGE_KEY_FILE" in result.stderr
+    assert "main-bin" not in result.stdout
+
+
+def test_script_refuses_a_symlinked_secrets_file(tmp_path, bridge):
+    install, run, stub = bridge
+    main = make_repo(tmp_path / "main")
+    install(main)
+    stub(main, "main-bin")
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    write(real, "key", "x")
+    (main / "config").mkdir()
+    (main / "config/plane.enc.env").symlink_to(real / "key")
+    result = run(main)
+    assert result.returncode == 1
+    assert "symlink" in result.stderr
+    assert "SOPS_FILE" not in result.stderr
+    assert "main-bin" not in result.stdout
+
+
+def test_script_ignores_a_symlinked_secrets_file_when_the_key_is_exported(tmp_path, bridge):
+    install, run, stub = bridge
+    main = make_repo(tmp_path / "main")
+    install(main)
+    stub(main, "main-bin")
+    (main / "config").mkdir()
+    (main / "config/plane.enc.env").symlink_to(tmp_path / "nowhere")
+    result = run(main, PLANE_API_KEY="exported")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "main-bin"
+
+
+def test_script_refuses_a_symlinked_project_secrets_file(tmp_path, bridge):
+    install, run, stub = bridge
+    toolchain = make_repo(tmp_path / "toolchain")
+    install(toolchain)
+    stub(toolchain, "tool-bin")
+    project = make_repo(tmp_path / "proj")
+    write(tmp_path, "key", "x")
+    (project / ".plane").mkdir()
+    (project / ".plane/plane.enc.env").symlink_to(tmp_path / "key")
+    result = run(toolchain, PLANE_CONFIG_ROOT=str(project))
+    assert result.returncode == 1
+    assert "symlink" in result.stderr
+    assert "SOPS_FILE" not in result.stderr
+
+
+def test_script_worktree_refuses_main_node_modules_that_differ_from_the_lock(tmp_path, bridge):
+    install, run, stub = bridge
+    main = make_repo(tmp_path / "main")
+    stub(main, "main-bin", version="0.0.1")  # lock pins 1.0.0
+    wt = worktree(main)
+    install(wt)
+    result = run(wt)
+    assert result.returncode == 1
+    assert "does not match the lockfile" in result.stderr
+    assert "mise run setup" in result.stderr
+    assert "main-bin" not in result.stdout
+
+
+def test_script_main_checkout_refuses_node_modules_that_differ_from_the_lock(tmp_path, bridge):
+    install, run, stub = bridge
+    main = make_repo(tmp_path / "main")
+    install(main)
+    stub(main, "main-bin", version="0.0.1")
+    result = run(main)
+    assert result.returncode == 1
+    assert "does not match the lockfile" in result.stderr
+
+
+def test_script_worktree_accepts_main_node_modules_that_match_the_lock(tmp_path, bridge):
+    install, run, stub = bridge
+    main = make_repo(tmp_path / "main")
+    stub(main, "main-bin", version="1.0.0")
+    wt = worktree(main)
+    install(wt)
+    assert run(wt).stdout.strip() == "main-bin"
+
+
+def test_script_says_so_when_git_is_too_old_for_the_worktree_fallback(tmp_path, bridge):
+    install, run, stub = bridge
+    main = make_repo(tmp_path / "main")
+    install(main)
+    stub(main, "main-bin")
+    real_git = shutil.which("git")
+    old = tmp_path / "old-git"
+    old.mkdir()
+    write(
+        old,
+        "git",
+        f'#!/bin/sh\ncase "$*" in *--path-format*) echo "usage: git rev-parse" >&2; exit 129;; esac\n'
+        f'exec "{real_git}" "$@"\n',
+    )
+    (old / "git").chmod(0o755)
+    result = run(main, PATH=f"{old}:{tmp_path / 'stubs'}:{os.environ['PATH']}")
+    assert "git 2.31" in result.stderr
+    assert result.stdout.strip() == "main-bin"
+    # A current git says nothing.
+    assert "git 2.31" not in run(main).stderr
+
+
+def test_script_outside_git_stays_quiet_about_git_versions(tmp_path, bridge):
+    install, run, stub = bridge
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    install(plain)
+    stub(plain, "plain-bin")
+    assert "git 2.31" not in run(plain).stderr

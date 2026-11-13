@@ -29,6 +29,12 @@ if [[ -z "$toolchain" ]]; then
     done <"$file"
   done
 fi
+# Same normalising as the session reader: drop a trailing " # comment", then one pair of quotes.
+toolchain="${toolchain%% #*}"
+case "$toolchain" in
+  \"*\") toolchain="${toolchain#\"}" toolchain="${toolchain%\"}" ;;
+  \'*\') toolchain="${toolchain#\'}" toolchain="${toolchain%\'}" ;;
+esac
 session="$toolchain/src/plane_toolchain/session.py"
 missing="plane-toolchain not found; set PLANE_TOOLCHAIN in .plane/local.env"
 case "${1:-}" in
