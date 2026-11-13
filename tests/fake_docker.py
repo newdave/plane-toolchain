@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import re
+import signal
 import subprocess
 import sys
 import tarfile
@@ -329,7 +330,10 @@ def run_program(program, payload, fake, monkeypatch):
     monkeypatch.setattr(time, "time", lambda: NOW + 0.5)
     monkeypatch.setattr(http.client, "HTTPConnection", fake.http_connection())
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    terminate = signal.getsignal(signal.SIGTERM)  # a guarded program installs its own handler
     try:
         exec(compile(program, "<string>", "exec"), {"__name__": "__main__"})  # noqa: S102
     except SystemExit as exit:
         assert exit.code in (0, None)
+    finally:
+        signal.signal(signal.SIGTERM, terminate)

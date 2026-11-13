@@ -221,7 +221,7 @@ def test_remote_ignores_hup_and_pipe_before_any_docker_call(root, monkeypatch, c
     fake = mcp_host()
     monkeypatch.setattr(signal, "signal", lambda number, handler: fake.calls.append(number))
     remote("apply", root, fake, monkeypatch)
-    assert fake.calls[:3] == [signal.SIGHUP, signal.SIGPIPE, git_call(root)]
+    assert fake.calls[:4] == [signal.SIGHUP, signal.SIGPIPE, signal.SIGTERM, git_call(root)]
 
 
 def test_closed_stderr_does_not_mask_interrupt(root, monkeypatch):

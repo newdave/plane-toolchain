@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 
 - MCP deploy writes the backup atomically (temporary file, fsync, `os.replace`, directory fsync, entry-point mode) before it touches `server.py`. `server.py` is still written in place so the bind-mounted inode survives, but a kill mid-write now recovers: an empty file or a prefix of the new bytes (receipt pending) or of the backup is accepted by `apply` and `revert`, which carry on from the backup, and a failed recovery rolls back to the backup. Foreign content is still refused. Kill-injection tests cover each write step (PTC-65).
+- The Pages and MCP remote programs install a SIGTERM handler (`remote.guarded`): SIGTERM raises `SystemExit(143)` so the existing `BaseException` rollbacks restore the container swap or the entry-point bytes and receipt, prints one line, and later SIGTERMs are ignored. Real-process tests send SIGTERM during Pages apply and MCP apply (PTC-66).
 
 ## [0.2.1] - 2026-11-14
 

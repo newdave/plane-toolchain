@@ -756,7 +756,7 @@ def test_remote_ignores_hup_and_pipe_before_any_docker_call(host, monkeypatch, c
 
     monkeypatch.setattr(signal, "signal", lambda number, handler: host.calls.append(number))
     remote("apply", host, monkeypatch)
-    assert host.calls[:3] == [signal.SIGHUP, signal.SIGPIPE, PS]
+    assert host.calls[:4] == [signal.SIGHUP, signal.SIGPIPE, signal.SIGTERM, PS]
 
 
 def test_remote_finishes_apply_when_ssh_channel_is_gone(host, monkeypatch):

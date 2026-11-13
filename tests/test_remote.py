@@ -274,3 +274,110 @@ def test_run_remote_signal_killed_ssh_exits_one(monkeypatch, capsys):
         remote.run_remote(HOST, PROGRAM_TEXT, {})
     assert stop.value.code == 1
     assert_quiet(capsys)
+
+
+# PTC-66: SIGTERM unwinds the shipped Pages and MCP programs through their rollbacks.
+
+
+def test_guarded_entry_turns_sigterm_into_exit_143_with_one_line():
+    body = "import time\nopen(sys.argv[1], 'w').write('up')\ntime.sleep(30)\n"
+    source = remote.program(["time"], [], remote.guarded(body))
+    done = run_until_marker(source)
+    assert done.returncode == 143
+    assert done.stderr == "Terminated (SIGTERM); rolling back\n"
+
+
+def test_guarded_entry_ignores_a_second_sigterm_during_rollback():
+    body = (
+        "import time\n"
+        "try:\n"
+        "    open(sys.argv[1], 'w').write('up')\n"
+        "    time.sleep(30)\n"
+        "except BaseException:\n"
+        "    open(sys.argv[1], 'w').write('rolling')\n"
+        "    time.sleep(1.5)\n"
+        "    print('rollback finished')\n"
+        "    raise\n"
+    )
+    source = remote.program(["time"], [], remote.guarded(body))
+    done = run_until_marker(source, second_signal="rolling")
+    assert done.returncode == 143 and "rollback finished" in done.stdout
+
+
+def run_until_marker(source, second_signal=None):
+    import pathlib
+    import tempfile
+    import time
+
+    with tempfile.TemporaryDirectory() as directory:
+        marker = pathlib.Path(directory) / "marker"
+        process = subprocess.Popen(  # noqa: S603 - this interpreter, a fixed test program
+            [sys.executable, "-I", "-c", source, str(marker)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        wait_for(marker, "up", time)
+        process.send_signal(signal.SIGTERM)
+        if second_signal:
+            wait_for(marker, second_signal, time)
+            process.send_signal(signal.SIGTERM)
+        out, err = process.communicate(timeout=20)
+    return subprocess.CompletedProcess(process.args, process.returncode, out, err)
+
+
+def wait_for(marker, text, time):
+    for _ in range(200):
+        if marker.exists() and marker.read_text() == text:
+            return
+        time.sleep(0.05)
+    raise AssertionError("program never reached " + text)
+
+
+def run_harness(tmp_path, config):
+    """Run the shipped program in a real process (see sigterm_harness.py), SIGTERM it while it
+    waits for health, and return (exit code, the host state its rollback left, stderr)."""
+    import json
+    import pathlib
+    import time
+
+    marker = tmp_path / "marker"
+    config = dict(config, marker=str(marker))
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    harness = pathlib.Path(__file__).with_name("sigterm_harness.py")
+    process = subprocess.Popen(  # noqa: S603 - this interpreter, a fixed test script
+        [sys.executable, str(harness), str(tmp_path / "config.json")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    wait_for(marker, "waiting", time)
+    process.send_signal(signal.SIGTERM)
+    out, err = process.communicate(timeout=30)
+    return process.returncode, json.loads(out.splitlines()[-1]) if out.strip() else None, err
+
+
+def test_pages_apply_sigterm_rolls_back_to_the_original(tmp_path):
+    from test_pages_deploy import BACKUP, payload
+
+    code, state, err = run_harness(tmp_path, {"kind": "pages", "payload": payload("apply")})
+    assert code == 143 and state is not None, err
+    assert "Traceback" not in err and "Terminated (SIGTERM)" in err
+    assert state["containers"]["api"] == {"running": True, "labelled": False}
+    assert ["rename", "api", BACKUP] in state["calls"]  # the swap really happened first
+    assert state["calls"].count(["rename", BACKUP, "api"]) == 1  # then it was undone
+
+
+def test_mcp_apply_sigterm_restores_bytes_and_receipt(tmp_path):
+    from test_mcp_deploy import DESIRED, ORIGINAL
+
+    host = tmp_path / "host"
+    host.mkdir()
+    (host / "server.py").write_bytes(ORIGINAL)
+    payload = dict(operation="apply", directory=str(host), container="plane-mcp", source=DESIRED)
+    code, state, err = run_harness(tmp_path, {"kind": "mcp", "payload": payload})
+    assert code == 143 and state is not None, err
+    assert "Traceback" not in err and "Terminated (SIGTERM)" in err
+    assert (host / "server.py").read_bytes() == ORIGINAL
+    assert not (host / "plane-toolchain-ce-receipt.json").exists()
+    assert state["calls"].count(["restart", "plane-mcp"]) == 2  # apply, then the rollback
