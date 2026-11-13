@@ -165,7 +165,10 @@ def load_receipt(directory, old, new, uid=None):
     except ValueError:
         raise RuntimeError("receipt is unreadable") from None
     if not isinstance(receipt, dict) or receipt.get("from") != old or receipt.get("to") != new:
-        raise RuntimeError("receipt belongs to a different rename")
+        raise RuntimeError(
+            "receipt belongs to a different rename; if that rename is finished, archive the "
+            "receipt directory (move it aside whole, never delete it) before a new one"
+        )
     return receipt
 
 
@@ -331,14 +334,22 @@ def drain_queue(mq, docker, clock, sleep, timeout=DRAIN_SECONDS, interval=DRAIN_
     return remaining
 
 
-def stop_services(names, docker, clock, sleep, crash=lambda label: None):
-    """Beat, drain, worker, web, space, admin; then restart Live. API, db and Redis stay up."""
+def stop_services(names, docker, clock, sleep, crash=lambda label: None, allow_undrained=False):
+    """Beat, drain, worker, web, space, admin; then restart Live. API, db and Redis stay up.
+
+    Jobs still queued after DRAIN_SECONDS refuse (nothing past beat is stopped yet) unless
+    `allow_undrained` is set, which continues and says so. Jobs are never purged."""
     crash("before_stop_" + names["beat"])
     docker("stop", names["beat"])
     crash("after_stop_" + names["beat"])
     remaining = drain_queue(names["mq"], docker, clock, sleep)
     if remaining is None:
         say("Warning: celery queue not found; drain not verified")
+    elif remaining and not allow_undrained:
+        raise RuntimeError(
+            f"{remaining} jobs still queued after {DRAIN_SECONDS} s; not purged. Let the workers "
+            "finish them and rerun, or set PLANE_RENAME_ALLOW_UNDRAINED=1 to continue anyway"
+        )
     else:
         say("Queue drained" if not remaining else f"{remaining} jobs still queued; not purged")
     crash("after_drain")
@@ -764,6 +775,19 @@ def inspect_services(names, api, docker):
             raise RuntimeError("container not found for service " + key) from None
 
 
+def refuse_api_service(names, api):
+    """Refuse when the API container is also one of the service containers.
+
+    Stopping (or restarting) a service would then take the API container down with it, and the
+    snippet runs in the API container. The names come from PLANE_*_CONTAINER, so a wrong
+    override can cause it."""
+    if api in names.values():
+        raise RuntimeError(
+            "the API container is also a service container; give the API container and each "
+            "service its own name (PLANE_API_CONTAINER, PLANE_*_CONTAINER)"
+        )
+
+
 def sweep_orphans(api, popen, operation):
     """Before apply or revert, stop any snippet left running by an earlier killed run.
 
@@ -942,6 +966,7 @@ def run_apply(data, seams):
     directory = pathlib.Path(data.get("receipt_dir") or receipt_dir(os.environ))
     names = service_names(data.get("services") or {})
     options = {key: data[key] for key in ("live_url", "api_url") if data.get(key)}
+    undrained = data.get("allow_undrained") is True
     order = step_order("apply")
 
     def call(op, args):
@@ -952,6 +977,7 @@ def run_apply(data, seams):
 
     # Preflight: read-only, and it writes nothing (not even the receipt directory) for check.
     try:
+        refuse_api_service(names, api)
         inspect_services(names, api, docker)
         sweep_orphans(api, popen, operation)
         receipt = None
@@ -973,10 +999,17 @@ def run_apply(data, seams):
                     "new apply"
                 )
         step = receipt["step"] if receipt else None
-        if step == "complete":
-            return "Rename already complete"
         records = load_journal(directory, uid) if receipt else []
         workspace_id = journal_workspace(records)
+        if step == "complete":
+            if workspace_id is None:
+                raise RuntimeError("journal has no workspace record; refusing")
+            call("health", {"old": old, "new": new, "workspace_id": workspace_id, **options})
+            return (
+                "Rename already complete and healthy. To run another rename (including the "
+                "opposite one), archive the receipt directory first: move it aside whole, "
+                "keeping backup.dump, records.jsonl and any rotated files; never delete them"
+            )
         backup_action = verify_backup(directory, receipt, uid)
         if workspace_id is None and at_or_past(step, "slug_done"):
             raise RuntimeError("journal has no workspace record; refusing")
@@ -1005,7 +1038,7 @@ def run_apply(data, seams):
         say("Resuming the rename from step " + step)
 
     def stop():
-        remaining = stop_services(names, docker, clock, seams["sleep"], crash)
+        remaining = stop_services(names, docker, clock, seams["sleep"], crash, undrained)
         if remaining is None:  # wrong or empty vhost: the drain was never verified
             raise RuntimeError("celery queue not found; drain not verified")
 
@@ -1184,6 +1217,7 @@ def run_revert(data, seams):
     directory = pathlib.Path(data.get("receipt_dir") or receipt_dir(os.environ))
     names = service_names(data.get("services") or {})
     options = {key: data[key] for key in ("live_url", "api_url") if data.get(key)}
+    undrained = data.get("allow_undrained") is True
     applied, order = step_order("apply"), step_order("revert")
     partial, finished, notes = None, False, []
 
@@ -1195,6 +1229,7 @@ def run_revert(data, seams):
 
     # Preflight: read-only. It never creates the receipt directory.
     try:
+        refuse_api_service(names, api)
         inspect_services(names, api, docker)
         sweep_orphans(api, popen, "revert")
         if not os.path.lexists(directory / "receipt.json"):
@@ -1246,7 +1281,7 @@ def run_revert(data, seams):
         say("Resuming the revert from step " + step)
 
     def stop():
-        remaining = stop_services(names, docker, clock, seams["sleep"], crash)
+        remaining = stop_services(names, docker, clock, seams["sleep"], crash, undrained)
         if remaining is None:
             raise RuntimeError("celery queue not found; drain not verified")
 
@@ -1470,6 +1505,7 @@ SHIPPED = (
     report,
     snippet_ok,
     inspect_services,
+    refuse_api_service,
     sweep_orphans,
     read_receipt,
     finish_rotation,
@@ -1598,6 +1634,11 @@ def main(argv=None):
             sys.exit("Invalid " + variable)
         if value:
             services[variable] = value
+    if api in service_names(services).values():
+        sys.exit("The API container must differ from every service container")
+    undrained = os.environ.get("PLANE_RENAME_ALLOW_UNDRAINED") or None
+    if undrained not in (None, "1"):
+        sys.exit("Invalid PLANE_RENAME_ALLOW_UNDRAINED (use 1)")
     directory = os.environ.get("PLANE_RENAME_RECEIPT_DIR") or None
     if directory and (not directory.startswith("/") or any(c.isspace() for c in directory)):
         sys.exit("Invalid PLANE_RENAME_RECEIPT_DIR")
@@ -1612,6 +1653,8 @@ def main(argv=None):
     for key, value in (("receipt_dir", directory), ("api_url", api_url), ("services", services)):
         if value:
             payload[key] = value
+    if undrained:
+        payload["allow_undrained"] = True
     sys.exit(run_remote(host, REMOTE, payload, check=False, interrupted=LOCAL_INTERRUPTED))
 
 

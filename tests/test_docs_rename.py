@@ -12,7 +12,7 @@ REQUIRED = (
     "PLANE_API_CONTAINER",
     "PLANE_LIVE_URL",
 )
-OPTIONAL = ("PLANE_RENAME_RECEIPT_DIR", "PLANE_API_URL")
+OPTIONAL = ("PLANE_RENAME_RECEIPT_DIR", "PLANE_API_URL", "PLANE_RENAME_ALLOW_UNDRAINED")
 
 
 def test_runbook_mentions_every_env_var_and_owner_task():

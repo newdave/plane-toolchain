@@ -8,6 +8,7 @@ import signal
 import stat
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 from test_workspace_rename_deploy import Host, mutating, run_remote
@@ -553,3 +554,156 @@ def test_probe_through_the_assembled_snippet_uses_the_django_meta_api(host):
     assert [(e["model"], e["field"]) for e in events if e["event"] == "mismatch"] == [
         ("issue", "description_binary")
     ]
+
+
+# --- PTC-63: harden preflight (drain gate, API container, completed rename) -------------------
+
+
+def test_undrained_queue_refuses_and_names_the_override(host):
+    host.fake.queue_depths = [4]
+    with pytest.raises(RuntimeError, match=r"4 jobs still queued") as caught:
+        wr.stop_services(
+            wr.service_names({}),
+            host.fake.docker,
+            host.clock,
+            host.clock.sleep,
+            host.fake.checkpoint,
+        )
+    assert "PLANE_RENAME_ALLOW_UNDRAINED" in str(caught.value)
+    assert host.running()["plane-beat-worker"] is False  # beat stopped, so the queue stops growing
+    assert host.running()["plane-worker"] and host.running()["plane"]  # nothing else stopped
+    assert not any("purge" in " ".join(call) for call in host.fake.calls)
+
+
+def test_undrained_queue_proceeds_with_the_explicit_override(host, capsys):
+    host.fake.queue_depths = [4]
+    remaining = wr.stop_services(
+        wr.service_names({}),
+        host.fake.docker,
+        host.clock,
+        host.clock.sleep,
+        host.fake.checkpoint,
+        allow_undrained=True,
+    )
+    assert remaining == 4
+    assert "4 jobs still queued; not purged" in capsys.readouterr().out
+    assert not host.running()["plane-worker"]
+
+
+def test_apply_with_an_undrained_queue_fails_before_the_slug_change_and_restarts(host):
+    host.fake.queue_depths = [4]
+    with pytest.raises(RuntimeError, match=r"Rename failed before the slug change.*4 jobs still"):
+        host.deploy()
+    assert "step_slug" not in host.ops()
+    assert all(host.running().values())
+    assert host.receipt()["step"] == "pending"
+
+
+def test_apply_with_the_override_continues_past_an_undrained_queue(host):
+    host.fake.queue_depths = [4]
+    assert host.deploy(allow_undrained=True).startswith("Rename complete")
+
+
+def test_revert_with_an_undrained_queue_refuses_unless_overridden(host):
+    host.deploy()
+    host.fake.queue_depths = [3]
+    with pytest.raises(RuntimeError, match=r"Revert stopped at restored.*3 jobs still"):
+        host.deploy("revert")
+    assert host.deploy("revert", allow_undrained=True).startswith("Revert complete")
+
+
+@pytest.mark.parametrize("operation", ["check", "apply", "revert"])
+@pytest.mark.parametrize(
+    "api",
+    ["plane-worker", "plane", "plane-space", "plane-admin", "plane-beat-worker", "plane-live"],
+)
+def test_api_container_that_is_a_service_container_is_refused_before_anything(host, operation, api):
+    with pytest.raises(RuntimeError, match=r"Refused: the API container is also .* service"):
+        host.deploy(operation, api=api)
+    assert not mutating(host.fake)
+    assert not host.shell.requests
+
+
+def test_api_container_in_the_stop_list_via_an_override_is_refused(host):
+    host.fake.add("custom-worker")
+    with pytest.raises(RuntimeError, match=r"Refused: the API container is also"):
+        host.deploy(api="custom-worker", services={"PLANE_WORKER_CONTAINER": "custom-worker"})
+    assert not mutating(host.fake)
+
+
+def test_completed_rename_runs_health_and_says_how_to_archive(host):
+    host.deploy()
+    host.fake.calls.clear()
+    host.shell.requests.clear()
+    message = host.deploy()
+    assert message.startswith("Rename already complete")
+    assert "archive" in message and "receipt directory" in message
+    assert host.ops() == ["health"]
+    assert not mutating(host.fake)
+
+
+def test_completed_rename_with_a_failing_health_check_is_refused(host, capsys):
+    host.deploy()
+    host.shell.api["status"] = 500
+    with pytest.raises(RuntimeError, match=r"Refused: health failed"):
+        host.deploy()
+    assert "Health api: FAILED" in capsys.readouterr().out
+
+
+def test_check_on_a_completed_rename_also_runs_health(host):
+    host.deploy()
+    host.shell.requests.clear()
+    assert host.deploy("check").startswith("Rename already complete")
+    assert host.ops() == ["health"]
+
+
+def test_opposite_rename_after_a_completed_one_says_how_to_archive(host):
+    host.deploy()
+    host.fake.calls.clear()
+    with pytest.raises(RuntimeError, match=r"different rename.*archive") as caught:
+        host.deploy(**{"from": "new-slug", "to": "old-slug"})
+    assert "receipt directory" in str(caught.value)
+    assert not mutating(host.fake)
+
+
+def test_cli_override_flag_and_api_container_check(monkeypatch):
+    from plane_toolchain import remote
+
+    sent = []
+    env = {
+        "PLANE_RENAME_FROM": "old-slug",
+        "PLANE_RENAME_TO": "new-slug",
+        "PLANE_MCP_SSH": "owner@203.0.113.7",
+        "PLANE_API_CONTAINER": "plane-api",
+        "PLANE_LIVE_URL": "https://plane.example.com",
+    }
+    for name in (*env, "PLANE_RENAME_ALLOW_UNDRAINED", *wr.SERVICE_VARIABLES):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        remote.subprocess,
+        "run",
+        lambda argv, **kw: sent.append(kw["input"]) or SimpleNamespace(returncode=0),
+    )
+
+    def run(operation="apply"):
+        with pytest.raises(SystemExit) as stop:
+            wr.main([operation])
+        return stop.value.code
+
+    assert run() == 0
+    assert "allow_undrained" not in json.loads(sent[-1])
+    monkeypatch.setenv("PLANE_RENAME_ALLOW_UNDRAINED", "1")
+    assert run() == 0
+    assert json.loads(sent[-1])["allow_undrained"] is True
+    monkeypatch.setenv("PLANE_RENAME_ALLOW_UNDRAINED", "yes")
+    assert run() == "Invalid PLANE_RENAME_ALLOW_UNDRAINED (use 1)"
+    monkeypatch.delenv("PLANE_RENAME_ALLOW_UNDRAINED")
+    count = len(sent)
+    monkeypatch.setenv("PLANE_API_CONTAINER", "plane-worker")
+    assert "API container" in run()
+    monkeypatch.setenv("PLANE_API_CONTAINER", "plane-api")
+    monkeypatch.setenv("PLANE_WEB_CONTAINER", "plane-api")
+    assert "API container" in run()
+    assert len(sent) == count  # refused before any SSH

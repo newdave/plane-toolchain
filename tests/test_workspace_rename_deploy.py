@@ -114,8 +114,12 @@ def test_drain_waits_until_queue_empty_or_60s_then_reports_remaining_without_pur
     assert wr.drain_queue(NAMES["mq"], fake.docker, clock, clock.sleep) == 4
     assert 60 <= clock.now < 70
     fake.calls.clear()
-    stop(fake)
-    assert "4 jobs still queued" in capsys.readouterr().out
+    with pytest.raises(RuntimeError, match="4 jobs still queued"):  # PTC-63: a refusal now
+        stop(fake)
+    assert fake.containers[NAMES["worker"]]["running"]  # nothing past beat was stopped
+    clock = Clock()
+    wr.stop_services(NAMES, fake.docker, clock, clock.sleep, fake.checkpoint, allow_undrained=True)
+    assert "4 jobs still queued; not purged" in capsys.readouterr().out
     assert not any(
         word in " ".join(c)
         for c in fake.calls

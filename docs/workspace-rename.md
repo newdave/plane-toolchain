@@ -45,6 +45,7 @@ The receipt directory holds copies of workspace content. Keep it owner-only, nev
 | `PLANE_API_CONTAINER` | API container name. |
 | `PLANE_LIVE_URL` | Live URL reachable from the API container, used to rebuild editor documents. |
 | `PLANE_RENAME_RECEIPT_DIR` | Optional absolute path for the receipt directory on the host. |
+| `PLANE_RENAME_ALLOW_UNDRAINED` | Optional. Set to `1` to continue when jobs are still queued after the 60 second drain (see [Apply](#apply)). Any other value is refused. |
 | `PLANE_API_URL` | Optional API base URL, as seen inside the API container, for the health probe (default `http://127.0.0.1:8000`). |
 | `PLANE_DB_CONTAINER` | Optional, default `plane-db`. |
 | `PLANE_REDIS_CONTAINER` | Optional, default `plane-redis`. |
@@ -55,6 +56,8 @@ The receipt directory holds copies of workspace content. Keep it owner-only, nev
 | `PLANE_BEAT_CONTAINER` | Optional, default `plane-beat-worker`. |
 | `PLANE_LIVE_CONTAINER` | Optional, default `plane-live`. |
 | `PLANE_MQ_CONTAINER` | Optional, default `plane-mq` (RabbitMQ). |
+
+The API container must be a different container from every service container above (database, Redis, web, space, admin, worker, beat, Live and RabbitMQ): stopping a service would otherwise take the API container down. A clash is refused before any SSH call, and again on the host, with `the API container is also a service container`.
 
 The defaults are the Saltbox container names. On other hosts set every override that differs. Values are validated before any SSH call and never printed. The request, including the Django snippet, goes to the host on stdin; the remote exit code is the task's exit code. Ctrl-C locally prints guidance and exits 130, but the host program may still be running: check the receipt, then rerun the same task to resume, or run revert.
 
@@ -137,7 +140,7 @@ Every refusal runs before the first stop, so a refused apply changes nothing. Th
 | Step | What happened |
 | --- | --- |
 | `pending` | Receipt written. |
-| `stopped` | Outage window starts. Beat stops, the queue drains for up to 60 seconds (leftover jobs are reported and never purged), then worker, web, space and admin stop. Live restarts to drop editor sessions. API, database, Redis and RabbitMQ stay up. |
+| `stopped` | Outage window starts. Beat stops, the queue drains for up to 60 seconds, then worker, web, space and admin stop. Jobs still queued after the 60 seconds refuse (`N jobs still queued after 60 s; not purged`): the step fails before the slug change, services restart and the receipt goes back to `pending`, so the workers keep draining; rerun later, or set `PLANE_RENAME_ALLOW_UNDRAINED=1` to continue with jobs left (never purged). The same gate applies to revert. Live restarts to drop editor sessions. API, database, Redis and RabbitMQ stay up. |
 | `backed_up` | Free space in the receipt directory is checked first (at least the database size, and 64 MiB). Then `pg_dump` to `backup.dump`, which must list with `pg_restore -l` inside the database container before it is kept; SHA-256 recorded. An empty, failed or unreadable dump is refused, and the failure carries a short stderr tail with quoted text redacted. |
 | `slug_done` | One transaction: the slug, comment HTML, linked descriptions and notification data. Originals are journalled first. |
 | `rows_done` | Work item and Page descriptions rewritten one row at a time, editor documents rebuilt through Live, originals journalled first. |
@@ -149,7 +152,7 @@ The outage lasts from `stopped` to `started`, and grows with the number of rows 
 
 Apply and revert hold an exclusive lock (`run.lock` in the receipt directory, mode 0600) for the whole run. A second run, for example a double start or a rerun while the host program of a dropped SSH session is still going, refuses before it stops anything with `Refused: another apply or revert holds the lock on the receipt directory`. Wait for the first run, or look on the host for it. The lock goes when the run ends or its process dies. `check` takes no lock.
 
-A run that is already `complete` says `Rename already complete`. A rerun after a kill says `Resuming the rename from step <step>` and stops services again before continuing.
+A run that is already `complete` runs the health check again and says `Rename already complete and healthy`, with how to archive the receipt directory (see [After a finished revert](#after-a-finished-revert); the same applies after a completed apply before an opposite rename, which otherwise refuses with `receipt belongs to a different rename`). A failing health check refuses instead. A rerun after a kill says `Resuming the rename from step <step>` and stops services again before continuing.
 
 ### Failures before slug_done
 
