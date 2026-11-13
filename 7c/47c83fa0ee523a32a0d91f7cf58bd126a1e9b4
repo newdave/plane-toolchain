@@ -1,0 +1,22 @@
+mise.toml
+  s_066dd3ba2255bd::t_ca3cc757a3e08b 21,31,36,39,42,47,50,53,56,59,62,65,68,71,74,77,80,83,86,89,92,95,98
+tests/test_project_install.py
+  s_066dd3ba2255bd::t_91f22e3afff1d6 641-645
+  s_066dd3ba2255bd::t_1ef7a1e43323a8 620-632,634-635
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "7c47c83fa0ee523a32a0d91f7cf58bd126a1e9b4",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
