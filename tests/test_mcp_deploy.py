@@ -309,7 +309,7 @@ def test_apply_timeout_restores_backup_bytes_and_inode(root, monkeypatch):
     assert fake.calls.count(INSPECT) == 90  # 45 before and 45 after the rollback restart
     assert fake.calls.count(RESTART) == 2
     assert "still unhealthy" in str(error.value)
-    # Legacy receipt names survive a rolled-back apply.
+    # A rolled-back first apply keeps the neutral backup and writes no receipt.
     assert (root / "server.py.before-plane-toolchain-ce").read_bytes() == ORIGINAL
     assert not (root / "plane-toolchain-ce-receipt.json").exists()
 

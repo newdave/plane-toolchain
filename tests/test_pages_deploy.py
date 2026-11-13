@@ -14,8 +14,11 @@ from plane_toolchain import pages_deploy, remote as remote_module
 
 SOURCE = "ROUTES = []\n"
 DIGEST = hashlib.sha256(SOURCE.encode()).hexdigest()
-IMAGE = "terrainlink-plane-pages:" + DIGEST[:16]
-BACKUP = "api-before-terrainlink-pages"
+IMAGE = "plane-toolchain-pages:" + DIGEST[:16]
+BACKUP = "api-before-plane-toolchain-pages"
+LABEL = "plane-toolchain.pages.source"
+LEGACY_BACKUP = "api-before-terrainlink-pages"
+LOOKUP = [("inspect", BACKUP), ("inspect", LEGACY_BACKUP)]  # backup_for: neutral, then legacy
 HEALTH = (
     "exec",
     "api",
@@ -176,7 +179,7 @@ def host():
 def applied():
     fake = FakeDocker()
     fake.add(BACKUP, labels={"owner": "kept"}, running=False, RestartPolicy={"Name": "no"})
-    fake.add("api", labels={"owner": "kept", "terrainlink.pages.source": DIGEST})
+    fake.add("api", labels={"owner": "kept", LABEL: DIGEST})
     return fake
 
 
@@ -202,6 +205,7 @@ def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypat
     )
     assert host.calls == [
         ("inspect", "api"),
+        *LOOKUP,
         ("inspect", BACKUP),
         ("image", "inspect", "sha256:base"),
         ("build", "-t", IMAGE, "-"),
@@ -215,7 +219,7 @@ def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypat
     ]
     derived, original = host.containers["api"], host.containers[BACKUP]
     assert derived["image"] == IMAGE and derived["running"]
-    assert derived["labels"] == {"owner": "kept", "terrainlink.pages.source": DIGEST}
+    assert derived["labels"] == {"owner": "kept", LABEL: DIGEST}
     assert derived["env"] == ["OPAQUE_SECRET=do-not-print", "CE_PLANE_LIVE_URL=http://live:3000"]
     assert derived["host_config"] == {"RestartPolicy": {"Name": "unless-stopped"}}
     assert original["labels"] == {"owner": "kept"} and not original["running"]
@@ -229,15 +233,17 @@ def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypat
     assert files["plane_pages.py"] == SOURCE.encode()
     dockerfile = files["Dockerfile"].decode()
     assert dockerfile.startswith("FROM registry.example/plane-backend@sha256:abc\n")
-    assert "COPY plane_pages.py /code/plane/api/terrainlink_pages.py\n" in dockerfile
-    assert "from plane.api.terrainlink_pages import routes" in dockerfile
-    assert dockerfile.endswith("RUN python -m py_compile /code/plane/api/terrainlink_pages.py\n")
+    assert "COPY plane_pages.py /code/plane/api/plane_toolchain_pages.py\n" in dockerfile
+    assert "from plane.api.plane_toolchain_pages import routes" in dockerfile
+    assert dockerfile.endswith(
+        "RUN python -m py_compile /code/plane/api/plane_toolchain_pages.py\n"
+    )
 
 
 def test_apply_is_idempotent_when_label_matches(applied, monkeypatch, capsys):
     remote("apply", applied, monkeypatch)
     assert capsys.readouterr().out == "Pages image already applied; API healthy\n"
-    assert applied.calls == [("inspect", "api"), HEALTH, PAGES]
+    assert applied.calls == [("inspect", "api"), *LOOKUP, HEALTH, PAGES]
 
 
 def test_apply_refuses_when_rollback_container_exists(host, monkeypatch):
@@ -245,7 +251,7 @@ def test_apply_refuses_when_rollback_container_exists(host, monkeypatch):
     with pytest.raises(ValueError, match="Existing rollback container"):
         remote("apply", host, monkeypatch)
     # The second inspect reads the backup's labels for reconciliation; nothing changes.
-    assert host.calls == [("inspect", "api"), ("inspect", BACKUP), ("inspect", BACKUP)]
+    assert host.calls == [("inspect", "api"), *LOOKUP, ("inspect", BACKUP), ("inspect", BACKUP)]
 
 
 def test_apply_refuses_image_without_registry_digest(host, monkeypatch):
@@ -319,6 +325,7 @@ def test_revert_restores_original_and_retains_derived_stopped(applied, monkeypat
     reverted = f"api-pages-reverted-{NOW}"
     assert applied.calls == [
         ("inspect", "api"),
+        *LOOKUP,
         ("inspect", BACKUP),
         ("stop", "api"),
         ("rename", "api", reverted),
@@ -339,12 +346,12 @@ def test_revert_refuses_when_label_changed(applied, monkeypatch):
     applied.containers["api"]["labels"] = {}
     with pytest.raises(ValueError, match="API changed; refusing rollback"):
         remote("revert", applied, monkeypatch)
-    assert applied.calls == [("inspect", "api"), ("inspect", BACKUP)]
+    assert applied.calls == [("inspect", "api"), *LOOKUP, ("inspect", BACKUP)]
 
 
 def test_revert_accepts_derived_from_older_source(applied, monkeypatch, capsys):
     # A source upgrade changes the digest; the label still marks the container as ours.
-    applied.containers["api"]["labels"]["terrainlink.pages.source"] = "older-digest"
+    applied.containers["api"]["labels"][LABEL] = "older-digest"
     remote("revert", applied, monkeypatch)
     assert capsys.readouterr().out == (
         "Original API container restored; derived container retained stopped\n"
@@ -357,7 +364,7 @@ def test_revert_without_backup_and_with_label_fails_before_changes(applied, monk
     del applied.containers[BACKUP]
     with pytest.raises(subprocess.CalledProcessError):
         remote("revert", applied, monkeypatch)
-    assert applied.calls == [("inspect", "api"), ("inspect", BACKUP), ("inspect", BACKUP)]
+    assert applied.calls == [("inspect", "api"), *LOOKUP, ("inspect", BACKUP), ("inspect", BACKUP)]
 
 
 def test_repeat_revert_exits_zero_with_message(applied, monkeypatch, capsys):
@@ -366,7 +373,7 @@ def test_repeat_revert_exits_zero_with_message(applied, monkeypatch, capsys):
     applied.calls.clear()
     remote("revert", applied, monkeypatch)
     assert capsys.readouterr().out == "Original API container already restored\n"
-    assert applied.calls == [("inspect", "api"), ("inspect", BACKUP)]
+    assert applied.calls == [("inspect", "api"), *LOOKUP, ("inspect", BACKUP)]
     assert_original_restored(applied)
 
 
@@ -377,7 +384,7 @@ def interrupted():
     fake.add(BACKUP, labels={"owner": "kept"}, running=False, RestartPolicy={"Name": "no"})
     fake.add(
         f"api-pages-reverted-{NOW - 5}",
-        labels={"owner": "kept", "terrainlink.pages.source": DIGEST},
+        labels={"owner": "kept", LABEL: DIGEST},
         running=False,
     )
     return fake
@@ -452,7 +459,7 @@ def test_interrupted_revert_survives_failing_ps(interrupted, monkeypatch, capsys
 
 def test_interrupted_revert_consults_only_newest_plain_reverted(interrupted, monkeypatch, capsys):
     older, newest = f"api-pages-reverted-{NOW - 50}", f"api-pages-reverted-{NOW - 5}"
-    interrupted.add(older, labels={"terrainlink.pages.source": "x"}, running=False)
+    interrupted.add(older, labels={LABEL: "x"}, running=False)
     interrupted.add(newest + "-aside", running=False, RestartPolicy={"Name": "always"})
     interrupted.containers[newest]["host_config"]["RestartPolicy"] = {"Name": "no"}
     remote("revert", interrupted, monkeypatch)
@@ -470,7 +477,7 @@ def test_interrupted_revert_ignores_decoy_names(interrupted, monkeypatch):
 
 def test_revert_missing_api_with_labelled_backup_still_raises(monkeypatch):
     fake = FakeDocker()
-    fake.add(BACKUP, labels={"terrainlink.pages.source": DIGEST}, running=False)
+    fake.add(BACKUP, labels={LABEL: DIGEST}, running=False)
     with pytest.raises(subprocess.CalledProcessError):
         remote("revert", fake, monkeypatch)
     assert running(fake) == []
@@ -486,7 +493,7 @@ def test_revert_missing_api_and_backup_still_raises(monkeypatch):
 def assert_derived_back(fake):
     assert restart(fake, "api") == "unless-stopped"
     assert set(retained(fake).values()) == {"no"}
-    assert fake.containers["api"]["labels"]["terrainlink.pages.source"] == DIGEST
+    assert fake.containers["api"]["labels"][LABEL] == DIGEST
     assert fake.containers["api"]["running"]
     assert not fake.containers[BACKUP]["running"]
     assert not [name for name in fake.containers if "pages-reverted" in name]
@@ -512,7 +519,7 @@ def test_revert_failure_swaps_back_and_restarts_derived(applied, monkeypatch, fa
 
 
 def policy_applied(fake):
-    fake.add("api", labels={"terrainlink.pages.source": DIGEST}, RestartPolicy={"Name": "always"})
+    fake.add("api", labels={LABEL: DIGEST}, RestartPolicy={"Name": "always"})
     fake.containers[BACKUP]["host_config"]["RestartPolicy"] = {"Name": "no"}
 
 
@@ -589,7 +596,7 @@ def assert_freshly_applied(fake, policy):
     """Final layout after a reconciled apply: one running derived `api`, original retained."""
     assert running(fake) == ["api"]
     assert fake.containers["api"]["image"] == IMAGE
-    assert fake.containers["api"]["labels"] == {"owner": "kept", "terrainlink.pages.source": DIGEST}
+    assert fake.containers["api"]["labels"] == {"owner": "kept", LABEL: DIGEST}
     assert restart(fake, "api") == policy
     assert fake.containers[BACKUP]["labels"] == {"owner": "kept"}
     assert set(retained(fake).values()) == {"no"}
@@ -606,8 +613,9 @@ def retired():
 def test_apply_reconciles_missing_api_with_default_policy_note(retired, monkeypatch, capsys):
     remote("apply", retired, monkeypatch)
     assert capsys.readouterr().out == NOTE + APPLIED
-    assert retired.calls[:7] == [
+    assert retired.calls[:9] == [
         ("inspect", "api"),
+        *LOOKUP,
         ("inspect", BACKUP),
         ("inspect", BACKUP),
         ("rename", BACKUP, "api"),
@@ -645,7 +653,7 @@ def test_apply_reconciles_stopped_derived_as_failed_apply(retired, monkeypatch, 
     # Died after create, before start or health: the derived copy of the live policy is kept.
     retired.add(
         "api",
-        labels={"owner": "kept", "terrainlink.pages.source": label},
+        labels={"owner": "kept", LABEL: label},
         running=False,
         RestartPolicy={"Name": "always"},
     )
@@ -653,8 +661,9 @@ def test_apply_reconciles_stopped_derived_as_failed_apply(retired, monkeypatch, 
     remote("apply", retired, monkeypatch)
     assert capsys.readouterr().out == APPLIED
     failed = f"api-pages-failed-{NOW}"
-    assert retired.calls[:10] == [
+    assert retired.calls[:12] == [
         ("inspect", "api"),
+        *LOOKUP,
         ("inspect", BACKUP),
         ("inspect", BACKUP),
         ("inspect", failed),
@@ -671,7 +680,7 @@ def test_apply_reconciles_stopped_derived_as_failed_apply(retired, monkeypatch, 
 
 
 def test_apply_reconcile_promote_failure_stays_reconcilable(retired, capsys):
-    retired.add("api", labels={"terrainlink.pages.source": "old"}, running=False)
+    retired.add("api", labels={LABEL: "old"}, running=False)
     retired.fail.append(("rename", BACKUP, "api"))
     with pytest.raises(subprocess.CalledProcessError):
         deploy("apply", retired)
@@ -685,7 +694,7 @@ def test_apply_reconcile_promote_failure_stays_reconcilable(retired, capsys):
 
 def test_reconcile_and_failing_apply_in_same_second_keep_both_failed(retired):
     # now() is constant: reconcile (b) and the failed apply would pick the same name.
-    retired.add("api", labels={"terrainlink.pages.source": "old"}, running=False)
+    retired.add("api", labels={LABEL: "old"}, running=False)
     stale = retired.containers["api"]["id"]
     retired.created_healthy = False
     with pytest.raises(ValueError, match="API health check failed"):
@@ -721,11 +730,11 @@ def test_apply_refuses_other_layouts_with_backup(retired, layout):
     if layout == "running-original":
         retired.add("api", labels={"owner": "kept"})
     elif layout == "running-older-derived":
-        retired.add("api", labels={"terrainlink.pages.source": "older-digest"})
+        retired.add("api", labels={LABEL: "older-digest"})
     elif layout == "labelled-backup":
-        retired.containers[BACKUP]["labels"]["terrainlink.pages.source"] = "older-digest"
+        retired.containers[BACKUP]["labels"][LABEL] = "older-digest"
     else:
-        retired.add("api", labels={"terrainlink.pages.source": DIGEST}, healthy=False)
+        retired.add("api", labels={LABEL: DIGEST}, healthy=False)
     before = json.dumps(retired.containers, sort_keys=True)
     with pytest.raises(ValueError, match="Existing rollback container|API health check failed"):
         deploy("apply", retired)
@@ -734,7 +743,7 @@ def test_apply_refuses_other_layouts_with_backup(retired, layout):
 
 
 def test_apply_stopped_current_derived_without_backup_still_refuses(host):
-    host.add("api", labels={"terrainlink.pages.source": DIGEST}, running=False)
+    host.add("api", labels={LABEL: DIGEST}, running=False)
     with pytest.raises(ValueError, match="API health check failed"):
         deploy("apply", host)
     assert not host.builds
@@ -759,7 +768,7 @@ def test_remote_finishes_apply_when_ssh_channel_is_gone(host, monkeypatch):
     monkeypatch.setattr(sys, "stdout", Closed())
     remote("apply", host, monkeypatch)
     assert running(host) == ["api"]
-    assert host.containers["api"]["labels"]["terrainlink.pages.source"] == DIGEST
+    assert host.containers["api"]["labels"][LABEL] == DIGEST
 
 
 def test_replacement_drops_old_id_alias():
@@ -836,9 +845,7 @@ def test_revert_recovery_step_failing_twice_still_leaves_one_running_api(applied
     running = [n for n, c in applied.containers.items() if c["running"]]
     assert running and "api" in running and len(running) == 1
     assert not [n for n in applied.containers if n.endswith("-aside")]
-    assert BACKUP in applied.containers or not applied.containers["api"]["labels"].get(
-        "terrainlink.pages.source"
-    )
+    assert BACKUP in applied.containers or not applied.containers["api"]["labels"].get(LABEL)
 
 
 def test_revert_parked_original_returns_to_backup_name(applied):
@@ -864,13 +871,13 @@ def test_revert_recovery_nothing_startable_reraises_original(applied):
 def test_check_verifies_label_and_health(applied, monkeypatch, capsys):
     remote("check", applied, monkeypatch)
     assert capsys.readouterr().out == "Pages image and API health verified\n"
-    assert applied.calls == [("inspect", "api"), HEALTH, PAGES]
+    assert applied.calls == [("inspect", "api"), *LOOKUP, HEALTH, PAGES]
 
 
 def test_check_rejects_label_mismatch(host, monkeypatch):
     with pytest.raises(ValueError, match="Pages image does not match source"):
         remote("check", host, monkeypatch)
-    assert host.calls == [("inspect", "api")]
+    assert host.calls == [("inspect", "api"), *LOOKUP]
 
 
 def test_unknown_operation_and_missing_container_fail(host, monkeypatch):
@@ -995,14 +1002,14 @@ def seams(fake):
     return dict(docker=fake.docker, probe=fake.probe, create=fake.create, health=health)
 
 
-def deploy(operation, fake):
-    return pages_deploy.deploy(payload(operation), now=lambda: NOW + 0.5, **seams(fake))
+def deploy(operation, fake, later=0):
+    return pages_deploy.deploy(payload(operation), now=lambda: NOW + later + 0.5, **seams(fake))
 
 
 def test_seam_apply_success(host):
     assert deploy("apply", host).startswith("Pages derived image applied")
     assert host.streams[("build", "-t", IMAGE, "-")] == (subprocess.DEVNULL, subprocess.DEVNULL)
-    assert host.containers["api"]["labels"]["terrainlink.pages.source"] == DIGEST
+    assert host.containers["api"]["labels"][LABEL] == DIGEST
     assert host.containers["api"]["running"]
     assert restart(host, BACKUP) == "no"
     assert restart(host, "api") == "unless-stopped"
@@ -1106,3 +1113,263 @@ def test_fake_fails_only_matching_call_once():
     assert not fake.probe("rename", "b", "d")
     assert fake.probe("rename", "b", "d")
     assert fake.fail == []
+
+
+# PTC-27: neutral names written, legacy names read. Matrix of host layouts.
+
+NEW_BACKUP = BACKUP
+NEW_LABEL = LABEL
+LEGACY_LABEL = "terrainlink.pages.source"
+NEW_IMAGE = IMAGE
+REVERTED = f"api-pages-reverted-{NOW - 5}"
+
+
+def legacy_applied(label=DIGEST):
+    """A host deployed by an older release: legacy backup, legacy-labelled derived."""
+    fake = FakeDocker()
+    fake.add(LEGACY_BACKUP, labels={"owner": "kept"}, running=False, RestartPolicy={"Name": "no"})
+    fake.add("api", labels={"owner": "kept", LEGACY_LABEL: label})
+    return fake
+
+
+def assert_neutral_layout(fake, policy="unless-stopped"):
+    """Final layout: one running derived `api`, original retained under the neutral name only."""
+    assert running(fake) == ["api"]
+    assert fake.containers["api"]["image"] == NEW_IMAGE
+    assert fake.containers["api"]["labels"] == {"owner": "kept", NEW_LABEL: DIGEST}
+    assert fake.containers[NEW_BACKUP]["labels"] == {"owner": "kept"}
+    assert LEGACY_BACKUP not in fake.containers
+    assert restart(fake, "api") == policy
+    assert restart(fake, NEW_BACKUP) == "no"
+    assert set(retained(fake).values()) == {"no"}
+
+
+def assert_original_restored_any(fake):
+    assert fake.containers["api"]["labels"] == {"owner": "kept"}
+    assert running(fake) == ["api"]
+    assert NEW_BACKUP not in fake.containers and LEGACY_BACKUP not in fake.containers
+
+
+def test_matrix_fresh_host_writes_only_neutral_names(host):
+    deploy("apply", host)
+    assert_neutral_layout(host)
+    [(tag, files)] = host.builds
+    assert tag == NEW_IMAGE
+    dockerfile = files["Dockerfile"].decode()
+    assert "COPY plane_pages.py /code/plane/api/plane_toolchain_pages.py\n" in dockerfile
+    assert "from plane.api.plane_toolchain_pages import routes" in dockerfile
+    assert dockerfile.endswith(
+        "RUN python -m py_compile /code/plane/api/plane_toolchain_pages.py\n"
+    )
+    assert "terrainlink" not in dockerfile
+
+
+def test_matrix_legacy_host_checks_then_reapply_rebuilds_with_neutral_label_and_module():
+    fake = legacy_applied()
+    old_id = fake.containers["api"]["id"]
+    assert deploy("check", fake) == "Pages image and API health verified"
+    assert deploy("apply", fake).startswith("Pages derived image applied")
+    assert_neutral_layout(fake)
+    assert fake.containers["api"]["id"] != old_id
+    [(tag, files)] = fake.builds
+    dockerfile = files["Dockerfile"].decode()
+    assert tag == NEW_IMAGE
+    assert "COPY plane_pages.py /code/plane/api/plane_toolchain_pages.py\n" in dockerfile
+    assert "from plane.api.plane_toolchain_pages import routes" in dockerfile
+    # The legacy derived is retained stopped under a revert name; it never auto-starts.
+    retired = f"api-pages-reverted-{NOW}"
+    assert fake.containers[retired]["id"] == old_id and not fake.containers[retired]["running"]
+    assert restart(fake, retired) == "no"
+    assert deploy("check", fake) == "Pages image and API health verified"
+    # Revert finds the migrated backup and restores the original.
+    assert deploy("revert", fake, later=10).startswith("Original API container restored")
+    assert_original_restored_any(fake)
+    assert restart(fake, "api") == "unless-stopped"
+
+
+def test_matrix_legacy_host_reapply_keeps_live_restart_policy():
+    fake = legacy_applied()
+    fake.containers["api"]["host_config"]["RestartPolicy"] = {
+        "Name": "on-failure",
+        "MaximumRetryCount": 3,
+    }
+    deploy("apply", fake)
+    assert_neutral_layout(fake, policy="on-failure")
+    assert fake.containers["api"]["host_config"]["RestartPolicy"]["MaximumRetryCount"] == 3
+    assert deploy("revert", fake, later=10).startswith("Original API container restored")
+    assert restart(fake, "api") == "on-failure"
+
+
+def assert_legacy_host_intact(fake):
+    """The legacy layout survives a failed migration and every operation still accepts it."""
+    assert running(fake) == ["api"]
+    assert fake.containers["api"]["labels"] == {"owner": "kept", LEGACY_LABEL: DIGEST}
+    assert fake.containers[LEGACY_BACKUP]["labels"] == {"owner": "kept"}
+    assert NEW_BACKUP not in fake.containers
+    assert restart(fake, "api") == "unless-stopped"
+    assert set(retained(fake).values()) == {"no"}
+    assert deploy("check", fake) == "Pages image and API health verified"
+
+
+@pytest.mark.parametrize(
+    "failure", ["create", "start", "health", ("rename", "api", f"api-pages-reverted-{NOW}")]
+)
+def test_matrix_legacy_reapply_failure_restores_legacy_host(failure):
+    fake = legacy_applied()
+    if failure == "health":
+        fake.created_healthy = False
+    else:
+        fake.fail.append(failure)
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        deploy("apply", fake)
+    assert_legacy_host_intact(fake)
+    # Revert and a retried apply still accept the state.
+    fake.created_healthy = True
+    assert deploy("apply", fake).startswith("Pages derived image applied")
+    assert_neutral_layout(fake)
+
+
+def test_matrix_legacy_reapply_killed_mid_swap_leaves_mid_revert_layout():
+    fake = legacy_applied()
+    retired = f"api-pages-reverted-{NOW}"
+    # A kill after the retire rename and before create: no `api`, original waits as backup.
+    fake.containers[retired] = fake.containers.pop("api")
+    fake.containers[retired]["running"] = False
+    fake.containers[retired]["host_config"]["RestartPolicy"] = {"Name": "no"}
+    assert deploy("revert", fake) == "Original API container restored"
+    assert_original_restored_any(fake)
+    fake = legacy_applied()
+    fake.containers[retired] = fake.containers.pop("api")
+    fake.containers[retired]["running"] = False
+    fake.containers[retired]["host_config"]["RestartPolicy"] = {"Name": "no"}
+    deploy("apply", fake)
+    assert_neutral_layout(fake)
+
+
+def test_matrix_reconciled_legacy_backup_then_apply_failure_restores_original():
+    fake = legacy_applied()
+    del fake.containers["api"]
+    fake.created_healthy = False
+    with pytest.raises(ValueError, match="health"):
+        deploy("apply", fake)
+    assert running(fake) == ["api"]
+    assert fake.containers["api"]["labels"] == {"owner": "kept"}
+    assert LEGACY_BACKUP not in fake.containers and NEW_BACKUP not in fake.containers
+    failed = fake.containers[f"api-pages-failed-{NOW}"]
+    assert failed["labels"] == {"owner": "kept", NEW_LABEL: DIGEST} and not failed["running"]
+    assert set(retained(fake).values()) == {"no"}
+
+
+def test_matrix_legacy_host_reverts_then_applies_neutral():
+    fake = legacy_applied()
+    assert deploy("revert", fake).startswith("Original API container restored")
+    assert_original_restored_any(fake)
+    assert restart(fake, "api") == "unless-stopped"
+    deploy("apply", fake)
+    assert_neutral_layout(fake)
+    assert restart(fake, f"api-pages-reverted-{NOW}") == "no"
+
+
+def test_matrix_legacy_host_older_digest_check_reports_legacy_label():
+    fake = legacy_applied(label="older-digest")
+    with pytest.raises(ValueError, match="does not match source"):
+        deploy("check", fake)
+
+
+def mid_revert():
+    fake = legacy_applied()
+    fake.containers[REVERTED] = fake.containers.pop("api")
+    fake.containers[REVERTED]["running"] = False
+    fake.containers[REVERTED]["host_config"]["RestartPolicy"] = {"Name": "no"}
+    return fake
+
+
+def test_matrix_legacy_mid_revert_finishes_and_applies():
+    fake = mid_revert()
+    assert deploy("revert", fake) == "Original API container restored"
+    assert_original_restored_any(fake)
+    assert restart(fake, REVERTED) == "no"
+    deploy("apply", fake)
+    assert_neutral_layout(fake)
+
+
+def test_matrix_legacy_mid_revert_apply_reconciles_then_writes_neutral():
+    fake = mid_revert()
+    assert deploy("apply", fake).startswith("Pages derived image applied")
+    assert_neutral_layout(fake)
+
+
+def test_matrix_legacy_half_finished_apply_missing_api():
+    fake = legacy_applied()
+    del fake.containers["api"]
+    deploy("apply", fake)
+    assert_neutral_layout(fake)
+
+
+@pytest.mark.parametrize("label", [LEGACY_LABEL, NEW_LABEL])
+def test_matrix_legacy_half_finished_apply_stopped_derived(label):
+    fake = legacy_applied()
+    fake.containers["api"]["labels"] = {"owner": "kept", label: DIGEST}
+    fake.containers["api"]["running"] = False
+    deploy("apply", fake)
+    assert_neutral_layout(fake)
+    assert restart(fake, f"api-pages-failed-{NOW}") == "no"
+
+
+def test_matrix_legacy_half_finished_apply_revert_restores_original():
+    fake = legacy_applied()
+    del fake.containers["api"]
+    assert deploy("revert", fake) == "Original API container restored"
+    assert_original_restored_any(fake)
+
+
+def mixed():
+    fake = legacy_applied()
+    fake.add(NEW_BACKUP, labels={"owner": "kept"}, running=False, RestartPolicy={"Name": "no"})
+    return fake
+
+
+@pytest.mark.parametrize("operation", ["check", "revert", "apply"])
+@pytest.mark.parametrize("current", [True, False])
+def test_matrix_mixed_backups_refuse_without_changes(operation, current):
+    fake = mixed()
+    if not current:
+        del fake.containers["api"]
+    before = {n: dict(c) for n, c in fake.containers.items()}
+    if operation == "check" and not current:  # No API to check: the lookup error stands.
+        with pytest.raises(subprocess.CalledProcessError):
+            deploy(operation, fake)
+        return
+    with pytest.raises(ValueError, match="reconcile manually") as error:
+        deploy(operation, fake)
+    assert LEGACY_BACKUP in str(error.value) and NEW_BACKUP in str(error.value)
+    assert not [c for c in fake.calls if c[0] in MUTATIONS | {"build"}]
+    assert {n: dict(c) for n, c in fake.containers.items()} == before
+
+
+def test_matrix_remote_refuses_mixed_backups_before_any_mutation(monkeypatch):
+    fake = mixed()
+    with pytest.raises(ValueError, match="reconcile manually"):
+        remote("apply", fake, monkeypatch)
+    assert not [c for c in fake.calls if c[0] in MUTATIONS | {"build"}]
+
+
+def test_matrix_disagreeing_labels_on_one_container_refuse():
+    fake = legacy_applied()
+    fake.containers["api"]["labels"][NEW_LABEL] = "other"
+    with pytest.raises(ValueError, match="disagree"):
+        deploy("check", fake)
+
+
+def test_matrix_remote_ships_neutral_names():
+    assert "NEUTRAL_PAGES_BACKUP_SUFFIX = " in pages_deploy.REMOTE
+    assert "NEUTRAL_PAGES_LABEL = " in pages_deploy.REMOTE
+    assert "NEUTRAL_PAGES_IMAGE_PREFIX = " in pages_deploy.REMOTE
+
+
+def test_remote_program_migrates_legacy_host_with_shipped_imports(monkeypatch):
+    """Run the shipped REMOTE source (stdlib imports only), not the in-process module."""
+    fake = legacy_applied()
+    remote("apply", fake, monkeypatch)
+    assert_neutral_layout(fake)
+    assert fake.containers["api"]["labels"][NEW_LABEL] == DIGEST
