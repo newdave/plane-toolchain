@@ -54,7 +54,9 @@ async def resolve_task(call: Call, project: str, ref: str) -> tuple[str, str]:
 def read_body(namespace: argparse.Namespace, option: str) -> str:
     """Return text from --html or --file (- is stdin); exactly one is required."""
     html, path = namespace.html, namespace.file
-    if (html is None) == (path is None):
+    if html is None and path is None:
+        raise UsageError(f"{option} is required")
+    if html is not None and path is not None:
         raise UsageError(f"Cannot read {option}")
     if html is not None:
         text = html
@@ -151,6 +153,9 @@ async def task_update(call: Call, project: str, namespace: argparse.Namespace) -
             # Plane stores "no priority" as null.
             if item.get(field) not in (None, "none"):
                 raise ReadbackError
+        elif field == "name":
+            if str(item.get(field) or "").strip() != value.strip():
+                raise ReadbackError
         elif item.get(field) != value:
             raise ReadbackError
     return item
@@ -217,7 +222,7 @@ async def page_create(call: Call, project: str, namespace: argparse.Namespace) -
     if not page_id:
         raise ReadbackError
     page = await call("ce_page", {"action": "retrieve", "project_id": project, "page_id": page_id})
-    if not isinstance(page, dict) or page.get("name") != namespace.name:
+    if not isinstance(page, dict) or str(page.get("name") or "").strip() != namespace.name.strip():
         raise ReadbackError
     return page
 

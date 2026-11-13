@@ -3,15 +3,17 @@
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from plane_toolchain import cli_commands, session
 from plane_toolchain.cli_commands import ReadbackError, UsageError
-from plane_toolchain.connection import connection
+from plane_toolchain.connection import ToolError, connection
 from plane_toolchain.session import ROOT
 from plane_toolchain.settings import Settings
 
@@ -20,6 +22,8 @@ __all__ = ["ReadbackError", "UsageError", "environment", "execute", "main", "par
 FAILED = "Plane MCP request failed; remote outcome must be checked"
 
 
+WRITES = {("task", "update"), ("comment", "add"), ("page", "create"), ("relation", "add")}
+NOISY_LOGGERS = ("mcp", "httpx", "httpx2", "httpcore")
 RELATION_TYPES = [
     "blocking",
     "blocked_by",
@@ -118,7 +122,7 @@ def classify(error: BaseException) -> tuple[int, str | None]:
     for kind, code, message in (
         (ReadbackError, 5, "write not confirmed by readback; check the remote state"),
         (UsageError, 2, None),
-        (ValueError, 4, None),
+        (ToolError, 4, None),
     ):
         hits = [leaf for leaf in found if isinstance(leaf, kind)]
         if hits:
@@ -139,7 +143,37 @@ async def run(namespace: argparse.Namespace, merged: dict[str, str], project: st
         return await execute(namespace, call, project)
 
 
+@contextmanager
+def quiet_logging() -> Iterator[None]:
+    """Keep library log records (tracebacks, response bodies) off stderr; restore on exit."""
+    last_resort = logging.lastResort
+    loggers = [logging.getLogger(name) for name in NOISY_LOGGERS]
+    levels = [logger.level for logger in loggers]
+    logging.lastResort = None
+    for logger in loggers:
+        logger.setLevel(logging.CRITICAL + 1)
+    try:
+        yield
+    finally:
+        logging.lastResort = last_resort
+        for logger, level in zip(loggers, levels, strict=True):
+            logger.setLevel(level)
+
+
 def main(
+    argv: list[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    root: Path = ROOT,
+    connect=connection,
+    out=sys.stdout,
+    err=sys.stderr,
+) -> int:
+    with quiet_logging():
+        return run_cli(argv, env=env, root=root, connect=connect, out=out, err=err)
+
+
+def run_cli(
     argv: list[str] | None = None,
     *,
     env: Mapping[str, str] | None = None,
@@ -174,7 +208,11 @@ def main(
         raise
     except BaseException as error:  # noqa: BLE001 - map everything; never print a traceback
         code, message = classify(error)
-        return 130 if code == 130 else fail(code, message or FAILED)
+        if code == 130:
+            if (namespace.group, namespace.action) in WRITES:
+                fail(130, "interrupted; remote outcome must be checked")
+            return 130
+        return fail(code, message or FAILED)
     out.write(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
     return 0
 

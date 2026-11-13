@@ -35,20 +35,24 @@ def paced(call, *, clock=time.monotonic, sleep=asyncio.sleep):
     return wrapped
 
 
+class ToolError(ValueError):
+    """The code's own MCP tool failure; its message is fixed text, safe to print."""
+
+
 def decode(result) -> Any:
     """Unwrap FastMCP union results without mistaking an API error for data."""
     if result.is_error:
-        raise ValueError("Plane MCP tool failed; remote outcome must be checked")
+        raise ToolError("Plane MCP tool failed; remote outcome must be checked")
     data = result.structured_content
     if data is None:
         blocks = [block.text for block in result.content if block.type == "text"]
         if len(blocks) != 1:
-            raise ValueError("Unexpected MCP result")
+            raise ToolError("Unexpected MCP result")
         data = json.loads(blocks[0])
     elif isinstance(data, dict) and set(data) == {"result"}:
         data = data["result"]
     if not isinstance(data, (dict, list)) and data is not None:
-        raise ValueError("Unexpected MCP result")
+        raise ToolError("Unexpected MCP result")
     return data
 
 
@@ -78,7 +82,7 @@ async def connection(env: Mapping[str, str] | None = None):
 
         async def call(name: str, arguments: dict) -> Any:
             if name not in names:
-                raise ValueError("Required MCP tool unavailable")
+                raise ToolError("Required MCP tool unavailable")
             result = await session.call_tool(name, arguments)
             return decode(result)
 

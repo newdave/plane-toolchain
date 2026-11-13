@@ -1,10 +1,12 @@
 import asyncio
 import io
 import json
+import logging
 from contextlib import asynccontextmanager
 
 import anyio
 import pytest
+from plane_toolchain.connection import ToolError
 from plane_toolchain.cli import ReadbackError, UsageError, classify, environment, main
 
 PROJECT = "00000000-0000-0000-0000-000000000001"
@@ -124,7 +126,7 @@ def test_unexpected_error_hides_key_and_traceback(tmp_path):
 
 
 def test_value_error_from_transport_is_exit_4(tmp_path):
-    fake = Fake(error=ValueError("Required MCP tool unavailable"))
+    fake = Fake(error=ToolError("Required MCP tool unavailable"))
     code, _, err = run(["task", "list"], fake, tmp_path)
     assert code == 4
     assert err == "plane: Required MCP tool unavailable\n"
@@ -185,7 +187,7 @@ def grouped(error):
 
 
 def test_grouped_value_error_keeps_message_and_exit_4(tmp_path):
-    fake = grouped(ValueError("Required MCP tool unavailable"))
+    fake = grouped(ToolError("Required MCP tool unavailable"))
     code, _, err = run(["task", "list"], fake, tmp_path)
     assert (code, err) == (4, "plane: Required MCP tool unavailable\n")
 
@@ -317,7 +319,8 @@ def test_body_file_not_utf8_is_usage_error_without_connecting(tmp_path):
 
 def test_comment_add_requires_a_body_without_connecting(tmp_path):
     fake = Fake()
-    assert run(["comment", "add", OTHER], fake, tmp_path)[0] == 2
+    code, _, err = run(["comment", "add", OTHER], fake, tmp_path)
+    assert (code, err) == (2, "plane: --html or --file is required\n")
     assert fake.entered == 0
 
 
@@ -520,7 +523,7 @@ def test_relation_remove_is_not_a_command(tmp_path):
 
 
 def test_missing_ce_tool_exits_4(tmp_path):
-    fake = Fake(error=ValueError("Required MCP tool unavailable"))
+    fake = Fake(error=ToolError("Required MCP tool unavailable"))
     code, _, err = run(["page", "list"], fake, tmp_path)
     assert code == 4
     assert err == "plane: Required MCP tool unavailable\n"
@@ -546,3 +549,76 @@ def test_relation_add_rejects_targets_in_another_project(tmp_path):
     assert code == 2
     assert "one project" in err
     assert [c[0] for c in fake.calls] == ["workitem"]
+
+
+def test_pydantic_validation_error_does_not_leak_server_content(tmp_path):
+    from pydantic import BaseModel
+
+    class Reply(BaseModel):
+        count: int
+
+    try:
+        Reply.model_validate({"count": f"bad {KEY}"})
+    except ValueError as error:
+        raised = error
+    assert KEY in str(raised)
+    code, out, err = run(["task", "list"], Fake(error=raised), tmp_path)
+    assert code == 4
+    assert err == "plane: Plane MCP request failed; remote outcome must be checked\n"
+    assert KEY not in out + err
+
+
+def test_other_value_error_uses_fixed_text(tmp_path):
+    code, _, err = run(["task", "list"], Fake(error=ValueError(f"x {KEY}")), tmp_path)
+    assert (code, err) == (4, "plane: Plane MCP request failed; remote outcome must be checked\n")
+
+
+def test_library_logging_stays_off_stderr(tmp_path, capfd):
+    class Logging(Fake):
+        @asynccontextmanager
+        async def connect(self, env=None):
+            async def call(name, args):
+                try:
+                    raise RuntimeError(f"body {KEY}")
+                except RuntimeError:
+                    logging.getLogger("mcp.client.streamable_http").exception(
+                        "Error parsing JSON response"
+                    )
+                    raise
+
+            yield call
+
+    before = logging.lastResort
+    code, out, err = run(["task", "list"], Logging(), tmp_path)
+    captured = capfd.readouterr()
+    assert code == 4
+    assert err == "plane: Plane MCP request failed; remote outcome must be checked\n"
+    assert captured.err == "" and KEY not in captured.out
+    assert logging.lastResort is before
+
+
+@pytest.mark.parametrize(
+    "argv,results",
+    [
+        (["task", "update", OTHER, "--name", "x"], []),
+        (["comment", "add", OTHER, "--html", "x"], []),
+        (["page", "create", "--name", "P", "--html", "x"], []),
+        (["relation", "add", OTHER, PROJECT], []),
+    ],
+)
+def test_interrupt_during_write_says_outcome_unknown(tmp_path, argv, results):
+    code, _, err = run(argv, Fake(error=KeyboardInterrupt()), tmp_path)
+    assert (code, err) == (130, "plane: interrupted; remote outcome must be checked\n")
+
+
+def test_interrupt_during_read_is_silent(tmp_path):
+    code, _, err = run(["task", "list"], Fake(error=KeyboardInterrupt()), tmp_path)
+    assert (code, err) == (130, "")
+
+
+def test_name_readback_ignores_surrounding_whitespace(tmp_path):
+    fake = Fake([{}, {"name": "Plan"}])
+    assert run(["task", "update", OTHER, "--name", " Plan "], fake, tmp_path)[0] == 0
+    fake = Fake([{"id": PAGE, "name": " Plan"}, {"id": PAGE, "name": "Plan "}])
+    code, _, _ = run(["page", "create", "--name", "Plan", "--html", "<p>x</p>"], fake, tmp_path)
+    assert code == 0

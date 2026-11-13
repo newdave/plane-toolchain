@@ -24,7 +24,19 @@ The CLI reads the values in [configuration](configuration.md):
 | `PLANE_PROJECT` | Default project UUID, for example `00000000-0000-0000-0000-000000000001` |
 | `PLANE_API_KEY` | Secret API key |
 
-Exported values win. If a non-secret value is not exported, the CLI falls back to `config/local.env`. `PLANE_ENABLED` falls back to the `plane:enable` switch. The API key comes only from the environment. It is never read from arguments or files, and never printed.
+Exported values win. A non-secret value that is not exported falls back to these files, later files winning:
+
+1. `config/defaults.env`
+2. `.env`
+3. In a linked worktree, the main checkout's `config/local.env`, then the worktree's own `config/local.env`. A plain checkout uses its `config/local.env`. A checkout that has `.deploy/env` and no `config/local.env` uses `.deploy/env` instead.
+
+A project installed by `scripts/install_project.py` (it has `.plane/plane.sh`) reads only the main checkout's `.plane/local.env`, then its own `.plane/local.env`.
+
+`PLANE_ENABLED` falls back to the `plane:enable` switch. The API key must be in the environment. It is never read from arguments or files, and never printed. The CLI does not decrypt `config/plane.enc.env`. To keep the key out of argv, decrypt into the command's environment:
+
+```sh
+sops exec-env config/plane.enc.env 'mise run plane:cli -- task list'
+```
 
 Every command accepts `--project UUID` to override `PLANE_PROJECT`. It must be a UUID.
 
