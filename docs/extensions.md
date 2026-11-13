@@ -36,16 +36,23 @@ Permission model, aligned with Plane CE v1.4.3 (`apps/api/plane/app/permissions/
 
 After commit it queues Plane's `page_transaction` (mention log). It does not queue `track_page_version`: in CE v1.4.3 that task reads a missing `Page.description` attribute, and if fixed it would overwrite the snapshot in place.
 
-The update returns as soon as the transaction commits, so a worker is never held for a Live debounce. A successful update takes about 1 second plus conversion time. The 200 response is the page detail plus a `late_store_check` object:
+The update returns as soon as the transaction commits, so a worker is never held for a Live debounce. The API call takes about 1 second plus conversion time. The 200 response is the page detail plus a `late_store_check` object:
 
-- `recheck_after`: ISO 8601 time, 12 seconds after the commit (one Live debounce plus margin).
+- `recheck_after`: informational ISO 8601 time, 12 seconds after the commit (one Live debounce plus margin). Clients should wait `seconds` rather than use their own clock.
 - `seconds`: 12.
 - `compare`: `description_html`.
+- `html_sha256`: SHA-256 of the stored HTML just written.
 - `on_difference`: what a mismatch means.
 
-Detection is now the client's job. After `recheck_after`, retrieve the page and compare its `description_html` with the one in the update response. A difference means a late Live store replaced the body (the write and its version stay): retrieve again and retry. This keeps the earlier guarantee that an overwrite within the debounce window is detectable, with one change: the API no longer reports it as a 409 on the same call. A client that never rechecks does not learn of the overwrite, and a store after the window is undetected, as before. `ce_page` returns the response unchanged, so the agent must do the recheck.
+Detection happens in the `ce_page` MCP tool, not the API. `ce_page` is async: after a successful PATCH it waits the hinted `seconds` (the SDK calls run in threads, so the event loop is never blocked), retrieves the page and compares the SHA-256 of `description_html` with `late_store_check.html_sha256`. It returns the update response plus `late_store: "unchanged"`. If the digest differs, Live's late store replaced the body (the write and its version stay) and the tool fails with "Page <id> was overwritten by an open editor after the update; retrieve it and retry", as the old 409 did. The wait is capped at 60 seconds. A backend payload without `late_store_check` is returned unchanged.
+
+Other clients of the REST route must wait `seconds` after the response (not compare `recheck_after` against their own clock), then retrieve and compare the digest. A mismatch can in rare cases be benign (a legitimate edit by someone else after the update): compare the content, and retry once if the update is missing. The recheck cost is that the MCP call takes about 13 seconds plus conversion time, as before, but no API worker is held. A store after the window goes undetected, as before.
 
 Missing or invisible pages get 403 from Plane's `ProjectPagePermission` before the view runs, as for retrieve. The view's own 404 is defence in depth.
+
+### Pages backend fixes (PTC-69, PTC-70, PTC-71)
+
+`pages_backend.py` and `ce_tools.py` changed, so both payload digests changed. PTC-69: non-object request bodies get 400. PTC-70: update returns at once with `late_store_check` and the MCP tool does the recheck. PTC-71: permission tests and docs; `ce_tools.py` docstring only. Redeploy both through the owner tasks with deployment authority: for Pages run revert, then apply; also apply the MCP compat payload. Update behaviour needs both payloads.
 
 Why: Live keeps an open document in memory and stores it with a 10-second debounce. It never re-reads the database, so a database write while the document is open is overwritten. `force_close` is the only external way to disconnect its editors; Live then stores and unloads the document.
 
@@ -153,5 +160,3 @@ Then:
 - A Saltbox host's next build, from this release or the Saltbox role (PTC-53), must write the neutral label, or every operation from this release refuses there.
 
 You can also reconcile the state by hand.
-
-**PTC-70 migration note.** `pages_backend.py` and `ce_tools.py` changed again (the update response now carries `late_store_check`; the tool description says so). Redeploy both through the owner tasks: for Pages run revert, then apply.

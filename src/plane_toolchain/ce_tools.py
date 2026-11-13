@@ -7,6 +7,8 @@ CE tools use the same request authentication, SDK and backend permissions.
 # Dependencies below exist in the hosted Plane MCP image, not this toolchain's environment.
 # pyright: reportMissingImports=false
 
+import asyncio
+import hashlib
 import os
 import re
 from typing import Literal
@@ -83,8 +85,9 @@ expected_updated_at exactly as returned by retrieve; a changed page is refused (
 Locked and archived pages are refused. update requires force=true because it
 disconnects everyone editing the page in Live first; unsaved edits from the last
 few seconds may be lost. The replaced body is kept as a page version.
-The call returns at once with late_store_check: after recheck_after, retrieve the page and
-compare description_html; a difference means Live overwrote the update, so retry.
+After the write the tool waits the backend's late_store_check seconds (about 12), retrieves
+the page and compares its body digest. The result carries late_store: "unchanged"; if an open
+editor's late save replaced the update, the tool fails naming the page, so retrieve and retry.
 """
 
 
@@ -108,6 +111,34 @@ def page_update_body(description_html, expected_updated_at, force):
         "expected_updated_at": expected_updated_at,
         "force": force,
     }
+
+
+MAX_LATE_STORE_SECONDS = 60
+
+
+async def confirm_late_store(result, retrieve, sleep):
+    """Wait out Live's store debounce, then check the update survived.
+
+    result is the backend's update response; retrieve is an async callable returning the
+    page; sleep is asyncio.sleep or a test stand-in. A backend without late_store_check
+    (older payload) is returned unchanged. A body digest that differs from the hint means
+    Live replaced the update; the error names the page id only.
+    """
+    hint = result.get("late_store_check") if isinstance(result, dict) else None
+    if not isinstance(hint, dict):
+        return result
+    seconds = hint.get("seconds")
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        raise ValueError("Backend sent an invalid late_store_check")
+    await sleep(min(max(seconds, 0), MAX_LATE_STORE_SECONDS))
+    page = await retrieve()
+    html = page.get("description_html") if isinstance(page, dict) else None
+    if hashlib.sha256((html or "").encode()).hexdigest() != hint.get("html_sha256"):
+        raise RuntimeError(
+            f"Page {result.get('id')} was overwritten by an open editor after the update; "
+            "retrieve it and retry"
+        )
+    return {**result, "late_store": "unchanged"}
 
 
 def main():
@@ -162,7 +193,7 @@ def main():
         )
 
     @server.tool(name="ce_page", description=CE_PAGE_DESCRIPTION)
-    def ce_page(
+    async def ce_page(
         action: Literal["list", "retrieve", "create", "update"],
         project_id: str,
         page_id: str = "",
@@ -182,8 +213,17 @@ def main():
                 endpoint, {"name": name, "description_html": description_html, "access": access}
             )
         if action == "update":
-            return sdk_private(client.pages, "_patch")(
-                endpoint, page_update_body(description_html, expected_updated_at, force)
+            # SDK calls are blocking: run them in threads so the event loop stays free
+            # during the wait.
+            result = await asyncio.to_thread(
+                sdk_private(client.pages, "_patch"),
+                endpoint,
+                page_update_body(description_html, expected_updated_at, force),
+            )
+            return await confirm_late_store(
+                result,
+                lambda: asyncio.to_thread(sdk_private(client.pages, "_get"), endpoint),
+                asyncio.sleep,
             )
         return sdk_private(client.pages, "_get")(endpoint)
 

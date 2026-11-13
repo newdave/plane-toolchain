@@ -468,7 +468,10 @@ def test_late_store_check_hint_names_when_to_recheck_and_what_to_compare():
     from plane_toolchain.pages_backend import LATE_STORE_WINDOW_SECONDS, late_store_check
 
     now = datetime(2026, 11, 13, 1, 2, 3, tzinfo=timezone.utc)
-    hint = late_store_check(now)
+    hint = late_store_check(now, "<p>x</p>")
+    import hashlib
+
+    assert hint["html_sha256"] == hashlib.sha256(b"<p>x</p>").hexdigest()
     assert LATE_STORE_WINDOW_SECONDS > 10  # Live debounce is 10 s
     assert hint["seconds"] == LATE_STORE_WINDOW_SECONDS
     assert hint["recheck_after"] == "2026-11-13T01:02:15+00:00"
@@ -741,10 +744,11 @@ def test_pages_view_is_gated_by_plane_page_permission_and_authentication(monkeyp
 
     _pages_view(monkeypatch)
     view = pages_backend.routes()[1][0][1]
-    perms = view.permission_classes
-    assert [c.__name__ for c in perms[1:]] == ["Permission"]
     import sys
 
+    perms = view.permission_classes
+    assert perms[0] is sys.modules["rest_framework.permissions"].IsAuthenticated
+    assert [c.__name__ for c in perms[1:]] == ["Permission"]
     sys.modules["plane.app.views.page.base"].PageViewSet.permission_classes = []
     with pytest.raises(RuntimeError, match="permission contract changed"):
         pages_backend.routes()

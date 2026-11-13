@@ -176,18 +176,20 @@ def page_update(data, load, prepare, close_editors, wait, locked, version):
     return {"page": page, "old_html": old_html}
 
 
-def late_store_check(now):
+def late_store_check(now, html):
     """Readback hint: when and how the client detects a late Live store.
 
     Live may still store an editor's older state after the commit. The API returns at
-    once instead of polling; a client that retrieves the page after recheck_after and
-    finds a different description_html knows Live replaced the body.
+    once instead of polling. A client waits `seconds` after the response, retrieves the
+    page and compares the SHA-256 of its description_html with html_sha256; a different
+    digest means Live replaced the body.
     """
     after = now + timedelta(seconds=LATE_STORE_WINDOW_SECONDS)
     return {
         "recheck_after": after.isoformat(),
         "seconds": LATE_STORE_WINDOW_SECONDS,
         "compare": "description_html",
+        "html_sha256": hashlib.sha256((html or "").encode()).hexdigest(),
         "on_difference": "Live overwrote the update; retrieve the page and retry",
     }
 
@@ -411,7 +413,9 @@ def routes():
                 logging.getLogger(__name__).warning("Page transaction not queued: %s", page.id)
             # No wait here: a sync worker must not be held for a Live debounce.
             detail = dict(PageDetailSerializer(page).data)
-            detail["late_store_check"] = late_store_check(datetime.now(timezone.utc))
+            detail["late_store_check"] = late_store_check(
+                datetime.now(timezone.utc), page.description_html
+            )
             return Response(detail)
 
     # Import confirms this image uses the reviewed CE layout; fail startup on drift.
