@@ -828,7 +828,13 @@ def scripted(lines, directory):
         def kill(self):
             pass
 
-    return lambda argv, **kw: Process()
+    class Gone:  # the kill script's answer: nothing left running in the container
+        stdout = io.BytesIO(b"gone\n")
+
+        def wait(self):
+            return 0
+
+    return lambda argv, **kw: Gone() if "-c" in argv else Process()
 
 
 def test_journal_events_fsynced_before_next_line_and_never_printed(tmp_path, capsys):
@@ -873,7 +879,8 @@ def test_request_is_one_json_argument_line_before_the_snippet(host):
     host.deploy("check")
     assert host.shell.requests[0] == {"op": "check", "args": {"old": OLD, "new": NEW}}
     piped = [c for c in host.fake.calls if "manage.py" in c][0]
-    assert piped == ("exec", "-i", "plane-api", "python", "manage.py", "shell")
+    assert piped[:3] == ("exec", "-i", "-e") and piped[3].startswith("PLANE_RENAME_RUN=")
+    assert piped[4:] == ("plane-api", "python", "manage.py", "shell")
 
 
 @pytest.mark.parametrize("failure", ["celery_missing", "probe_fails", "stop_fails"])

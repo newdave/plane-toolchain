@@ -165,6 +165,15 @@ There is no automatic rollback. Message: `Rename stopped at <step> (moving to <t
 
 Snippet errors such as `convert_failed`, `row_changed` (a row changed after it was read), `write_failed` or `cache_clear_failed` name only ids and error types.
 
+### Hung or orphaned snippets
+
+Each snippet runs in the API container with a per-run `PLANE_RENAME_RUN=<token>` in its environment. Stopping the local `docker exec` client does not stop that Python process, so after any abort the tool runs a small stdlib script in the container (`python -c`, reading `/proc`) that sends SIGTERM and then SIGKILL to the marked processes and confirms none is left. Only then does the failure continue to the usual handling (restart and reset before the slug change, or stay stopped after it).
+
+- A snippet that prints nothing for 15 minutes is treated as hung and stopped: `<op> timed out after 900 s without output; the snippet process was stopped in the API container`. The timer restarts on every output line, so a long step that keeps answering is never cut off.
+- `snippet process could not be confirmed stopped` means the kill could not be confirmed. Services are not restarted and the receipt is not reset. Find and stop the process by hand in the API container (its environment holds `PLANE_RENAME_RUN`), then rerun apply or revert.
+- Apply and revert sweep first: any marked process left by an earlier killed run is stopped before the preflight, and the run refuses (`could not confirm that no earlier snippet is running`) if that cannot be confirmed. `check` never sweeps, because it takes no lock and could meet a live run's snippet.
+- The kill script needs `python` and a readable `/proc` in the API container, as the Plane backend image has.
+
 ## Revert
 
 Use revert to return to the old slug from any partial or complete apply. It restores the slug and every journalled field from `records.jsonl`; it never calls Live and never restores `backup.dump`.

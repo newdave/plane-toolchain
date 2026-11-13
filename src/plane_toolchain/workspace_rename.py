@@ -22,6 +22,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from plane_toolchain import workspace_rename_backend, workspace_rename_match
@@ -43,6 +44,49 @@ MIN_FREE_BYTES = 64 << 20
 SALTBOX_LABEL = "com.github.saltbox.saltbox_managed"
 DRAIN_SECONDS = 60
 DRAIN_INTERVAL = 2
+SNIPPET_IDLE_SECONDS = (
+    900  # a snippet silent this long is hung: kill it (the timer restarts per line)
+)
+SNIPPET_MARKER = "PLANE_RENAME_RUN"  # env var carrying the per-run token inside the API container
+STUCK = "snippet process could not be confirmed stopped"
+# Runs inside the API container as `python -c KILLER <token> <seconds>` (stdlib only). Finds the
+# processes whose environment carries SNIPPET_MARKER=<token> (any token when empty) in /proc,
+# sends SIGTERM and then SIGKILL, and prints "gone" (exit 0) once none is left, else "alive".
+KILLER = """\
+import os, signal, sys, time
+token, wait = sys.argv[1], float(sys.argv[2])
+root = sys.argv[3] if len(sys.argv) > 3 else "/proc"
+prefix = b"PLANE_RENAME_RUN="
+def marked():
+    found = []
+    for name in os.listdir(root):
+        if not name.isdigit() or int(name) == os.getpid():
+            continue
+        try:
+            with open(root + "/" + name + "/environ", "rb") as handle:
+                items = handle.read().split(b"\\0")
+        except OSError:
+            continue
+        if any(i.startswith(prefix) and token.encode() in (b"", i[len(prefix):]) for i in items):
+            found.append(int(name))
+    return found
+sig = signal.SIGTERM
+for _ in range(int(wait * 2) + 1):
+    pids = marked()
+    if not pids:
+        print("gone")
+        sys.exit(0)
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            pass
+    sig = signal.SIGKILL
+    time.sleep(0.5)
+left = marked()
+print("alive" if left else "gone")
+sys.exit(1 if left else 0)
+"""
 
 
 def receipt_dir(environ, home=None):
@@ -541,6 +585,26 @@ def journal_workspace(records):
     return ids.pop() if ids else None
 
 
+def is_stuck(reason):
+    """Whether a failure reason says a snippet process could not be confirmed stopped."""
+    return str(reason).startswith(STUCK)
+
+
+def stop_snippet(api, token, popen):
+    """Stop the snippet processes marked with `token` (all marked ones when empty) in the API
+    container and return whether none is left. Any error counts as not confirmed."""
+    try:
+        process = popen(
+            ["docker", "exec", api, "python", "-c", KILLER, token, "15"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        out = process.stdout.read(64)
+        return process.wait() == 0 and out.strip() == b"gone"
+    except Exception:  # noqa: BLE001 - an unconfirmed stop is reported, never guessed
+        return False
+
+
 def run_snippet(api, snippet, op, args, directory, popen, uid=None):
     """Run one snippet operation through `docker exec -i <api> python manage.py shell`.
 
@@ -548,20 +612,47 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None):
     read line by line; non-JSON lines are ignored and never echoed. Each `journal` event is
     appended to the journal (fsynced) before the next line is read, and is never kept or
     printed. Returns (summary or None, other events). A non-zero exit gives no summary.
+
+    The process runs with a per-run `PLANE_RENAME_RUN` token in its environment. Killing the
+    local `docker exec` client does not stop the Python process in the container, so every
+    abort (a deadline of SNIPPET_IDLE_SECONDS without output, an error, an interrupt, a
+    non-zero exit) is followed by stop_snippet, and the caller hears of the failure only once
+    the process is confirmed gone. If that cannot be confirmed the failure is a STUCK one:
+    callers must not restart services or reset the receipt then.
     """
     request = json.dumps({"op": op, "args": args}, sort_keys=True)
     source = "RENAME_REQUEST = __import__('json').loads(" + repr(request) + ")\n" + snippet
+    token = os.urandom(8).hex()
     process = popen(
-        ["docker", "exec", "-i", api, *SHELL],
+        ["docker", "exec", "-i", "-e", SNIPPET_MARKER + "=" + token, api, *SHELL],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
     summary, events = None, []
+    expired, timer = [], []
+
+    def expire():
+        expired.append(True)
+        process.kill()
+
+    def arm():
+        for old in timer:
+            old.cancel()
+        timer[:] = [threading.Timer(SNIPPET_IDLE_SECONDS, expire)]
+        timer[0].daemon = True
+        timer[0].start()
+
+    def disarm():
+        for old in timer:
+            old.cancel()
+
     try:
+        arm()
         process.stdin.write(source.encode())
         process.stdin.close()
         for raw in process.stdout:
+            arm()
             try:
                 event = json.loads(raw)
             except ValueError:
@@ -576,11 +667,23 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None):
                 summary = event
             else:
                 events.append(event)
-    except BaseException:
+    except BaseException as failure:
+        disarm()
         process.kill()
         process.wait()
+        if not stop_snippet(api, token, popen) and isinstance(failure, Exception):
+            raise RuntimeError(STUCK + " (" + op + ")") from None
         raise
-    if process.wait() != 0:
+    disarm()
+    code = process.wait()
+    if expired or code != 0:
+        if not stop_snippet(api, token, popen):
+            raise RuntimeError(STUCK + " (" + op + ")")
+        if expired:
+            raise RuntimeError(
+                f"{op} timed out after {SNIPPET_IDLE_SECONDS:g} s without output; the snippet "
+                "process was stopped in the API container"
+            )
         summary = None
     return summary, events
 
@@ -649,6 +752,18 @@ def inspect_services(names, api, docker):
             docker("inspect", name)
         except subprocess.CalledProcessError:
             raise RuntimeError("container not found for service " + key) from None
+
+
+def sweep_orphans(api, popen, operation):
+    """Before apply or revert, stop any snippet left running by an earlier killed run.
+
+    The run lock means no other apply or revert is live, so every marked process is an orphan.
+    `check` takes no lock and never sweeps (it could be a live run's snippet). Refuses when the
+    API container cannot confirm that none is left."""
+    if operation in ("apply", "revert") and not stop_snippet(api, "", popen):
+        raise RuntimeError(
+            "could not confirm that no earlier snippet is running in the API container"
+        )
 
 
 def read_receipt(directory, uid):
@@ -828,6 +943,7 @@ def run_apply(data, seams):
     # Preflight: read-only, and it writes nothing (not even the receipt directory) for check.
     try:
         inspect_services(names, api, docker)
+        sweep_orphans(api, popen, operation)
         receipt = None
         if operation == "apply" or os.path.lexists(directory):
             receipt = load_receipt(directory, old, new, uid)
@@ -938,6 +1054,13 @@ def run_apply(data, seams):
             + "".join(" Warning: " + note + "." for note in notes)
         )
 
+    def snippet_stuck(at, reason):
+        raise RuntimeError(
+            f"Rename stopped at {at}: {reason}. Services were not restarted and the receipt was "
+            "not reset. Stop the snippet process in the API container by hand (its environment "
+            "has PLANE_RENAME_RUN), then rerun apply to resume or run revert."
+        )
+
     def post_slug_failure(target, reason):
         if target == "complete":
             raise RuntimeError(
@@ -977,6 +1100,8 @@ def run_apply(data, seams):
                 stop()
     except Exception as failure:  # noqa: BLE001
         reason = reason_of(failure)
+        if is_stuck(reason):
+            snippet_stuck(step, reason)
         if at_or_past(step, "slug_done"):
             post_slug_failure(step, reason)
         if workspace_id is not None:  # a slug step may have committed: never guess
@@ -1000,6 +1125,8 @@ def run_apply(data, seams):
             advance(directory, target, uid)
         except Exception as failure:  # Killed and other BaseExceptions propagate untouched
             reason = reason_of(failure)
+            if is_stuck(reason):
+                snippet_stuck(step, reason)
             if target in ("stopped", "backed_up"):
                 pre_slug_failure(target, reason)
             if target != "slug_done":
@@ -1059,6 +1186,7 @@ def run_revert(data, seams):
     # Preflight: read-only. It never creates the receipt directory.
     try:
         inspect_services(names, api, docker)
+        sweep_orphans(api, popen, "revert")
         if not os.path.lexists(directory / "receipt.json"):
             raise RuntimeError("no receipt for this rename; nothing to revert")
         receipt = load_receipt(directory, old, new, uid)
@@ -1175,6 +1303,12 @@ def run_revert(data, seams):
         )
 
     def failed(target, reason):
+        if is_stuck(reason):
+            raise RuntimeError(
+                f"Revert stopped at {target}: {reason}. Services were not restarted and the "
+                "receipt was not changed. Stop the snippet process in the API container by hand "
+                "(its environment has PLANE_RENAME_RUN), then rerun revert."
+            )
         if target == "reverting":
             state = "Nothing was changed by the revert; services were left as they are"
         elif target == "restored":
@@ -1320,10 +1454,13 @@ SHIPPED = (
     sha256_file,
     leftover_files,
     journal_workspace,
+    is_stuck,
+    stop_snippet,
     run_snippet,
     report,
     snippet_ok,
     inspect_services,
+    sweep_orphans,
     read_receipt,
     finish_rotation,
     reset_receipt,
@@ -1341,6 +1478,10 @@ SHIPPED_CONSTANTS = {
     "PG_DUMP": PG_DUMP,
     "DB_SIZE": DB_SIZE,
     "MIN_FREE_BYTES": MIN_FREE_BYTES,
+    "SNIPPET_IDLE_SECONDS": SNIPPET_IDLE_SECONDS,
+    "SNIPPET_MARKER": SNIPPET_MARKER,
+    "STUCK": STUCK,
+    "KILLER": KILLER,
     "SALTBOX_LABEL": SALTBOX_LABEL,
     "DRAIN_SECONDS": DRAIN_SECONDS,
     "DRAIN_INTERVAL": DRAIN_INTERVAL,
@@ -1359,6 +1500,7 @@ IMPORTS = {
     "stat",
     "subprocess",
     "tempfile",
+    "threading",
     "time",
 }
 FUNCTIONS = (docker, *SHIPPED)
