@@ -4,7 +4,7 @@
   "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
   "timezone": "Australia/Melbourne",
   "schedule": ["before 6am on monday"],
-  "dependencyDashboard": { "enabled": true },
+  "dependencyDashboard": true,
   "osvVulnerabilityAlerts": true,
   "platformAutomerge": true,
   "lockFileMaintenance": {
