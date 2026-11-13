@@ -78,6 +78,8 @@ expected_updated_at exactly as returned by retrieve; a changed page is refused (
 Locked and archived pages are refused. update requires force=true because it
 disconnects everyone editing the page in Live first; unsaved edits from the last
 few seconds may be lost. The replaced body is kept as a page version.
+The call returns at once with late_store_check: after recheck_after, retrieve the page and
+compare description_html; a difference means Live overwrote the update, so retry.
 """
 
 

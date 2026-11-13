@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 
 - Pages backend: a POST or PATCH body that is not a JSON object (list, null, string, number) now returns 400 "Request body must be a JSON object" instead of 500, and a Live conversion reply that is not a JSON object counts as a conversion failure (502, nothing written). The `pages_backend.py` payload digest changed: redeploy needed (`owner:plane-pages:revert`, then `apply`) (PTC-69).
+- Pages backend: `ce_page` update no longer polls the database for 12 seconds after commit (it held a sync worker; a few concurrent updates could starve the API). It returns as soon as the write commits, with a `late_store_check` object (`recheck_after`, `seconds`, `compare`, `on_difference`) in the response. After `recheck_after` the client retrieves the page and compares `description_html`; a difference means a late Live store overwrote the update. The 409 "Edit was overwritten by an open editor" response is gone. The `pages_backend.py` and `ce_tools.py` payload digests changed: redeploy needed (`owner:plane-pages` revert then apply, and `owner:plane-mcp-compat`) (PTC-70).
 
 ## [0.2.1] - 2026-11-14
 

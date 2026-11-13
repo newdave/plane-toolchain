@@ -143,7 +143,7 @@ def _pages_view(monkeypatch, missing_project=False, binary=None):
 
     class DetailSerializer:
         def __init__(self, instance, many=False):
-            self.data = ("detail", instance)
+            self.data = {"detail": instance}
 
     for name in (
         "requests",
@@ -226,7 +226,7 @@ def test_list_requests_light_fields_and_returns_them_unchanged(monkeypatch):
 def test_retrieve_keeps_full_detail_serializer(monkeypatch):
     view, calls, _ = _pages_view(monkeypatch)
     response = view.get(view.request, "w", "x", page_id="y")
-    assert response.data == ("detail", "page-row")
+    assert response.data == {"detail": "page-row"}
     assert "values" not in calls
 
 
@@ -432,29 +432,18 @@ def test_update_recheck_under_lock_still_refuses_newly_locked_page():
     assert not _writes(events)
 
 
-def _reads(*values):
-    queue = list(values)
-    return lambda: queue.pop(0) if len(queue) > 1 else queue[0]
+def test_late_store_check_hint_names_when_to_recheck_and_what_to_compare():
+    from datetime import datetime, timezone
 
+    from plane_toolchain.pages_backend import LATE_STORE_WINDOW_SECONDS, late_store_check
 
-def test_late_store_watch_passes_when_body_stays_as_written():
-    from plane_toolchain.pages_backend import LATE_STORE_WINDOW_SECONDS, late_store
-
-    waits = []
-    late_store(_reads(memoryview(b"new")), b"new", waits.append)
-    assert sum(waits) >= LATE_STORE_WINDOW_SECONDS
+    now = datetime(2026, 11, 13, 1, 2, 3, tzinfo=timezone.utc)
+    hint = late_store_check(now)
     assert LATE_STORE_WINDOW_SECONDS > 10  # Live debounce is 10 s
-
-
-def test_late_store_watch_reports_overwrite_and_stops_early():
-    from plane_toolchain.pages_backend import PageInputError, late_store
-
-    waits = []
-    with pytest.raises(PageInputError) as caught:
-        late_store(_reads(b"new", b"live"), b"new", waits.append)
-    assert caught.value.key == "overwritten"
-    assert str(caught.value) == "Edit was overwritten by an open editor; retry"
-    assert len(waits) == 2
+    assert hint["seconds"] == LATE_STORE_WINDOW_SECONDS
+    assert hint["recheck_after"] == "2026-11-13T01:02:15+00:00"
+    assert hint["compare"] == "description_html"
+    assert "retry" in hint["on_difference"]
 
 
 def test_update_without_force_is_refused_before_any_side_effect():
@@ -554,9 +543,9 @@ def test_update_errors_map_to_http_status():
     from plane_toolchain.pages_backend import INPUT_ERRORS, UPDATE_STATUS
 
     assert UPDATE_STATUS["conflict"] == 409
-    assert UPDATE_STATUS["overwritten"] == 409
     assert UPDATE_STATUS["close"] == 502
     assert set(UPDATE_STATUS) <= set(INPUT_ERRORS)
+    assert "overwritten" not in INPUT_ERRORS
 
 
 def test_patch_view_lookup_of_absent_page_is_404_behind_permission_403(monkeypatch):
@@ -854,7 +843,7 @@ def _tuples(log, *kinds):
 def test_patch_locks_before_recheck_and_writes_inside_one_transaction(monkeypatch):
     view, log, _ = _patch_env(monkeypatch)
     response = _run_patch(view)
-    assert response.data[0] == "detail"
+    assert response.data["detail"].id == view.kwargs["page_id"]
     order = [_first(log, k) for k in ("load", "publish", "sleep", "select_for_update")]
     assert order == sorted(order)
     enter, exit_ = _first(log, "atomic-enter"), _first(log, "atomic-exit")
@@ -889,21 +878,16 @@ def test_patch_keeps_versions_under_the_cap(monkeypatch):
     assert not _tuples(log, "prune")
 
 
-def test_patch_reports_late_live_store_as_overwritten_and_keeps_write(monkeypatch):
-    view, log, versions = _patch_env(monkeypatch, reads=(b"new", b"live"))
-    with pytest.raises(_ApiError) as caught:
-        _run_patch(view)
-    assert caught.value.status_code == 409
-    assert str(caught.value) == "Edit was overwritten by an open editor; retry"
+def test_patch_returns_at_once_with_a_late_store_hint_and_never_polls(monkeypatch):
+    from plane_toolchain.pages_backend import FORCE_CLOSE_WAIT_SECONDS
+
+    view, log, versions = _patch_env(monkeypatch)
+    response = _run_patch(view)
+    # Only the pre-write wait for Live's store remains; nothing sleeps after commit.
+    assert _tuples(log, "sleep") == [("sleep", FORCE_CLOSE_WAIT_SECONDS)]
+    assert _first(log, "sleep") < _first(log, "atomic-exit")
+    hint = response.data["late_store_check"]
+    assert hint["compare"] == "description_html"
+    assert hint["seconds"] >= 12
     assert ("save", True, b"new") in log
     assert len(versions) == 1
-
-
-def test_patch_watches_one_debounce_window_after_commit(monkeypatch):
-    from plane_toolchain.pages_backend import LATE_STORE_WINDOW_SECONDS
-
-    view, log, _ = _patch_env(monkeypatch)
-    _run_patch(view)
-    after = log[_first(log, "atomic-exit") :]
-    waited = sum(e[1] for e in _tuples(after, "sleep"))
-    assert waited >= LATE_STORE_WINDOW_SECONDS

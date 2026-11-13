@@ -13,12 +13,14 @@ def test_server_payloads_match_existing_deployment_receipts():
         # PTC-13: digest changed (canonical UUIDs, SDK guard, FASTMCP_HOST); see docs/extensions.md.
         # PTC-44: digest changed (ce_page update action); see docs/extensions.md.
         # PTC-29: digest changed (comment wording only; provenance line removed).
-        "ce_tools.py": "3251a424debf574af740455e95abc4861c8edc7d2b4953fc2f29aa33700dc855",
+        # PTC-70: digest changed (update tool description mentions late_store_check).
+        "ce_tools.py": "6534960fec76509317c6574b1bb0000288f187c18a0acc600a7fba60a0b38359",
         # PTC-19: digest changed (client messages from a fixed table; CodeQL stack-trace alerts).
         # PTC-44: digest changed (page update route, force_close via Redis); see docs/extensions.md.
         # PTC-29: digest changed (comment and docstring wording only).
         # PTC-69: digest changed (non-object request bodies and Live replies are 400/502, not 500).
-        "pages_backend.py": "566f0e63991752f60f215ff9b356a27c11c6ce1edc843bc537aaacdc9ece34f9",
+        # PTC-70: digest changed (update returns at once with late_store_check; no post-commit polling).
+        "pages_backend.py": "9ebbac188b6fda856a0842b34de7f4fb93e97b894ea46b8d8e2631a52af0f65c",
     }
     for name, digest in expected.items():
         assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest

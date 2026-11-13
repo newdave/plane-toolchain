@@ -27,7 +27,14 @@ Pages require both the MCP extension and the backend adapter. The backend keeps 
 
 After commit it queues Plane's `page_transaction` (mention log). It does not queue `track_page_version`: in CE v1.4.3 that task reads a missing `Page.description` attribute, and if fixed it would overwrite the snapshot in place.
 
-It then polls the stored binary for 12 seconds (one Live debounce plus margin). If it changes, the response is 409 "Edit was overwritten by an open editor; retry". The write and its version stay, but Live's store has replaced the body. A successful update therefore takes about 13 seconds plus conversion time.
+The update returns as soon as the transaction commits, so a worker is never held for a Live debounce. A successful update takes about 1 second plus conversion time. The 200 response is the page detail plus a `late_store_check` object:
+
+- `recheck_after`: ISO 8601 time, 12 seconds after the commit (one Live debounce plus margin).
+- `seconds`: 12.
+- `compare`: `description_html`.
+- `on_difference`: what a mismatch means.
+
+Detection is now the client's job. After `recheck_after`, retrieve the page and compare its `description_html` with the one in the update response. A difference means a late Live store replaced the body (the write and its version stay): retrieve again and retry. This keeps the earlier guarantee that an overwrite within the debounce window is detectable, with one change: the API no longer reports it as a 409 on the same call. A client that never rechecks does not learn of the overwrite, and a store after the window is undetected, as before. `ce_page` returns the response unchanged, so the agent must do the recheck.
 
 Missing or invisible pages get 403 from Plane's `ProjectPagePermission` before the view runs, as for retrieve. The view's own 404 is defence in depth.
 
@@ -35,7 +42,7 @@ Why: Live keeps an open document in memory and stores it with a 10-second deboun
 
 Risks:
 
-- Edits typed in the last moments before the disconnect may be lost. Usually Live stores them first, the body changes and the update is refused with 409. A store arriving after the lock overwrites the new body; the 12-second watch reports it, but a store after the watch goes unreported.
+- Edits typed in the last moments before the disconnect may be lost. Usually Live stores them first, the body changes and the update is refused with 409. A store arriving after the lock overwrites the new body; the recheck after 12 seconds reveals it, but a store after that window goes unreported and a client that skips the recheck never sees it.
 - Any refusal after `force_close` (409, locked, archived) leaves editors disconnected with nothing written.
 - Plane's own page metadata update (rename and similar) saves the whole row. One that read the page before this update can write the old body back. Nothing here detects that.
 - An editor that reconnects inside the wait loads the old body.
@@ -137,3 +144,5 @@ Then:
 - A Saltbox host's next build, from this release or the Saltbox role (PTC-53), must write the neutral label, or every operation from this release refuses there.
 
 You can also reconcile the state by hand.
+
+**PTC-70 migration note.** `pages_backend.py` and `ce_tools.py` changed again (the update response now carries `late_store_check`; the tool description says so). Redeploy both through the owner tasks: for Pages run revert, then apply.
