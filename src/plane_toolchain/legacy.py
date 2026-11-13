@@ -1,8 +1,8 @@
 """The only module allowed to spell legacy identifiers; neutral replacements sit beside them.
 
-Deploy code reads the legacy names on existing hosts; the Pages helper writes only the neutral ones (PTC-27), the MCP helper still writes legacy ones (PTC-28). See
-docs/decisions/0001-neutral-names.md for the mapping and migration plan. A guard test
-(tests/test_legacy_names.py) rejects new references elsewhere.
+Deploy code reads the legacy names on existing hosts; the Pages and MCP helpers write only the
+neutral ones (PTC-27, PTC-28). See docs/decisions/0001-neutral-names.md for the mapping and
+migration plan. A guard test (tests/test_legacy_names.py) rejects new references elsewhere.
 """
 
 # Pages: backup container suffix, source label, derived image prefix, backend module.
@@ -39,4 +39,6 @@ PAGES = {
 MCP = {
     "MCP_BACKUP_NAME": MCP_BACKUP_NAME,
     "MCP_RECEIPT_NAME": MCP_RECEIPT_NAME,
+    "NEUTRAL_MCP_BACKUP_NAME": NEUTRAL_MCP_BACKUP_NAME,
+    "NEUTRAL_MCP_RECEIPT_NAME": NEUTRAL_MCP_RECEIPT_NAME,
 }
