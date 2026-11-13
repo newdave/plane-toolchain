@@ -384,6 +384,19 @@ def finish_revert(name, backup, docker, probe, health):
     return "Original API container restored"
 
 
+def interrupted_revert(name, docker):
+    """True when a parked derived container shows a revert died before starting the original.
+
+    Without one, a stopped `name` may be stopped on purpose and is left alone.
+    """
+    prefix = name + "-pages-reverted-"
+    try:
+        listing = docker("ps", "-a", "--filter", "name=" + prefix, "--format", "{{.Names}}")
+    except subprocess.CalledProcessError:
+        return False
+    return any(n.startswith(prefix) for n in listing.decode().split())
+
+
 def start_restored(current, name, docker, probe, health):
     """Complete a revert killed after `rename backup -> name`: the original is not running."""
     policy = promotion_policy(current, name, docker, probe)
@@ -399,7 +412,7 @@ def revert(current, payload, backup, docker, probe, health, now):
         return finish_revert(name, backup, docker, probe, health)
     if not probe("inspect", backup):
         if source_label(current) is None:
-            if not current["State"].get("Running"):
+            if not current["State"].get("Running") and interrupted_revert(name, docker):
                 return start_restored(current, name, docker, probe, health)
             return "Original API container already restored"
         docker("inspect", backup)  # Fail before any change when no rollback container exists.
@@ -632,6 +645,7 @@ REMOTE = program(
         held_policy,
         promotion_policy,
         finish_revert,
+        interrupted_revert,
         start_restored,
         revert,
         failed_name,

@@ -11,16 +11,30 @@ from fake_docker import FakeDocker, Killed
 from support_pages_deploy import BACKUP, DIGEST, LABEL, remote, restart, retained, running
 
 
+LIVE = "always"  # not the default, so a policy lost in a window shows
+DEFAULT = "unless-stopped"  # the documented fallback (with a NOTE) when the live policy is lost
+# Kill points where the live policy is unrecoverable because the kill lands between the rename
+# that retires it and the update that records it. The next run falls back to DEFAULT.
+WINDOWS = {
+    ("apply", 7, "after"),
+    ("apply", 8, "before"),
+    ("revert", 6, "after"),
+    ("revert", 7, "before"),
+    ("revert", 7, "after"),
+    ("revert", 8, "before"),
+}
+
+
 def fresh():
     fake = FakeDocker()
-    fake.add("api", labels={"owner": "kept"})
+    fake.add("api", labels={"owner": "kept"}, RestartPolicy={"Name": LIVE})
     return fake
 
 
 def applied():
     fake = FakeDocker()
     fake.add(BACKUP, labels={"owner": "kept"}, running=False, RestartPolicy={"Name": "no"})
-    fake.add("api", labels={"owner": "kept", LABEL: DIGEST})
+    fake.add("api", labels={"owner": "kept", LABEL: DIGEST}, RestartPolicy={"Name": LIVE})
     return fake
 
 
@@ -30,11 +44,11 @@ DERIVED_AFTER = {"apply": True, "revert": False}
 CALLS = {"apply": 13, "revert": 12}  # docker calls in one clean run; the tripwire below checks
 
 
-def assert_converged(fake, derived):
+def assert_converged(fake, derived, policy=LIVE):
     """One running API, nothing stranded, the right image on it, retained containers off."""
     assert running(fake) == ["api"]
     assert fake.containers["api"]["labels"].get(LABEL) == (DIGEST if derived else None)
-    assert restart(fake, "api") == "unless-stopped"
+    assert restart(fake, "api") == policy
     assert (BACKUP in fake.containers) == derived  # the original is parked only while derived
     assert set(retained(fake).values()) == {"no"}
     assert not [n for n in fake.containers if n.endswith("-aside")]
@@ -66,10 +80,11 @@ def test_killed_program_converges_on_the_next_run(operation, index, when, monkey
     with pytest.raises(Killed):
         remote(operation, fake, monkeypatch)
     del fake.execute, fake.create  # the replacement process talks to the host directly again
+    policy = DEFAULT if (operation, index, when) in WINDOWS else LIVE
     remote(operation, fake, monkeypatch)
-    assert_converged(fake, DERIVED_AFTER[operation])
+    assert_converged(fake, DERIVED_AFTER[operation], policy)
     remote(OTHER[operation], fake, monkeypatch)
-    assert_converged(fake, DERIVED_AFTER[OTHER[operation]])
+    assert_converged(fake, DERIVED_AFTER[OTHER[operation]], policy)
 
 
 @pytest.mark.parametrize(

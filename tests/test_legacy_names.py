@@ -12,7 +12,7 @@ PERMANENT = {
     "CHANGELOG.md",
     "tests/test_legacy_names.py",
     # Tripwire fixtures: the deploy helpers refuse these legacy-named states.
-    "tests/test_pages_deploy.py",
+    "tests/support_pages_deploy.py",
 }
 ALLOWED = PERMANENT
 
@@ -50,7 +50,9 @@ def test_no_new_legacy_references():
 def test_guard_fails_on_new_occurrence_and_passes_on_allowed():
     files = {"src/plane_toolchain/new.py": "x = 'TerrainLink'", "CHANGELOG.md": "terrainlink"}
     assert offenders(files, files.__getitem__) == ["src/plane_toolchain/new.py"]
-    assert offenders(["CHANGELOG.md", "tests/test_pages_deploy.py"], lambda _: "terrainlink") == []
+    assert (
+        offenders(["CHANGELOG.md", "tests/support_pages_deploy.py"], lambda _: "terrainlink") == []
+    )
     assert offenders(["a.py"], lambda _: "clean") == []
 
 

@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- Pages revert: a revert killed after the original container was renamed back to `api` but before it started left `api` stopped, and a repeat revert reported "already restored" without starting it. It now starts the stopped original, restoring its live restart policy (found by the new kill-injection harness; PTC-80).
+- Pages revert: a revert killed after the original was renamed back to `api` but before it started left `api` stopped, and a repeat revert reported "already restored" without starting it. A repeat revert now starts the stopped original, restoring the live restart policy, when a `<api>-pages-reverted-<digits>` container shows the revert was interrupted; a stopped `api` without one is still left alone as stopped on purpose (found by the new kill-injection harness; PTC-80).
 
 ### Tests
 

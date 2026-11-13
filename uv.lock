@@ -492,7 +492,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=8,<10" },
-    { name = "pytest-cov", specifier = ">=6" },
+    { name = "pytest-cov", specifier = ">=6,<8" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "ruff", specifier = ">=0.14,<1" },
 ]
