@@ -374,7 +374,9 @@ def migrate(current, payload, backup, docker, probe, create, health, now):
         raise ValueError("Existing rollback container; reconcile before a new deployment")
     body = derive(held, payload, docker)
     policy = restart_arg(current)  # The live policy; the retained original holds `no`.
-    body["HostConfig"]["RestartPolicy"] = copy.deepcopy(current["HostConfig"]["RestartPolicy"])
+    body["HostConfig"]["RestartPolicy"] = json.loads(  # No `copy` in the remote imports.
+        json.dumps(current["HostConfig"].get("RestartPolicy") or {})
+    )
     reverted = name + "-pages-reverted-" + str(int(now()))
     try:
         docker("stop", name)

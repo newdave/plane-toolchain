@@ -1365,3 +1365,11 @@ def test_matrix_remote_ships_neutral_names():
     assert "NEUTRAL_PAGES_BACKUP_SUFFIX = " in pages_deploy.REMOTE
     assert "NEUTRAL_PAGES_LABEL = " in pages_deploy.REMOTE
     assert "NEUTRAL_PAGES_IMAGE_PREFIX = " in pages_deploy.REMOTE
+
+
+def test_remote_program_migrates_legacy_host_with_shipped_imports(monkeypatch):
+    """Run the shipped REMOTE source (stdlib imports only), not the in-process module."""
+    fake = legacy_applied()
+    remote("apply", fake, monkeypatch)
+    assert_neutral_layout(fake)
+    assert fake.containers["api"]["labels"][NEW_LABEL] == DIGEST
