@@ -18,7 +18,7 @@ IMAGE = "plane-toolchain-pages:" + DIGEST[:16]
 BACKUP = "api-before-plane-toolchain-pages"
 LABEL = "plane-toolchain.pages.source"
 LEGACY_BACKUP = "api-before-terrainlink-pages"
-LOOKUP = [("inspect", BACKUP), ("inspect", LEGACY_BACKUP)]  # backup_for: neutral, then legacy
+LOOKUP = [("inspect", LEGACY_BACKUP), ("inspect", BACKUP)]  # legacy_state tripwire lookups
 HEALTH = (
     "exec",
     "api",
@@ -1115,261 +1115,98 @@ def test_fake_fails_only_matching_call_once():
     assert fake.fail == []
 
 
-# PTC-27: neutral names written, legacy names read. Matrix of host layouts.
+# PTC-30: legacy-named host state is refused, never read.
 
-NEW_BACKUP = BACKUP
-NEW_LABEL = LABEL
 LEGACY_LABEL = "terrainlink.pages.source"
-NEW_IMAGE = IMAGE
-REVERTED = f"api-pages-reverted-{NOW - 5}"
+REFUSAL = (
+    "Legacy-named state found: {}. This release no longer reads it. "
+    "Migrate with plane-toolchain at commit 1cb6153 (owner tasks apply or revert), "
+    "or reconcile manually."
+)
 
 
-def legacy_applied(label=DIGEST):
-    """A host deployed by an older release: legacy backup, legacy-labelled derived."""
+def snapshot(fake):
+    return json.loads(json.dumps(fake.containers, sort_keys=True))
+
+
+def assert_untouched(fake, before):
+    """Refusal changed nothing: no mutating or build call, containers identical."""
+    assert not [c for c in fake.calls if c[0] in MUTATIONS | {"build"}]
+    assert fake.builds == []
+    assert snapshot(fake) == before
+
+
+def legacy_backup_host(with_api=True):
     fake = FakeDocker()
     fake.add(LEGACY_BACKUP, labels={"owner": "kept"}, running=False, RestartPolicy={"Name": "no"})
-    fake.add("api", labels={"owner": "kept", LEGACY_LABEL: label})
+    if with_api:
+        fake.add("api", labels={"owner": "kept", LEGACY_LABEL: DIGEST})
     return fake
 
 
-def assert_neutral_layout(fake, policy="unless-stopped"):
-    """Final layout: one running derived `api`, original retained under the neutral name only."""
-    assert running(fake) == ["api"]
-    assert fake.containers["api"]["image"] == NEW_IMAGE
-    assert fake.containers["api"]["labels"] == {"owner": "kept", NEW_LABEL: DIGEST}
-    assert fake.containers[NEW_BACKUP]["labels"] == {"owner": "kept"}
-    assert LEGACY_BACKUP not in fake.containers
-    assert restart(fake, "api") == policy
-    assert restart(fake, NEW_BACKUP) == "no"
-    assert set(retained(fake).values()) == {"no"}
-
-
-def assert_original_restored_any(fake):
-    assert fake.containers["api"]["labels"] == {"owner": "kept"}
-    assert running(fake) == ["api"]
-    assert NEW_BACKUP not in fake.containers and LEGACY_BACKUP not in fake.containers
-
-
-def test_matrix_fresh_host_writes_only_neutral_names(host):
-    deploy("apply", host)
-    assert_neutral_layout(host)
-    [(tag, files)] = host.builds
-    assert tag == NEW_IMAGE
-    dockerfile = files["Dockerfile"].decode()
-    assert "COPY plane_pages.py /code/plane/api/plane_toolchain_pages.py\n" in dockerfile
-    assert "from plane.api.plane_toolchain_pages import routes" in dockerfile
-    assert dockerfile.endswith(
-        "RUN python -m py_compile /code/plane/api/plane_toolchain_pages.py\n"
-    )
-    assert "terrainlink" not in dockerfile
-
-
-def test_matrix_legacy_host_checks_then_reapply_rebuilds_with_neutral_label_and_module():
-    fake = legacy_applied()
-    old_id = fake.containers["api"]["id"]
-    assert deploy("check", fake) == "Pages image and API health verified"
-    assert deploy("apply", fake).startswith("Pages derived image applied")
-    assert_neutral_layout(fake)
-    assert fake.containers["api"]["id"] != old_id
-    [(tag, files)] = fake.builds
-    dockerfile = files["Dockerfile"].decode()
-    assert tag == NEW_IMAGE
-    assert "COPY plane_pages.py /code/plane/api/plane_toolchain_pages.py\n" in dockerfile
-    assert "from plane.api.plane_toolchain_pages import routes" in dockerfile
-    # The legacy derived is retained stopped under a revert name; it never auto-starts.
-    retired = f"api-pages-reverted-{NOW}"
-    assert fake.containers[retired]["id"] == old_id and not fake.containers[retired]["running"]
-    assert restart(fake, retired) == "no"
-    assert deploy("check", fake) == "Pages image and API health verified"
-    # Revert finds the migrated backup and restores the original.
-    assert deploy("revert", fake, later=10).startswith("Original API container restored")
-    assert_original_restored_any(fake)
-    assert restart(fake, "api") == "unless-stopped"
-
-
-def test_matrix_legacy_host_reapply_keeps_live_restart_policy():
-    fake = legacy_applied()
-    fake.containers["api"]["host_config"]["RestartPolicy"] = {
-        "Name": "on-failure",
-        "MaximumRetryCount": 3,
-    }
-    deploy("apply", fake)
-    assert_neutral_layout(fake, policy="on-failure")
-    assert fake.containers["api"]["host_config"]["RestartPolicy"]["MaximumRetryCount"] == 3
-    assert deploy("revert", fake, later=10).startswith("Original API container restored")
-    assert restart(fake, "api") == "on-failure"
-
-
-def assert_legacy_host_intact(fake):
-    """The legacy layout survives a failed migration and every operation still accepts it."""
-    assert running(fake) == ["api"]
-    assert fake.containers["api"]["labels"] == {"owner": "kept", LEGACY_LABEL: DIGEST}
-    assert fake.containers[LEGACY_BACKUP]["labels"] == {"owner": "kept"}
-    assert NEW_BACKUP not in fake.containers
-    assert restart(fake, "api") == "unless-stopped"
-    assert set(retained(fake).values()) == {"no"}
-    assert deploy("check", fake) == "Pages image and API health verified"
-
-
-@pytest.mark.parametrize(
-    "failure", ["create", "start", "health", ("rename", "api", f"api-pages-reverted-{NOW}")]
-)
-def test_matrix_legacy_reapply_failure_restores_legacy_host(failure):
-    fake = legacy_applied()
-    if failure == "health":
-        fake.created_healthy = False
-    else:
-        fake.fail.append(failure)
-    with pytest.raises((ValueError, subprocess.CalledProcessError)):
-        deploy("apply", fake)
-    assert_legacy_host_intact(fake)
-    # Revert and a retried apply still accept the state.
-    fake.created_healthy = True
-    assert deploy("apply", fake).startswith("Pages derived image applied")
-    assert_neutral_layout(fake)
-
-
-def test_matrix_legacy_reapply_killed_mid_swap_leaves_mid_revert_layout():
-    fake = legacy_applied()
-    retired = f"api-pages-reverted-{NOW}"
-    # A kill after the retire rename and before create: no `api`, original waits as backup.
-    fake.containers[retired] = fake.containers.pop("api")
-    fake.containers[retired]["running"] = False
-    fake.containers[retired]["host_config"]["RestartPolicy"] = {"Name": "no"}
-    assert deploy("revert", fake) == "Original API container restored"
-    assert_original_restored_any(fake)
-    fake = legacy_applied()
-    fake.containers[retired] = fake.containers.pop("api")
-    fake.containers[retired]["running"] = False
-    fake.containers[retired]["host_config"]["RestartPolicy"] = {"Name": "no"}
-    deploy("apply", fake)
-    assert_neutral_layout(fake)
-
-
-def test_matrix_reconciled_legacy_backup_then_apply_failure_restores_original():
-    fake = legacy_applied()
-    del fake.containers["api"]
-    fake.created_healthy = False
-    with pytest.raises(ValueError, match="health"):
-        deploy("apply", fake)
-    assert running(fake) == ["api"]
-    assert fake.containers["api"]["labels"] == {"owner": "kept"}
-    assert LEGACY_BACKUP not in fake.containers and NEW_BACKUP not in fake.containers
-    failed = fake.containers[f"api-pages-failed-{NOW}"]
-    assert failed["labels"] == {"owner": "kept", NEW_LABEL: DIGEST} and not failed["running"]
-    assert set(retained(fake).values()) == {"no"}
-
-
-def test_matrix_legacy_host_reverts_then_applies_neutral():
-    fake = legacy_applied()
-    assert deploy("revert", fake).startswith("Original API container restored")
-    assert_original_restored_any(fake)
-    assert restart(fake, "api") == "unless-stopped"
-    deploy("apply", fake)
-    assert_neutral_layout(fake)
-    assert restart(fake, f"api-pages-reverted-{NOW}") == "no"
-
-
-def test_matrix_legacy_host_older_digest_check_reports_legacy_label():
-    fake = legacy_applied(label="older-digest")
-    with pytest.raises(ValueError, match="does not match source"):
-        deploy("check", fake)
-
-
-def mid_revert():
-    fake = legacy_applied()
-    fake.containers[REVERTED] = fake.containers.pop("api")
-    fake.containers[REVERTED]["running"] = False
-    fake.containers[REVERTED]["host_config"]["RestartPolicy"] = {"Name": "no"}
-    return fake
-
-
-def test_matrix_legacy_mid_revert_finishes_and_applies():
-    fake = mid_revert()
-    assert deploy("revert", fake) == "Original API container restored"
-    assert_original_restored_any(fake)
-    assert restart(fake, REVERTED) == "no"
-    deploy("apply", fake)
-    assert_neutral_layout(fake)
-
-
-def test_matrix_legacy_mid_revert_apply_reconciles_then_writes_neutral():
-    fake = mid_revert()
-    assert deploy("apply", fake).startswith("Pages derived image applied")
-    assert_neutral_layout(fake)
-
-
-def test_matrix_legacy_half_finished_apply_missing_api():
-    fake = legacy_applied()
-    del fake.containers["api"]
-    deploy("apply", fake)
-    assert_neutral_layout(fake)
-
-
-@pytest.mark.parametrize("label", [LEGACY_LABEL, NEW_LABEL])
-def test_matrix_legacy_half_finished_apply_stopped_derived(label):
-    fake = legacy_applied()
-    fake.containers["api"]["labels"] = {"owner": "kept", label: DIGEST}
-    fake.containers["api"]["running"] = False
-    deploy("apply", fake)
-    assert_neutral_layout(fake)
-    assert restart(fake, f"api-pages-failed-{NOW}") == "no"
-
-
-def test_matrix_legacy_half_finished_apply_revert_restores_original():
-    fake = legacy_applied()
-    del fake.containers["api"]
-    assert deploy("revert", fake) == "Original API container restored"
-    assert_original_restored_any(fake)
-
-
-def mixed():
-    fake = legacy_applied()
-    fake.add(NEW_BACKUP, labels={"owner": "kept"}, running=False, RestartPolicy={"Name": "no"})
-    return fake
-
-
-@pytest.mark.parametrize("operation", ["check", "revert", "apply"])
-@pytest.mark.parametrize("current", [True, False])
-def test_matrix_mixed_backups_refuse_without_changes(operation, current):
-    fake = mixed()
-    if not current:
-        del fake.containers["api"]
-    before = {n: dict(c) for n, c in fake.containers.items()}
-    if operation == "check" and not current:  # No API to check: the lookup error stands.
-        with pytest.raises(subprocess.CalledProcessError):
+@pytest.mark.parametrize("operation", ["check", "apply", "revert"])
+@pytest.mark.parametrize("with_api", [True, False])
+@pytest.mark.parametrize("shipped", [False, True])
+def test_legacy_backup_container_refused_for_every_operation(
+    operation, with_api, shipped, monkeypatch
+):
+    fake = legacy_backup_host(with_api)
+    before = snapshot(fake)
+    # Names sort: the container name precedes the label.
+    names = LEGACY_BACKUP + (", " + LEGACY_LABEL if with_api else "")
+    expected = REFUSAL.format(names)
+    with pytest.raises(ValueError) as error:
+        if shipped:
+            remote(operation, fake, monkeypatch)
+        else:
             deploy(operation, fake)
-        return
-    with pytest.raises(ValueError, match="reconcile manually") as error:
-        deploy(operation, fake)
-    assert LEGACY_BACKUP in str(error.value) and NEW_BACKUP in str(error.value)
-    assert not [c for c in fake.calls if c[0] in MUTATIONS | {"build"}]
-    assert {n: dict(c) for n, c in fake.containers.items()} == before
+    assert str(error.value) == expected
+    assert_untouched(fake, before)
 
 
-def test_matrix_remote_refuses_mixed_backups_before_any_mutation(monkeypatch):
-    fake = mixed()
-    with pytest.raises(ValueError, match="reconcile manually"):
-        remote("apply", fake, monkeypatch)
-    assert not [c for c in fake.calls if c[0] in MUTATIONS | {"build"}]
+def test_legacy_labelled_running_derived_refused_before_build():
+    """A legacy-labelled derived must never be taken for an upstream original and rebuilt."""
+    fake = FakeDocker()
+    fake.add("api", labels={"owner": "kept", LEGACY_LABEL: DIGEST})
+    before = snapshot(fake)
+    with pytest.raises(ValueError) as error:
+        deploy("apply", fake)
+    assert str(error.value) == REFUSAL.format(LEGACY_LABEL)
+    assert_untouched(fake, before)
+    assert fake.containers["api"]["running"]
 
 
-def test_matrix_disagreeing_labels_on_one_container_refuse():
-    fake = legacy_applied()
-    fake.containers["api"]["labels"][NEW_LABEL] = "other"
-    with pytest.raises(ValueError, match="disagree"):
-        deploy("check", fake)
+def test_legacy_labelled_neutral_backup_refused():
+    fake = FakeDocker()
+    fake.add(BACKUP, labels={LEGACY_LABEL: DIGEST}, running=False, RestartPolicy={"Name": "no"})
+    before = snapshot(fake)
+    with pytest.raises(ValueError) as error:
+        deploy("apply", fake)
+    assert str(error.value) == REFUSAL.format(LEGACY_LABEL)
+    assert_untouched(fake, before)
 
 
-def test_matrix_remote_ships_neutral_names():
-    assert "NEUTRAL_PAGES_BACKUP_SUFFIX = " in pages_deploy.REMOTE
+def test_mixed_legacy_and_neutral_refused(applied):
+    applied.add(
+        LEGACY_BACKUP, labels={"owner": "kept"}, running=False, RestartPolicy={"Name": "no"}
+    )
+    before = snapshot(applied)
+    for operation in ("check", "apply", "revert"):
+        with pytest.raises(ValueError) as error:
+            deploy(operation, applied)
+        assert str(error.value) == REFUSAL.format(LEGACY_BACKUP)
+    assert_untouched(applied, before)
+
+
+def test_neutral_host_unaffected(applied, host):
+    assert deploy("check", applied) == "Pages image and API health verified"
+    assert deploy("apply", host).startswith("Pages derived image applied")
+    assert deploy("revert", host, later=10).startswith("Original API container restored")
+
+
+def test_remote_ships_tripwire_and_no_legacy_reads():
+    compile(pages_deploy.REMOTE, "<remote>", "exec")
+    assert "def legacy_state" in pages_deploy.REMOTE and "def refusal" in pages_deploy.REMOTE
+    assert "def migrate" not in pages_deploy.REMOTE
+    assert "def backup_for" not in pages_deploy.REMOTE
     assert "NEUTRAL_PAGES_LABEL = " in pages_deploy.REMOTE
-    assert "NEUTRAL_PAGES_IMAGE_PREFIX = " in pages_deploy.REMOTE
-
-
-def test_remote_program_migrates_legacy_host_with_shipped_imports(monkeypatch):
-    """Run the shipped REMOTE source (stdlib imports only), not the in-process module."""
-    fake = legacy_applied()
-    remote("apply", fake, monkeypatch)
-    assert_neutral_layout(fake)
-    assert fake.containers["api"]["labels"][NEW_LABEL] == DIGEST

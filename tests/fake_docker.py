@@ -23,7 +23,7 @@ class FakeDocker:
         self.images = {"sha256:base": ["registry.example/plane-backend@sha256:abc"]}
         self.calls = []
         # One-shot failures: a bare command, or a tuple matching the leading arguments,
-        # e.g. "start" or ("rename", "api", "api-before-terrainlink-pages").
+        # e.g. "start" or ("rename", "api", "api-before-plane-toolchain-pages").
         self.fail = []
         self.streams = {}  # docker args -> (stdout, stderr) routing of the latest call
         self.builds = []
@@ -142,8 +142,7 @@ class FakeDocker:
                 # label) serves the Pages route; the upstream original answers 404.
                 status = container.get("pages_status")
                 if status is None:
-                    derived = {"terrainlink.pages.source", "plane-toolchain.pages.source"}
-                    status = 401 if derived & set(container["labels"]) else 404
+                    status = 401 if "plane-toolchain.pages.source" in container["labels"] else 404
                 ok = status in (401, 403)
             return (0 if ok else 1), b""
         if command == "build":

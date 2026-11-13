@@ -16,6 +16,7 @@ from plane_toolchain.legacy import (
     MCP_RECEIPT_NAME,
     NEUTRAL_MCP_BACKUP_NAME,
     NEUTRAL_MCP_RECEIPT_NAME,
+    refusal,
 )
 from plane_toolchain.remote import docker, program, require_env, say, ssh_argv
 
@@ -69,62 +70,10 @@ def fsync_directory(directory):
         os.close(descriptor)
 
 
-def locate(root):
-    """Return (backup, receipt) paths to read: neutral if present, else legacy, else neutral.
-
-    Legacy and neutral state may coexist after a kill during migration. Identical copies are
-    fine; copies that disagree are refused, never picked between.
-    """
-    for legacy, neutral, same in (
-        (
-            root / MCP_RECEIPT_NAME,
-            root / NEUTRAL_MCP_RECEIPT_NAME,
-            lambda a, b: json.loads(a.read_text()) == json.loads(b.read_text()),
-        ),
-        (
-            root / MCP_BACKUP_NAME,
-            root / NEUTRAL_MCP_BACKUP_NAME,
-            lambda a, b: a.read_bytes() == b.read_bytes(),
-        ),
-    ):
-        if legacy.exists() and neutral.exists() and not same(legacy, neutral):
-            raise ValueError(
-                f"Legacy {legacy.name} and neutral {neutral.name} disagree; reconcile by hand"
-            )
-    paths = []
-    for legacy, neutral in (
-        (MCP_BACKUP_NAME, NEUTRAL_MCP_BACKUP_NAME),
-        (MCP_RECEIPT_NAME, NEUTRAL_MCP_RECEIPT_NAME),
-    ):
-        legacy_only = (root / legacy).exists() and not (root / neutral).exists()
-        paths.append(root / (legacy if legacy_only else neutral))
-    return paths[0], paths[1]
-
-
-def migrate(root, recorded):
-    """Move legacy backup and receipt to the neutral names; any kill leaves accepted state.
-
-    1. copy the receipt to the neutral name (atomic); 2. move the backup, after its digest
-    matches the recorded original; 3. remove the legacy receipt.
-    """
-    legacy_receipt = root / MCP_RECEIPT_NAME
-    neutral_receipt = root / NEUTRAL_MCP_RECEIPT_NAME
-    legacy_backup = root / MCP_BACKUP_NAME
-    neutral_backup = root / NEUTRAL_MCP_BACKUP_NAME
-    if legacy_receipt.exists() and not neutral_receipt.exists():
-        write_atomic(neutral_receipt, legacy_receipt.read_text())
-    if legacy_backup.exists():
-        digest = recorded.get("original")
-        if digest and sha256(legacy_backup.read_bytes()) != digest:
-            raise ValueError("Backup does not match the recorded original; reconcile")
-        if neutral_backup.exists():
-            legacy_backup.unlink()
-        else:
-            os.replace(legacy_backup, neutral_backup)
-        fsync_directory(root)
-    if legacy_receipt.exists():
-        legacy_receipt.unlink()
-        fsync_directory(root)
+def legacy_state(root):
+    """Sorted legacy-named files present in root: backup, receipt, receipt temp. Names only."""
+    names = (MCP_BACKUP_NAME, MCP_RECEIPT_NAME, MCP_RECEIPT_NAME + ".tmp")
+    return sorted(name for name in names if os.path.lexists(root / name))
 
 
 def owned_digests(recorded):
@@ -196,6 +145,10 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
     tracked(root) -> bool never raises; probe() -> inspect_state tuple; sleep(seconds).
     """
     root = pathlib.Path(data["directory"]).resolve(strict=True)
+    # Tripwire: refuse legacy-named state before reading or changing anything.
+    found = legacy_state(root)
+    if found:
+        raise ValueError(refusal(found))
     target = root / "server.py"
     if target.is_symlink() or not target.is_file():
         raise ValueError("Expected regular MCP entry point")
@@ -209,10 +162,9 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         if current != desired:
             raise ValueError("MCP compatibility entry point differs")
         return "MCP entry point verified"
-    # Read neutral or legacy state; write only neutral names (receipt is the write target).
-    backup, receipt_source = locate(root)
+    backup = root / NEUTRAL_MCP_BACKUP_NAME
     receipt = root / NEUTRAL_MCP_RECEIPT_NAME
-    old_receipt = receipt_source.read_text() if receipt_source.exists() else None
+    old_receipt = receipt.read_text() if receipt.exists() else None
     recorded = json.loads(old_receipt) if old_receipt is not None else {}
     if backup.exists() and "original" in recorded:
         if sha256(backup.read_bytes()) != recorded["original"]:
@@ -223,7 +175,6 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
             final = {"installed": sha256(desired)}
             if backup.exists():
                 final["original"] = sha256(backup.read_bytes())
-                migrate(root, recorded)
                 if recorded != final or not receipt.exists():
                     write_atomic(receipt, json.dumps(final))
             return "MCP compatibility entry point already applied"
@@ -240,11 +191,9 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
                 raise ValueError("Unexpected original entry point; review before replacing")
             backup.write_bytes(current)
             backup.chmod(target.stat().st_mode & 0o777)
-        migrate(root, recorded)
-        backup = root / NEUTRAL_MCP_BACKUP_NAME
         content = desired
     elif operation == "revert":
-        if not backup.exists() or not receipt_source.exists():
+        if not backup.exists() or not receipt.exists():
             raise ValueError("No compatibility backup available")
         previous = backup.read_bytes()
         if current == previous:
@@ -321,8 +270,8 @@ REMOTE = program(
         rewrite,
         write_atomic,
         fsync_directory,
-        locate,
-        migrate,
+        legacy_state,
+        refusal,
         owned_digests,
         plain_entry_point,
         inspect_state,
