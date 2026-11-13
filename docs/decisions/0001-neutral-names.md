@@ -1,6 +1,6 @@
 # 0001: Neutral names for legacy `terrainlink` identifiers
 
-- **Status:** Accepted; legacy reads removed early by owner override on 2026-11-13 (PTC-30)
+- **Status:** Accepted; partly superseded by Removal (PTC-30)
 - **Date:** 2026-11-12
 - **Follow-up tasks:** PTC-26 (legacy-names module and guard), PTC-27 (Pages deploy),
   PTC-28 (MCP compat deploy), PTC-29 (prose and docs), PTC-23 (redeploy),
@@ -41,6 +41,8 @@ neutral and do not change.
 
 ### Migration policy
 
+> Historical: superseded by the Removal (PTC-30) section below; kept for the record.
+
 1. **Read both, write new.** Every operation (`check`, `apply`, `revert`, reconcile,
    repair) accepts state under the legacy or the neutral name. New state is written only
    under the neutral name.
@@ -61,6 +63,8 @@ neutral and do not change.
    `revert` the host with the current release, then downgrade.
 
 ### Deprecation window
+
+> Historical: superseded by the Removal (PTC-30) section below; kept for the record.
 
 Legacy reads stay until all of these hold, and the owner confirms them on PTC-30:
 
@@ -106,6 +110,8 @@ history. The MIT licence and its copyright notice in `LICENSE` are unchanged, so
 attribution is lost.
 
 ### Agent rule
+
+> Historical: superseded by the Removal (PTC-30) section below; kept for the record.
 
 The AGENTS.md rule "Preserve ... legacy rollback receipt names" was replaced by a rule
 that treated legacy `terrainlink` names as read-only compatibility inputs, kept in

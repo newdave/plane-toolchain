@@ -9,6 +9,12 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - Workspace rename: apply and revert share one state machine (`run_context` plus `run_*` helpers and `run_steps`, which runs each step as effect, then advance, and hands failures to the operation's own recovery), so the snippet call, service stop and start, preflight, refusal wrapping, failure reason, drain-gate and warning messages exist once. No behaviour or message change. The `check` plan scan streams rows with `iterator()` like the unfixed scan (PTC-64).
+- Python floor raised to 3.12 (`requires-python = ">=3.12"`); only 3.12 is tested (PTC-81).
+
+### Documentation
+
+- ADR 0001 Status now reads "Accepted; partly superseded by Removal (PTC-30)", and its read-both Migration policy, Deprecation window and Agent rule sections carry a historical banner (PTC-81).
+- `docs/configuration.md` lists config file locations per context (checkout, installed project, worktree) and records `.deploy/env` as a legacy fallback used only when `config/local.env` is absent; no behaviour change (PTC-81).
 
 ## [0.3.0] - 2026-11-14
 
