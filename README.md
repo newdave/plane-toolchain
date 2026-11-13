@@ -7,6 +7,7 @@ No running services are changed by installing this repository.
 - **Project controls:** `mise run plane:enable`, `plane:disable` and offline `plane:status`.
 - **Agent integration:** a zsh prompt badge and shared SessionStart status for Codex and Claude.
 - **Deployment helpers:** explicit owner apply, revert and check tasks for existing Docker services.
+- **Project installer:** connects another checkout to the MCP bridge and makes Plane its authoritative task system.
 - **Automation:** authenticated MCP transport and example workflows with explicit task IDs.
 
 A general-purpose command-line interface is planned; it is not implemented yet. The CE tools remain necessary for capabilities missing from the evaluated third-party CLIs.
@@ -29,6 +30,7 @@ Follow [configuration](docs/configuration.md) before enabling remote access. Sta
 
 - [Configuration and client integration](docs/configuration.md)
 - [CE extension contract and deployment](docs/extensions.md)
+- [Installing into other projects](docs/project-install.md)
 - [GitHub Actions integration](docs/github-actions.md)
 - [Live CLI evaluation and recommendation](docs/cli-evaluation.md)
 - [Contributing](CONTRIBUTING.md)

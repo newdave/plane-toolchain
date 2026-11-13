@@ -10,7 +10,7 @@ from pathlib import Path
 from plane_toolchain.session import assignments
 
 
-def set_enabled(path: Path, enabled: bool, *, restore: bool = True):
+def set_enabled(path: Path, enabled: bool, *, restore: bool = True, backup: Path | None = None):
     if path.is_symlink():
         raise ValueError("Refusing a symlinked local configuration")
     if not path.exists() and (path.parent.parent / ".deploy/env").exists():
@@ -21,7 +21,7 @@ def set_enabled(path: Path, enabled: bool, *, restore: bool = True):
     except (OSError, UnicodeDecodeError) as error:
         raise ValueError(f"Cannot read local configuration: {error}") from error
     # Keep the first activation baseline: repeated apply/revert must remain idempotent.
-    backup = path.parent.parent / ".agent-state/plane/enable-backup.json"
+    backup = backup or path.parent.parent / ".agent-state/plane/enable-backup.json"
     if backup.is_symlink() or backup.parent.is_symlink():
         raise ValueError("Refusing symlinked Plane backup")
     if enabled and not backup.exists():
@@ -63,8 +63,11 @@ def set_enabled(path: Path, enabled: bool, *, restore: bool = True):
 if __name__ == "__main__":
     if len(sys.argv) != 2 or sys.argv[1] not in {"apply", "revert", "enable", "disable"}:
         sys.exit("Expected apply, revert, enable or disable")
+    # Installed projects keep the switch and its baseline in their ignored .plane/ directory.
+    root = os.environ.get("PLANE_CONFIG_ROOT")
     set_enabled(
-        Path("config/local.env"),
+        Path(root, ".plane/local.env") if root else Path("config/local.env"),
         sys.argv[1] in {"apply", "enable"},
         restore=sys.argv[1] != "disable",
+        backup=Path(root, ".plane/enable-backup.json") if root else None,
     )
