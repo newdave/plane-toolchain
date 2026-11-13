@@ -1267,3 +1267,62 @@ def test_retired_legacy_labelled_reverted_container_stays_allowed(applied):
         RestartPolicy={"Name": "no"},
     )
     assert deploy("check", applied) == "Pages image and API health verified"
+
+
+# PTC-57: a failing remote prints its refusal line only; no host, program text or traceback.
+FAKE_HOST = "owner@203.0.113.7"
+REFUSAL_LINE = "ValueError: Legacy-named state found: example"
+
+
+def failing_ssh(monkeypatch, code=1, error=None):
+    def run(argv, **kw):
+        if error:
+            raise error
+        print(REFUSAL_LINE, file=sys.stderr)
+        if kw.get("check"):
+            raise subprocess.CalledProcessError(code, argv)
+        return subprocess.CompletedProcess(argv, code)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+def assert_no_leaks(capsys):
+    seen = capsys.readouterr()
+    text = seen.out + seen.err
+    for leak in ("203.0.113.7", "owner@", "python3 -c", "Traceback", "CalledProcessError"):
+        assert leak not in text
+    return seen
+
+
+def pages_env(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["pages_deploy", "check"])
+    monkeypatch.setenv("PLANE_MCP_SSH", FAKE_HOST)
+    monkeypatch.setenv("PLANE_API_CONTAINER", "plane-api_1")
+    monkeypatch.setenv("PLANE_LIVE_URL", "http://live:3000")
+
+
+def test_main_remote_refusal_prints_only_the_refusal_line(monkeypatch, capsys):
+    pages_env(monkeypatch)
+    failing_ssh(monkeypatch)
+    with pytest.raises(SystemExit) as stop:
+        pages_deploy.main()
+    assert stop.value.code == 1
+    assert REFUSAL_LINE in assert_no_leaks(capsys).err
+
+
+def test_main_ssh_failure_and_interrupt_are_quiet(monkeypatch, capsys):
+    pages_env(monkeypatch)
+    failing_ssh(monkeypatch, code=255)
+    with pytest.raises(SystemExit) as stop:
+        pages_deploy.main()
+    assert stop.value.code == 255
+    assert_no_leaks(capsys)
+    failing_ssh(monkeypatch, error=KeyboardInterrupt())
+    with pytest.raises(SystemExit) as stop:
+        pages_deploy.main()
+    assert stop.value.code == 130
+    assert_no_leaks(capsys)
+
+
+def test_remote_entry_reports_unexpected_failure_without_traceback():
+    assert "sys.excepthook = quiet_failure" in pages_deploy.REMOTE

@@ -188,6 +188,8 @@ def test_main_ships_fixed_program_and_entry_point_over_ssh(monkeypatch):
         "ServerAliveInterval=15",
         "-o",
         "ServerAliveCountMax=4",
+        "-o",
+        "LogLevel=QUIET",
         "--",
         "owner@host",
         "python3 -c " + shlex.quote(mcp_deploy.REMOTE),
@@ -741,3 +743,61 @@ def test_remote_ships_tripwire_and_no_legacy_reads():
     compile(mcp_deploy.REMOTE, "<remote>", "exec")
     assert "def legacy_state" in mcp_deploy.REMOTE and "def refusal" in mcp_deploy.REMOTE
     assert "def migrate" not in mcp_deploy.REMOTE and "def locate" not in mcp_deploy.REMOTE
+
+
+# PTC-57: a failing remote prints its refusal line only; no host, program text or traceback.
+FAKE_HOST = "owner@203.0.113.7"
+REFUSAL_LINE = "ValueError: Legacy-named state found: example"
+
+
+def failing_ssh(monkeypatch, code=1, error=None):
+    def run(argv, **kw):
+        if error:
+            raise error
+        print(REFUSAL_LINE, file=sys.stderr)
+        if kw.get("check"):
+            raise subprocess.CalledProcessError(code, argv)
+        return subprocess.CompletedProcess(argv, code)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+def assert_no_leaks(capsys):
+    seen = capsys.readouterr()
+    text = seen.out + seen.err
+    for leak in ("203.0.113.7", "owner@", "python3 -c", "Traceback", "CalledProcessError"):
+        assert leak not in text
+    return seen
+
+
+def mcp_env(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["mcp_deploy", "check"])
+    monkeypatch.setenv("PLANE_MCP_SSH", FAKE_HOST)
+    monkeypatch.setenv("PLANE_MCP_DIRECTORY", "/srv/mcp")
+
+
+def test_main_remote_refusal_prints_only_the_refusal_line(monkeypatch, capsys):
+    mcp_env(monkeypatch)
+    failing_ssh(monkeypatch)
+    with pytest.raises(SystemExit) as stop:
+        mcp_deploy.main()
+    assert stop.value.code == 1
+    assert REFUSAL_LINE in assert_no_leaks(capsys).err
+
+
+def test_main_ssh_failure_and_interrupt_are_quiet(monkeypatch, capsys):
+    mcp_env(monkeypatch)
+    failing_ssh(monkeypatch, code=255)
+    with pytest.raises(SystemExit) as stop:
+        mcp_deploy.main()
+    assert stop.value.code == 255
+    assert_no_leaks(capsys)
+    failing_ssh(monkeypatch, error=KeyboardInterrupt())
+    with pytest.raises(SystemExit) as stop:
+        mcp_deploy.main()
+    assert stop.value.code == 130
+    assert_no_leaks(capsys)
+
+
+def test_remote_entry_reports_unexpected_failure_without_traceback():
+    assert "sys.excepthook = quiet_failure" in mcp_deploy.REMOTE

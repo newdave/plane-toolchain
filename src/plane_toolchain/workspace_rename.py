@@ -1199,7 +1199,7 @@ def main(argv=None):
     before SSH and are never printed. The payload (snippet included) goes on stdin; the remote
     exit code becomes ours."""
     from plane_toolchain.pages_deploy import valid_live_url
-    from plane_toolchain.remote import require_env, ssh_argv
+    from plane_toolchain.remote import require_env, run_remote
 
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) != 1 or argv[0] not in ("check", "apply", "revert"):
@@ -1245,14 +1245,7 @@ def main(argv=None):
     for key, value in (("receipt_dir", directory), ("api_url", api_url), ("services", services)):
         if value:
             payload[key] = value
-    try:
-        result = subprocess.run(  # noqa: S603 - validated owner host; fixed remote program
-            ssh_argv(host, REMOTE), input=json.dumps(payload), text=True
-        )
-    except KeyboardInterrupt:
-        print(LOCAL_INTERRUPTED, file=sys.stderr)
-        sys.exit(130)
-    sys.exit(result.returncode)
+    sys.exit(run_remote(host, REMOTE, payload, check=False, interrupted=LOCAL_INTERRUPTED))
 
 
 if __name__ == "__main__":

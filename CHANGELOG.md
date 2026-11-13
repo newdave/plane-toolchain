@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `mcp_deploy`, `pages_deploy` and `workspace_rename` no longer print a local traceback when the remote program fails: the SSH `user@host` and the whole remote program source stayed out of the `CalledProcessError` argv dump. A failure prints the remote's own message (streamed unchanged), then one fixed line, and exits with the remote exit code (1 if unknown). A failed SSH connection (255) prints a fixed message and `LogLevel=QUIET` stops ssh naming the host; Ctrl-C exits 130. An uncaught exception on the host prints `Type: message` instead of a traceback (PTC-57).
+
 ## [0.2.0] - 2026-11-14
 
 ### Added
