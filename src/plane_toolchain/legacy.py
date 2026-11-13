@@ -44,6 +44,6 @@ def refusal(found):
     """Operator message for legacy-named host state; found is a list of names, never content."""
     return (
         "Legacy-named state found: " + ", ".join(sorted(found)) + ". "
-        "This release no longer reads it. Migrate with plane-toolchain at commit 1cb6153 "
-        "(owner tasks apply or revert), or reconcile manually."
+        "This release no longer reads it. Migrate first with plane-toolchain at commit 1cb6153: "
+        "Pages revert (apply only if check passes there), MCP apply. Or reconcile manually."
     )

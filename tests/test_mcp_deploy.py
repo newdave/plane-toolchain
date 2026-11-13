@@ -670,8 +670,8 @@ def test_receipt_write_fsyncs_directory(root, monkeypatch):
 
 REFUSAL = (
     "Legacy-named state found: {}. This release no longer reads it. "
-    "Migrate with plane-toolchain at commit 1cb6153 (owner tasks apply or revert), "
-    "or reconcile manually."
+    "Migrate first with plane-toolchain at commit 1cb6153: "
+    "Pages revert (apply only if check passes there), MCP apply. Or reconcile manually."
 )
 NEUTRAL_BACKUP = "server.py.before-plane-toolchain-ce"
 NEUTRAL_RECEIPT = "plane-toolchain-ce-receipt.json"

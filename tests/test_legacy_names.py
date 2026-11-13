@@ -13,7 +13,6 @@ PERMANENT = {
     "tests/test_legacy_names.py",
     # Tripwire fixtures: the deploy helpers refuse these legacy-named states.
     "tests/test_pages_deploy.py",
-    "tests/test_mcp_deploy.py",
 }
 ALLOWED = PERMANENT
 

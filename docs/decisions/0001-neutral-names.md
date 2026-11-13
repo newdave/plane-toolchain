@@ -87,6 +87,15 @@ At that time no tagged release shipped the read-both code (v0.1.0 predates it), 
 
 The helpers now read and write only neutral names. One deviation from the plan above: `legacy.py` is kept, with four refuse-only names (the Pages backup suffix, the Pages source label, the MCP backup file and the MCP receipt). The Pages and MCP helpers refuse, before any change, when they find any of them (Pages `build` only creates an image and is not checked). The reason is safety. An unmigrated host must be refused, not misread as a clean host. The refusal points to commit `1cb6153`, the last read-both commit, whose owner tasks migrate such a host.
 
+The tripwire fails closed. It lists containers with one `docker ps -a --filter name=<api>` and matches names exactly, and it inspects the API and the neutral backup only when listed. A failed `ps` or inspect raises, so the run refuses. It does not filter on the label across all containers: retired `-pages-reverted-*` containers keep the legacy label and stay allowed.
+
+Migrate a refused host with plane-toolchain at commit `1cb6153`:
+
+- Pages: run `revert` (it restores the original, consumes the legacy backup and parks the legacy derived container as an inert `<api>-pages-reverted-<ts>`). Run `apply` there only if `check` passes there; it refuses when the deployed digest differs. Then run `apply` with this release.
+- MCP: run `apply` (it migrates the receipt and backup). MCP `revert` there does not migrate.
+- Retired `-pages-reverted-*` containers keep the legacy label, are not checked and are left for owner cleanup.
+- A Saltbox host's next build, from this release or the Saltbox role, must write the neutral label, or every operation refuses there.
+
 The guard now allows legacy names only in `legacy.py`, this ADR, the CHANGELOG, the guard itself and the tripwire test fixtures.
 
 ### Provenance line
@@ -110,10 +119,12 @@ landed, so nobody renamed them ahead of the migration.
   text change. The migration rides on the same owner redeploy as the review queue (PTC-23).
 - Host state is mixed for a time: older retained containers and images keep legacy names
   until a later apply or an owner cleanup with explicit authority.
-- The helpers gain read-both and refuse-on-ambiguity paths. These need FakeDocker and
+- The helpers gained read-both and refuse-on-ambiguity paths. These needed FakeDocker and
   kill-step tests for every legacy, mixed and neutral layout before any redeploy.
-- Until PTC-26 lands, `legacy.py` does not exist. Until then, this ADR is the list of
-  legacy names.
+  Superseded by the Removal (PTC-30) section: the read paths are gone.
+- Until PTC-26 landed, `legacy.py` did not exist and this ADR was the list of legacy
+  names. Superseded by the Removal (PTC-30) section: `legacy.py` exists and holds the
+  four refused names.
 
 ## Alternatives considered
 

@@ -62,23 +62,24 @@ def backup_name(name):
     return name + NEUTRAL_PAGES_BACKUP_SUFFIX
 
 
-def legacy_state(current, name, docker):
+def listed_names(name, docker):
+    """Container names exactly matching `name` or its backups; a `ps` failure raises (fail closed)."""
+    listing = docker("ps", "-a", "--filter", "name=" + name, "--format", "{{.Names}}")
+    return set(listing.decode().split())
+
+
+def legacy_state(current, name, listed, docker):
     """Sorted legacy names persisted on the host: backup container, source label; [] when clean.
 
-    Looks at the legacy backup name, and at the labels of the API and neutral backup containers.
-    Names only; never configuration. Makes no change.
+    `listed` is the exact-name set from `listed_names`. Inspects only listed containers, and an
+    inspect failure raises so the run refuses. Names only; never configuration. Makes no change.
     """
     found = set()
-    try:
-        docker("inspect", name + PAGES_BACKUP_SUFFIX)
+    if name + PAGES_BACKUP_SUFFIX in listed:
         found.add(name + PAGES_BACKUP_SUFFIX)
-    except subprocess.CalledProcessError:
-        pass
     held = None
-    try:
+    if backup_name(name) in listed:
         held = json.loads(docker("inspect", backup_name(name)))[0]
-    except subprocess.CalledProcessError:
-        pass
     for container in (current, held):
         if container is not None and PAGES_LABEL in (container["Config"].get("Labels") or {}):
             found.add(PAGES_LABEL)
@@ -430,12 +431,13 @@ def deploy(payload, docker, probe, create, health, now):
     name = payload["container"]
     backup = backup_name(name)
     missing = None
-    try:
-        current = json.loads(docker("inspect", name))[0]
-    except subprocess.CalledProcessError as error:
-        current, missing = None, error
+    listed = listed_names(name, docker)
+    if name in listed:
+        current = json.loads(docker("inspect", name))[0]  # A listed container's failure raises.
+    else:
+        current, missing = None, subprocess.CalledProcessError(1, ["docker", "inspect", name])
     # Tripwire: refuse legacy-named state before any other step, whatever the operation.
-    found = legacy_state(current, name, docker)
+    found = legacy_state(current, name, listed, docker)
     if found:
         raise ValueError(refusal(found))
     if missing is not None:
@@ -458,6 +460,7 @@ REMOTE = program(
         docker_ok,
         backup_name,
         refusal,
+        listed_names,
         legacy_state,
         restart_arg,
         source_label,
