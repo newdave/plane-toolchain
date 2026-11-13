@@ -1,0 +1,25 @@
+tests/test_project_install.py
+  s_066dd3ba2255bd::t_c3a4bf587dca1e 1127,1129
+tests/test_mcp_deploy.py
+  s_066dd3ba2255bd::t_702e07b7aed14e 810
+tests/test_workspace_rename_cli.py
+  s_066dd3ba2255bd::t_702e07b7aed14e 163
+pyproject.toml
+  s_066dd3ba2255bd::t_702e07b7aed14e 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "7b01136e78c40f110da70c2e9db845d5cc73e07f",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
