@@ -37,7 +37,7 @@ Renovate keeps the `uses:` action SHAs in your workflows current, but it cannot 
 
 Both write examples start with a secret-free `preconditions` job. The write job `needs:` it, so a refused run fails visibly (red, with an `::error::` message) instead of a skipped job reporting success. It fails unless `PLANE_ENABLED` is `true`, the event is allow-listed, and the ref is the default branch. The completion example also fails unless `deployment_verified` is `true`.
 
-Allowed events are `workflow_dispatch`, `push`, `release` and `schedule`. Everything else is refused, including `pull_request`, `pull_request_target`, `issue_comment`, `workflow_run` and `pull_request_review`. In a reusable workflow, `github.event_name` is the event of the calling workflow, so the allow-list checks the caller. `plane_event.py` repeats the same allow-list from `GITHUB_EVENT_NAME` and fails closed when it is missing. Jobs holding `PLANE_API_KEY` install with `uv sync --locked --no-dev`.
+Allowed events are `workflow_dispatch`, `push`, `release` and `schedule`. Everything else is refused, including `pull_request`, `pull_request_target`, `issue_comment`, `workflow_run` and `pull_request_review`. In a reusable workflow, `github.event_name` is the event of the calling workflow, so the allow-list checks the caller. `plane_event.py` repeats the same allow-list from `GITHUB_EVENT_NAME` and fails closed when it is missing. Jobs holding `PLANE_API_KEY` install with `uv sync --locked --no-dev`. uv itself is bootstrapped with `pip install --require-hashes` from `examples/github/uv-requirements.txt`; regenerate the hashes from the PyPI release files when you bump uv.
 
 ## Install or remove the examples
 
@@ -48,9 +48,9 @@ mise run owner:github-examples:apply -- /path/to/your/checkout
 mise run owner:github-examples:revert -- /path/to/your/checkout
 ```
 
-Installation refuses to overwrite existing files. Removal checks the installation receipt and refuses to remove changed files. Review and commit the resulting workflow files in the consuming repository. No example is installed by setup.
+Installation refuses to overwrite existing files and refuses any symlink under `.github` or `.agent-state`. It records every file in the receipt before placing any, so an interrupted apply is completed by running apply again or undone by revert. If this checkout ships newer examples than the receipt records, apply stops and asks you to revert, then apply again. Removal checks the installation receipt and refuses to remove changed files. Review and commit the resulting workflow files in the consuming repository. No example is installed by setup.
 
-After installing, run **Check Plane MCP** from the Actions tab. Then run **Record Plane evidence** from the default branch with a work-item UUID in the configured project. Each manual invocation appends a comment, including repeated invocations. Failed writes are not automatically retried; check Plane before running again.
+After installing, run **Check Plane MCP** from the Actions tab. Then run **Record Plane evidence** from the default branch with a work-item UUID in the configured project. Each new workflow run appends a comment. Rerunning the same workflow run finds its own comment (and, for completion, the state already set) and does not repeat them. Failed writes are not automatically retried; check Plane before running again.
 
 ## Call completion after deployment
 

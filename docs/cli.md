@@ -38,7 +38,7 @@ A project installed by `scripts/install_project.py` (it has `.plane/plane.sh`) r
 sops exec-env config/plane.enc.env 'mise run plane:cli -- task list'
 ```
 
-Every command accepts `--project UUID` to override `PLANE_PROJECT`. It must be a UUID.
+Every command accepts `--project UUID` to override `PLANE_PROJECT`. It must be a UUID. A task identifier carries its own project; if it names a different project than an explicit `--project`, the CLI exits 2.
 
 ## Task references
 
@@ -105,7 +105,7 @@ On success the CLI prints one JSON document to standard output, with sorted keys
 
 ## Readback
 
-`task update`, `comment add`, `page create` and `relation add` reread the remote state after writing. If the reread does not match, the CLI exits 5 with `plane: write not confirmed by readback; check the remote state`. The write may still have happened. Check before you try again.
+`task update`, `comment add`, `page create` and `relation add` reread the remote state after writing. `task update` compares the body text with tags and whitespace normalised; `page create` also checks the access level and a non-empty body. If the reread does not match, the CLI exits 5 with `plane: write not confirmed by readback; check the remote state`. The write may still have happened. Check before you try again.
 
 ## Limits
 
