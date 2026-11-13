@@ -72,9 +72,12 @@ if [[ -z "${PLANE_API_KEY:-}" && -f "$secrets" ]]; then
     echo "plane: could not decrypt $secrets with sops; check that sops is installed and SOPS_AGE_KEY_FILE points at your age key" >&2
     exit 1
   fi
+  # Never feed this with a here-string: bash before 5.1 (macOS /bin/bash 3.2) backs it with a
+  # temporary file, which would put the decrypted key on disk. printf is a builtin and the
+  # process substitution is a pipe, so nothing is written.
   while IFS= read -r line; do
     [[ "$line" == PLANE_API_KEY=* ]] && export PLANE_API_KEY="${line#PLANE_API_KEY=}"
-  done <<<"$decrypted"
+  done < <(printf '%s\n' "$decrypted")
   unset decrypted
 fi
 env -u VIRTUAL_ENV uv run --locked python -m plane_toolchain.settings

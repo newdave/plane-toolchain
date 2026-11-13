@@ -401,13 +401,18 @@ def reverted(target, receipt):
         if entry.get("kind") not in KINDS:
             raise ValueError("Invalid installation receipt")
         text = read(guard(target, rel))
-        if pending and fingerprint(text) == entry.get("before", False):
-            continue  # interrupted apply never reached this file; nothing to undo
+        # A pending receipt marks each file done once written. A file not marked may be
+        # unreached (still as before, or edited by the user since): it is never touched.
+        unreached = pending and entry.get("done") is not True
+        if unreached and (text is None or fingerprint(text) == entry.get("before", False)):
+            continue
         if text is None:
             raise Changed(f"{rel}: removed since installation")
         try:
             result[rel] = KINDS[entry["kind"]][1](text, entry.get("created") is True)
         except (ValueError, tomllib.TOMLDecodeError) as error:
+            if unreached:
+                continue
             raise Changed(f"{rel}: {error}") from None
     return result
 
@@ -447,6 +452,12 @@ def apply(target, values=None, toolchain=SOURCE, preapprove=True):
             return
         resumed = receipt
         print("Finishing an interrupted installation")
+        recorded = receipt["entries"].get(".claude/settings.json", {}).get("approval")
+        if recorded and (recorded == "declined") != (not preapprove):
+            print(
+                f"Keeping the recorded pre-approval choice ({recorded}) from the interrupted "
+                "run; revert, then apply again to change it."
+            )
     changes, entries = {}, {}
     if resumed is None:
         for rel, kind in plan(target, preapprove):
@@ -467,16 +478,26 @@ def apply(target, values=None, toolchain=SOURCE, preapprove=True):
                 )
         created = [name for name in DIRECTORIES if not (target / name).exists()]
     else:
-        # Files still as they were get their change; written ones must be intact.
+        # Files marked done must be intact. Others get their change now, also when the user
+        # edited or created them since; then the installer did not create them.
         entries, created = resumed["entries"], resumed.get("directories", [])
         for rel, entry in entries.items():
+            if entry.get("done") is True:
+                continue
             old = read(guard(target, rel))
-            if fingerprint(old) == entry.get("before", False):
+            if old is not None and fingerprint(old) != entry.get("before", False):
                 try:
-                    changes[rel] = KINDS[entry["kind"]][0](old)
-                except (ValueError, tomllib.TOMLDecodeError) as error:
-                    raise ValueError(f"{rel}: {error}") from None
-        reverted(target, resumed)
+                    KINDS[entry["kind"]][1](old, entry.get("created") is True)
+                    continue  # written, but the receipt was not marked before the crash
+                except (ValueError, tomllib.TOMLDecodeError):
+                    entry["created"] = False
+            try:
+                changes[rel] = KINDS[entry["kind"]][0](old)
+            except (ValueError, tomllib.TOMLDecodeError) as error:
+                raise ValueError(f"{rel}: {error}") from None
+        done = {k: v for k, v in entries.items() if v.get("done") is True}
+        if done:
+            reverted(target, {**resumed, "entries": done, "pending": False})
     local = guard(target, ".plane/local.env")
     seeded = None if local.exists() else local_env(toolchain, values or {})
     # The pending receipt goes first, so a crash or OSError midway leaves something revert
@@ -485,10 +506,13 @@ def apply(target, values=None, toolchain=SOURCE, preapprove=True):
     write(receipt_path, json.dumps({**receipt, "pending": True}, indent=2) + "\n")
     for rel, text in changes.items():
         write(target / rel, text)
+        entries[rel]["done"] = True
+        write(receipt_path, json.dumps({**receipt, "pending": True}, indent=2) + "\n")
     if seeded is not None:
         write(local, seeded, 0o600)
     for entry in entries.values():
         entry.pop("before", None)
+        entry.pop("done", None)
     write(receipt_path, json.dumps(receipt, indent=2) + "\n")
     print("Installed Plane integration; review the diff before committing.")
     print("Next: run 'mise run setup' in the toolchain.")

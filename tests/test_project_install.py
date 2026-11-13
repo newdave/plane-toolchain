@@ -824,7 +824,7 @@ def test_failure_points_cover_every_write(tmp_path_factory, monkeypatch):
     assert len(failure_points(tmp_path_factory, monkeypatch)) >= 10
 
 
-@pytest.mark.parametrize("nth", range(1, 12))
+@pytest.mark.parametrize("nth", range(1, 20))
 def test_revert_after_failed_apply_restores_the_project(tmp_path, monkeypatch, nth):
     seed_project(tmp_path)
     before = snapshot(tmp_path)
@@ -839,7 +839,7 @@ def test_revert_after_failed_apply_restores_the_project(tmp_path, monkeypatch, n
     assert after == before
 
 
-@pytest.mark.parametrize("nth", range(1, 12))
+@pytest.mark.parametrize("nth", range(1, 20))
 def test_repeat_apply_after_failed_apply_finishes_and_reverts_cleanly(
     tmp_path, tmp_path_factory, monkeypatch, nth
 ):
@@ -869,7 +869,7 @@ def test_repeat_apply_after_failed_apply_finishes_and_reverts_cleanly(
 def test_revert_after_failed_apply_keeps_edits_made_since(tmp_path, monkeypatch):
     seed_project(tmp_path)
     with monkeypatch.context() as patch:
-        failing_replace(patch, 6)
+        failing_replace(patch, 14)  # AGENTS.md and .mcp.json are written and marked done
         with pytest.raises(OSError, match="injected"):
             apply(tmp_path)
     (tmp_path / "AGENTS.md").write_text("# Rules\n\nMine, edited after the failure.\n")
@@ -878,6 +878,44 @@ def test_revert_after_failed_apply_keeps_edits_made_since(tmp_path, monkeypatch)
         revert(tmp_path)
     assert (tmp_path / "AGENTS.md").read_text().endswith("edited after the failure.\n")
     assert (tmp_path / ".mcp.json").read_text() == ('{"mcpServers": {"other": {"command": "y"}}}\n')
+
+
+def test_user_edit_of_a_file_apply_never_reached_does_not_block_revert_or_reapply(
+    tmp_path, monkeypatch
+):
+    seed_project(tmp_path)
+    with monkeypatch.context() as patch:
+        failing_replace(patch, 2)  # only the pending receipt is written
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    mine = "# Rules\n\nMine, edited after the failure.\n"
+    (tmp_path / "AGENTS.md").write_text(mine)
+    (tmp_path / "CLAUDE.md").write_text("# Mine\n")  # apply would have created it
+    revert(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_text() == mine
+    assert (tmp_path / "CLAUDE.md").read_text() == "# Mine\n"
+
+    with monkeypatch.context() as patch:
+        failing_replace(patch, 2)
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    apply(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_text().startswith(mine)
+    assert "plane-toolchain:begin" in (tmp_path / "AGENTS.md").read_text()
+    revert(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_text() == mine
+    assert (tmp_path / "CLAUDE.md").read_text() == "# Mine\n"
+
+
+def test_resume_notes_a_conflicting_pre_approval_choice(tmp_path, monkeypatch, capsys):
+    with monkeypatch.context() as patch:
+        failing_replace(patch, 4)
+        with pytest.raises(OSError, match="injected"):
+            apply(tmp_path)
+    capsys.readouterr()
+    apply(tmp_path, preapprove=False)
+    assert "Keeping the recorded pre-approval choice (added)" in capsys.readouterr().out
+    assert settings_entry(tmp_path)["approval"] == "added"
 
 
 def test_label_refuses_an_interrupted_installation(tmp_path, monkeypatch):

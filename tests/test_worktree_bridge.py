@@ -311,6 +311,14 @@ def test_script_installed_worktree_reads_key_file_in_place(tmp_path, bridge):
     assert "SOPS_FILE" not in run(toolchain, PLANE_CONFIG_ROOT=str(wt)).stderr
 
 
+def test_script_never_feeds_decrypted_output_through_a_here_string():
+    """Bash before 5.1 backs `<<<` with a temporary file, which would hold the key on disk."""
+    lines = (REPO / "scripts/plane-mcp.sh").read_text().splitlines()
+    code = [x for x in lines if not x.lstrip().startswith("#")]
+    assert not [x for x in code if "<<<" in x]
+    assert any("decrypted" in x and "< <(printf" in x for x in code)
+
+
 def test_script_reports_a_sops_failure_instead_of_a_missing_key(tmp_path, bridge):
     install, run, stub = bridge
     main = make_repo(tmp_path / "main")
