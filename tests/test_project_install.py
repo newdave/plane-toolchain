@@ -843,6 +843,118 @@ def test_label_refuses_an_interrupted_installation(tmp_path, monkeypatch):
         installer["label"](tmp_path, ENV, FakePlane())
 
 
+def test_crlf_agents_md_keeps_its_line_endings_and_reverts_byte_for_byte(tmp_path):
+    original = b"# Rules\r\n\r\nKeep tests green.\r\n"
+    (tmp_path / "AGENTS.md").write_bytes(original)
+    apply(tmp_path)
+    text = (tmp_path / "AGENTS.md").read_bytes()
+    assert text.startswith(original)
+    assert b"\n" not in text.replace(b"\r\n", b"")  # no bare LF anywhere
+    revert(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_bytes() == original
+
+
+def test_crlf_without_final_newline_and_codex_config_keep_their_endings(tmp_path):
+    (tmp_path / "AGENTS.md").write_bytes(b"# Rules\r\nlast line")
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex/config.toml").write_bytes(b'model = "x"\r\n')
+    apply(tmp_path)
+    for rel in ("AGENTS.md", ".codex/config.toml"):
+        assert b"\n" not in (tmp_path / rel).read_bytes().replace(b"\r\n", b"")
+    revert(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_bytes() == b"# Rules\r\nlast line\r\n"
+    assert (tmp_path / ".codex/config.toml").read_bytes() == b'model = "x"\r\n'
+
+
+def test_non_ascii_text_survives_apply_and_revert(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("# Règles — café ✓\n", encoding="utf-8", newline="")
+    (tmp_path / ".mcp.json").write_text(
+        '{\n  "mcpServers": {"café": {"command": "naïve"}}\n}\n', encoding="utf-8"
+    )
+    apply(tmp_path)
+    assert "café" in (tmp_path / ".mcp.json").read_text(encoding="utf-8")
+    assert "\\u" not in (tmp_path / ".mcp.json").read_text(encoding="utf-8")
+    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8").startswith("# Règles — café ✓\n")
+    revert(tmp_path)
+    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8") == "# Règles — café ✓\n"
+    assert json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8")) == {
+        "mcpServers": {"café": {"command": "naïve"}}
+    }
+    assert "\\u" not in (tmp_path / ".mcp.json").read_text(encoding="utf-8")
+
+
+def test_invalid_utf8_is_refused_with_a_message(tmp_path):
+    (tmp_path / "AGENTS.md").write_bytes(b"# Rules \xff\xfe\n")
+    with pytest.raises(ValueError, match=r"AGENTS\.md.*UTF-8"):
+        apply(tmp_path)
+    assert not (tmp_path / ".plane").exists()
+
+
+@pytest.mark.parametrize(
+    ("rel", "text", "message"),
+    [
+        (".mcp.json", '{"mcpServers": []}', "mcpServers"),
+        (".mcp.json", '{"mcpServers": "x"}', "mcpServers"),
+        (".claude/settings.json", '{"hooks": []}', "hooks"),
+        (".claude/settings.json", '{"hooks": {"SessionStart": {}}}', "SessionStart"),
+        (".codex/hooks.json", '{"hooks": "x"}', "hooks"),
+    ],
+)
+def test_wrongly_typed_json_values_are_refused_without_writing(tmp_path, rel, text, message):
+    (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / rel).write_text(text)
+    with pytest.raises(ValueError, match=message):
+        apply(tmp_path)
+    assert not (tmp_path / ".plane").exists()
+    assert (tmp_path / rel).read_text() == text
+
+
+def test_main_reports_wrongly_typed_json_instead_of_a_traceback(tmp_path):
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": []}')
+    with pytest.raises(SystemExit) as error:
+        installer["main"](["apply", str(tmp_path)])
+    assert "mcpServers" in str(error.value)
+
+
+def test_main_catches_unexpected_errors_in_one_line(tmp_path, monkeypatch):
+    apply(tmp_path)
+    (tmp_path / ".plane/install.json").write_text('{"version": 1, "entries": {"x": 3}}')
+    with pytest.raises(SystemExit) as error:
+        installer["main"](["revert", str(tmp_path)])
+    assert "\n" not in str(error.value)
+    assert not isinstance(error.value.code, int)
+
+
+def test_label_on_non_object_settings_reports_instead_of_crashing(tmp_path, capsys):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text('{"enabledMcpjsonServers": ["plane"]}')
+    labelled(tmp_path)
+    (tmp_path / ".claude/settings.json").write_text("[]")
+    installer["label"](tmp_path, ENV, FakePlane())
+    assert "cannot check the pre-approval" in capsys.readouterr().out
+
+
+def test_revert_refuses_wrongly_typed_json_after_apply(tmp_path):
+    apply(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": []}')
+    with pytest.raises(ValueError, match="changed"):
+        revert(tmp_path)
+
+
+@pytest.mark.parametrize("name", ["CLAUDE.md", "AGENTS.md"])
+def test_symlinked_instruction_file_gets_a_tailored_message(tmp_path, name):
+    (tmp_path / "real.md").write_text("# Real\n")
+    (tmp_path / name).symlink_to("real.md")
+    with pytest.raises(ValueError) as error:
+        apply(tmp_path)
+    message = str(error.value)
+    assert name in message and "symlink" in message
+    assert "plain file" in message and "run the installer again" in message
+    assert "@AGENTS.md" in message
+    assert (tmp_path / "real.md").read_text() == "# Real\n"
+    assert not (tmp_path / ".plane").exists()
+
+
 def serve(handler):
     server = http.server.HTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()

@@ -140,29 +140,45 @@ def insert_file(content, *, reuse=False, also=(), digests=()):
     return insert, remove
 
 
+def eol(old):
+    """Line ending of existing text: CRLF when it has any, else LF."""
+    return "\r\n" if old and "\r\n" in old else "\n"
+
+
 def insert_block(old):
     if old is not None and MARKER in old:
         raise ValueError("already contains a plane-toolchain block")
-    return separate(old) + BLOCK
+    return separate(old) + BLOCK.replace("\n", eol(old))
 
 
 def separate(old):
     """Return existing text followed by one blank line, keeping its own line endings."""
     if not old or not old.strip():
         return ""
-    return (old if old.endswith("\n") else old + "\n") + "\n"
+    ending = eol(old)
+    return (old if old.endswith("\n") else old + ending) + ending
+
+
+def variants(block):
+    """The block with LF endings and with CRLF endings."""
+    return (block, block.replace("\n", "\r\n"))
 
 
 def strip(text, block, created):
     """Remove an appended block and its separator; None when nothing else remains."""
-    separated = "\n" + block
-    text = text.replace(separated, "", 1) if separated in text else text.replace(block, "", 1)
+    for ending, found in zip(("\n", "\r\n"), variants(block), strict=True):
+        if found in text:
+            separated = ending + found
+            text = (
+                text.replace(separated, "", 1) if separated in text else text.replace(found, "", 1)
+            )
+            break
     return None if created and not text.strip() else text
 
 
 def remove_block(text, created):
     for block in (BLOCK, LEGACY_BLOCK):
-        if block in text:
+        if any(found in text for found in variants(block)):
             return strip(text, block, created)
     raise Changed("Plane block changed since installation")
 
@@ -177,12 +193,21 @@ def load(old):
 
 
 def dump(data):
-    return json.dumps(data, indent=2) + "\n"
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+def member(data, key, kind, *, default):
+    """Return data[key], inserting the default when absent; refuse any other type."""
+    value = data.setdefault(key, default)
+    if not isinstance(value, kind):
+        what = "a JSON object" if kind is dict else "a list"
+        raise ValueError(f"{key} is not {what}")
+    return value
 
 
 def insert_server(old):
     data = load(old)
-    servers = data.setdefault("mcpServers", {})
+    servers = member(data, "mcpServers", dict, default={})
     if "plane" in servers:
         raise ValueError("already defines a plane MCP server")
     servers["plane"] = MCP_ENTRY
@@ -192,7 +217,7 @@ def insert_server(old):
 def remove_server(text, created):
     data = load(text)
     servers = data.get("mcpServers", {})
-    if servers.get("plane") != MCP_ENTRY:
+    if not isinstance(servers, dict) or servers.get("plane") != MCP_ENTRY:
         raise Changed("plane MCP server changed since installation")
     del servers["plane"]
     if not servers:
@@ -202,7 +227,7 @@ def remove_server(text, created):
 
 def insert_hook(old):
     data = load(old)
-    groups = data.setdefault("hooks", {}).setdefault("SessionStart", [])
+    groups = member(member(data, "hooks", dict, default={}), "SessionStart", list, default=[])
     if HOOK_GROUP in groups:
         raise ValueError("already has the Plane SessionStart hook")
     groups.append(HOOK_GROUP)
@@ -211,8 +236,9 @@ def insert_hook(old):
 
 def remove_hook(text, created, data=None):
     data = load(text) if data is None else data
-    groups = data.get("hooks", {}).get("SessionStart", [])
-    if HOOK_GROUP not in groups:
+    hooks = data.get("hooks", {})
+    groups = hooks.get("SessionStart", []) if isinstance(hooks, dict) else None
+    if not isinstance(groups, list) or HOOK_GROUP not in groups:
         raise Changed("Plane SessionStart hook changed since installation")
     groups.remove(HOOK_GROUP)
     if not groups:
@@ -251,13 +277,13 @@ def remove_settings(text, created):
 def insert_codex(old):
     if "plane" in tomllib.loads(old or "").get("mcp_servers", {}):
         raise ValueError("already defines a plane MCP server")
-    text = separate(old) + CODEX_BLOCK
+    text = separate(old) + CODEX_BLOCK.replace("\n", eol(old))
     tomllib.loads(text)
     return text
 
 
 def remove_codex(text, created):
-    if CODEX_BLOCK not in text:
+    if not any(found in text for found in variants(CODEX_BLOCK)):
         raise Changed("plane MCP server changed since installation")
     return strip(text, CODEX_BLOCK, created)
 
@@ -275,7 +301,14 @@ KINDS = {
 
 
 def read(path):
-    return path.read_text() if path.exists() else None
+    """Text exactly as stored: UTF-8, line endings untouched. None when missing."""
+    if not path.exists():
+        return None
+    try:
+        with path.open(encoding="utf-8", newline="") as source:
+            return source.read()
+    except UnicodeDecodeError:
+        raise ValueError(f"{path.name}: not valid UTF-8; refusing to change it") from None
 
 
 def fingerprint(text):
@@ -287,7 +320,7 @@ def write(path, text, mode=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".install-")
     try:
-        with os.fdopen(fd, "w") as output:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as output:
             output.write(text)
         if path.exists():
             mode = path.stat().st_mode & 0o777
@@ -304,6 +337,12 @@ def guard(target, rel):
         if part == target:
             return path
         if part.is_symlink():
+            if part == path and rel in ("CLAUDE.md", "AGENTS.md"):
+                raise ValueError(
+                    f"{rel}: is a symlink, and the installer never writes through symlinks. "
+                    "Replace the link with a plain file (for CLAUDE.md, one containing "
+                    "'@AGENTS.md' next to the real AGENTS.md), then run the installer again."
+                )
             raise ValueError(f"{rel}: refusing symlinked installation path")
     raise ValueError(f"{rel}: outside target")
 
@@ -563,6 +602,8 @@ def outdated(target, receipt):
     """Say so when an intact install predates the current files; never rewrite anything."""
     for rel, entry in receipt["entries"].items():
         text = read(target / rel)
+        if text is None:
+            continue
         if entry["kind"] == "block" and BLOCK not in text and LEGACY_BLOCK in text:
             print(
                 f"{rel}: Plane block predates the awaiting-decision rule. Revert, then apply "
@@ -576,7 +617,11 @@ def outdated(target, receipt):
                     "to update this installation."
                 )
         if rel == ".claude/settings.json" and entry["kind"] == "hooks-json":
-            servers = json.loads(text).get("enabledMcpjsonServers")
+            try:
+                servers = load(text).get("enabledMcpjsonServers")
+            except ValueError:
+                print(f"{rel}: not a JSON object; cannot check the pre-approval of plane.")
+                continue
             if not isinstance(servers, list) or "plane" not in servers:
                 print(
                     f"{rel}: plane is not pre-approved in enabledMcpjsonServers. Revert, then "
@@ -635,6 +680,8 @@ def main(argv=None):
             revert(args.target)
     except (ValueError, OSError) as error:
         sys.exit(str(error))
+    except Exception as error:  # noqa: BLE001 - one line, never a traceback
+        sys.exit(f"Installer failed ({type(error).__name__}): {error}")
 
 
 if __name__ == "__main__":
