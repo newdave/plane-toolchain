@@ -1,0 +1,91 @@
+tests/test_pages_backend_patch.py
+  s_066dd3ba2255bd::t_73f7580832863e 1-57
+tests/test_pages_deploy_legacy.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-136
+tests/test_pages_deploy_revert.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-317
+tests/test_remote.py
+  s_066dd3ba2255bd::t_7edf7b3713150d 361
+tests/test_pages_deploy_apply.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-341
+tests/test_pages_backend_views.py
+  s_066dd3ba2255bd::t_73f7580832863e 1-82
+tests/support_workspace_rename_backend.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-314
+tests/test_pages_backend_visibility.py
+  s_066dd3ba2255bd::t_73f7580832863e 1-66
+tests/test_workspace_rename_hardening_snippet_kill.py
+  s_066dd3ba2255bd::t_474355b7b31705 8
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-7,9-182
+.gitignore
+  s_066dd3ba2255bd::t_a546ba7a454bea 18
+tests/test_pages_deploy_housekeeping.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-171
+tests/test_workspace_rename_backend_slug.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-151
+tests/support_pages_deploy.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-404
+tests/test_workspace_rename_deploy_apply.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-313
+tests/test_pages_backend_update.py
+  s_066dd3ba2255bd::t_73f7580832863e 1-295
+tests/test_workspace_rename_deploy_kill_resume.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-243
+tests/support_workspace_rename_deploy.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-585
+tests/support_workspace_rename_hardening.py
+  s_066dd3ba2255bd::t_3bba4f01bdfcbf 29
+  s_066dd3ba2255bd::t_474355b7b31705 8
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-7,9-28,30-102
+pyproject.toml
+  s_066dd3ba2255bd::t_fdb1cb7b08edf8 41-42
+tests/test_workspace_rename_deploy_resume_edges.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-213
+tests/test_pages_kill_injection.py
+  s_066dd3ba2255bd::t_a4da9b98d12060 11
+tests/support_pages_backend.py
+  s_066dd3ba2255bd::t_73f7580832863e 1-462
+tests/test_pages_deploy_build.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-145
+tests/test_workspace_rename_deploy_revert.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-337
+tests/test_workspace_rename_deploy_services.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-283
+tests/conftest.py
+  s_066dd3ba2255bd::t_474355b7b31705 1-12
+tests/test_workspace_rename_backend_rows.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-377
+tests/test_pages_deploy_remote.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-381
+tests/test_workspace_rename_backend_restore.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-288
+tests/test_workspace_rename_hardening_lock_backup.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-5,7-165
+  s_066dd3ba2255bd::t_474355b7b31705 6
+tests/test_workspace_rename_backend_health_flush.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-175
+tests/test_workspace_rename_hardening_gates.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-6,8-13,15-20,22-31,33-47,49-62,64-75,77-84,86-413,415-499
+  s_066dd3ba2255bd::t_3bba4f01bdfcbf 14,21,32,48,63,76,85,414
+  s_066dd3ba2255bd::t_474355b7b31705 7
+tests/test_pages_backend_creation.py
+  s_066dd3ba2255bd::t_73f7580832863e 1-72
+tests/test_workspace_rename_backend_check.py
+  s_066dd3ba2255bd::t_be6e8d22a15e8b 1-232
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "ddae3287f00947c574bfc88c06f78be7da277def",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
