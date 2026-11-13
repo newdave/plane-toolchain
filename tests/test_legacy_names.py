@@ -11,22 +11,17 @@ PERMANENT = {
     "docs/decisions/0001-neutral-names.md",
     "CHANGELOG.md",
     "tests/test_legacy_names.py",
-    # Legacy-compat fixtures: the deploy code still writes the legacy names.
+    # Legacy-compat fixtures: the deploy code still reads the legacy names.
     "tests/test_pages_deploy.py",
     "tests/test_mcp_deploy.py",
     "tests/test_pages_backend.py",
     "tests/fake_docker.py",
     "tests/test_legacy_payloads.py",
-}
-# PTC-29 removes these.
-TEMPORARY = {
-    "README.md",
+    # Compatibility docs that describe the legacy names.
     "docs/extensions.md",
     "AGENTS.md",
-    "src/plane_toolchain/ce_tools.py",  # SHA-pinned: do not edit
-    "src/plane_toolchain/pages_backend.py",  # SHA-pinned: do not edit
 }
-ALLOWED = PERMANENT | TEMPORARY
+ALLOWED = PERMANENT
 
 
 def offenders(paths, reader, allowed=ALLOWED):
@@ -62,7 +57,7 @@ def test_no_new_legacy_references():
 def test_guard_fails_on_new_occurrence_and_passes_on_allowed():
     files = {"src/plane_toolchain/new.py": "x = 'TerrainLink'", "CHANGELOG.md": "terrainlink"}
     assert offenders(files, files.__getitem__) == ["src/plane_toolchain/new.py"]
-    assert offenders(["CHANGELOG.md", "README.md"], lambda _: "terrainlink") == []
+    assert offenders(["CHANGELOG.md", "docs/extensions.md"], lambda _: "terrainlink") == []
     assert offenders(["a.py"], lambda _: "clean") == []
 
 

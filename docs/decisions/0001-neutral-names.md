@@ -1,6 +1,6 @@
 # 0001: Neutral names for legacy `terrainlink` identifiers
 
-- **Status:** Proposed (needs owner sign-off; see PTC-25)
+- **Status:** Accepted on 2026-11-13 (owner sign-off recorded on PTC-25)
 - **Date:** 2026-11-12
 - **Follow-up tasks:** PTC-26 (legacy-names module and guard), PTC-27 (Pages deploy),
   PTC-28 (MCP compat deploy), PTC-29 (prose and docs), PTC-23 (redeploy),
