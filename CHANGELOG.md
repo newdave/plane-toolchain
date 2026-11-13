@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-14
+
 ### Fixed
 
 - Workspace rename: the model probe no longer expects an `IssueComment.comment_binary` column, which Plane CE v1.4.3 does not have; the live read-only `check` refused with `Model mismatch: comment.comment_binary (missing)` (PTC-83).
