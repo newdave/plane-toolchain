@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-14
+
 ### Added
 
 - Apply pre-approves the `plane` MCP server by adding it to `enabledMcpjsonServers` in the target's `.claude/settings.json` (created if absent, other keys kept), so Claude connects without an approval prompt. Revert removes the entry only when apply added it, keeps every other edit to the file, and leaves an already-listed `plane` alone. Apply refuses invalid JSON or a non-list value without writing. Receipts from before this change still revert. Repeating apply on an older installation names the outdated shim or missing pre-approval and changes nothing; revert, then apply again to update it (PTC-55, PTC-56).
