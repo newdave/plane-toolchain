@@ -72,7 +72,9 @@ def test_replacement_rejects_auto_removal_before_stopping_original():
         replacement({"HostConfig": {"AutoRemove": True}}, "derived", "http://live:3000", "digest")
 
 
-def _pages_view(monkeypatch, missing_project=False, binary=None):
+def _pages_view(
+    monkeypatch, missing_project=False, binary=None, pages=None, guest=False, guest_flag=True
+):
     """Build the Pages view from stubbed Django/Plane modules (they exist only in the CE image)."""
     import sys
     import types
@@ -94,6 +96,15 @@ def _pages_view(monkeypatch, missing_project=False, binary=None):
 
     class Rows:
         def filter(self, *args, **kwargs):
+            if pages is not None:
+                return PageRows(
+                    [
+                        row
+                        for row in self.items
+                        if all(q.matches(row) for q in args)
+                        and all(row.get(k) == v for k, v in kwargs.items())
+                    ]
+                )
             return self
 
         def distinct(self):
@@ -106,6 +117,16 @@ def _pages_view(monkeypatch, missing_project=False, binary=None):
             calls["values"] = fields
             return [{"id": "p1"}]
 
+    class PageRows(Rows):
+        def __init__(self, items):
+            self.items = items
+
+        def get(self, **kwargs):
+            for row in self.items:
+                if all(row.get(k) == v for k, v in kwargs.items()):
+                    return row
+            raise Http404
+
     class Project:
         pass
 
@@ -116,19 +137,28 @@ def _pages_view(monkeypatch, missing_project=False, binary=None):
         if source is Project:
             if missing_project:
                 raise Http404
-            return types.SimpleNamespace(guest_view_all_features=True)
+            return types.SimpleNamespace(guest_view_all_features=guest_flag)
+        if pages is not None:
+            return source.get(**kwargs)
         return "page-row"
 
     class Q:
         def __init__(self, *args, **kwargs):
-            pass
+            self.kwargs, self.others = kwargs, []
 
         def __or__(self, other):
-            return self
+            combined = Q()
+            combined.others = [self, other]
+            return combined
+
+        def matches(self, row):
+            if self.others:
+                return any(q.matches(row) for q in self.others)
+            return all(row.get(k) == v for k, v in self.kwargs.items())
 
     class Members:
         def filter(self, **kwargs):
-            return types.SimpleNamespace(exists=lambda: False)
+            return types.SimpleNamespace(exists=lambda: guest)
 
     class Permission:
         pass
@@ -143,7 +173,7 @@ def _pages_view(monkeypatch, missing_project=False, binary=None):
 
     class DetailSerializer:
         def __init__(self, instance, many=False):
-            self.data = ("detail", instance)
+            self.data = {"detail": instance}
 
     for name in (
         "requests",
@@ -181,7 +211,7 @@ def _pages_view(monkeypatch, missing_project=False, binary=None):
     module("plane.app.views.page.base", PageViewSet=PageViewSet)
     module(
         "plane.db.models",
-        Page=types.SimpleNamespace(objects=Rows()),
+        Page=types.SimpleNamespace(objects=PageRows(pages) if pages is not None else Rows()),
         PageVersion=None,
         Project=Project,
         ProjectMember=types.SimpleNamespace(objects=Members()),
@@ -226,7 +256,7 @@ def test_list_requests_light_fields_and_returns_them_unchanged(monkeypatch):
 def test_retrieve_keeps_full_detail_serializer(monkeypatch):
     view, calls, _ = _pages_view(monkeypatch)
     response = view.get(view.request, "w", "x", page_id="y")
-    assert response.data == ("detail", "page-row")
+    assert response.data == {"detail": "page-row"}
     assert "values" not in calls
 
 
@@ -432,29 +462,21 @@ def test_update_recheck_under_lock_still_refuses_newly_locked_page():
     assert not _writes(events)
 
 
-def _reads(*values):
-    queue = list(values)
-    return lambda: queue.pop(0) if len(queue) > 1 else queue[0]
+def test_late_store_check_hint_names_when_to_recheck_and_what_to_compare():
+    from datetime import datetime, timezone
 
+    from plane_toolchain.pages_backend import LATE_STORE_WINDOW_SECONDS, late_store_check
 
-def test_late_store_watch_passes_when_body_stays_as_written():
-    from plane_toolchain.pages_backend import LATE_STORE_WINDOW_SECONDS, late_store
+    now = datetime(2026, 11, 13, 1, 2, 3, tzinfo=timezone.utc)
+    hint = late_store_check(now, "<p>x</p>")
+    import hashlib
 
-    waits = []
-    late_store(_reads(memoryview(b"new")), b"new", waits.append)
-    assert sum(waits) >= LATE_STORE_WINDOW_SECONDS
+    assert hint["html_sha256"] == hashlib.sha256(b"<p>x</p>").hexdigest()
     assert LATE_STORE_WINDOW_SECONDS > 10  # Live debounce is 10 s
-
-
-def test_late_store_watch_reports_overwrite_and_stops_early():
-    from plane_toolchain.pages_backend import PageInputError, late_store
-
-    waits = []
-    with pytest.raises(PageInputError) as caught:
-        late_store(_reads(b"new", b"live"), b"new", waits.append)
-    assert caught.value.key == "overwritten"
-    assert str(caught.value) == "Edit was overwritten by an open editor; retry"
-    assert len(waits) == 2
+    assert hint["seconds"] == LATE_STORE_WINDOW_SECONDS
+    assert hint["recheck_after"] == "2026-11-13T01:02:15+00:00"
+    assert hint["compare"] == "description_html"
+    assert "retry" in hint["on_difference"]
 
 
 def test_update_without_force_is_refused_before_any_side_effect():
@@ -554,9 +576,9 @@ def test_update_errors_map_to_http_status():
     from plane_toolchain.pages_backend import INPUT_ERRORS, UPDATE_STATUS
 
     assert UPDATE_STATUS["conflict"] == 409
-    assert UPDATE_STATUS["overwritten"] == 409
     assert UPDATE_STATUS["close"] == 502
     assert set(UPDATE_STATUS) <= set(INPUT_ERRORS)
+    assert "overwritten" not in INPUT_ERRORS
 
 
 def test_patch_view_lookup_of_absent_page_is_404_behind_permission_403(monkeypatch):
@@ -578,6 +600,158 @@ def test_patch_without_force_returns_fixed_message_before_lookup(monkeypatch):
     with pytest.raises(ValueError, match="disconnects open editors"):
         view.patch(view.request, "w", "x", page_id="y")
     assert "lookups" not in calls
+
+
+NON_OBJECT_BODIES = [[], ["name"], None, "text", 7]
+
+
+@pytest.mark.parametrize("body", NON_OBJECT_BODIES)
+def test_pure_validators_reject_non_object_bodies_as_input_errors(body):
+    from plane_toolchain.pages_backend import PageInputError, update_request
+
+    with pytest.raises(PageInputError):
+        creation_payload(body, lambda v: v, lambda v: pytest.fail("Must not convert"))
+    with pytest.raises(PageInputError):
+        update_request(body)
+
+
+@pytest.mark.parametrize("body", NON_OBJECT_BODIES)
+def test_post_non_object_body_is_400_not_500(monkeypatch, body):
+    view, calls, _ = _pages_view(monkeypatch)
+    view.request.data = body
+    with pytest.raises(ValueError, match="JSON object"):
+        view.post(view.request, "w", "x")
+    assert "lookups" not in calls
+
+
+@pytest.mark.parametrize("body", NON_OBJECT_BODIES)
+def test_patch_non_object_body_is_400_not_500(monkeypatch, body):
+    view, calls, _ = _pages_view(monkeypatch)
+    view.request.data = body
+    with pytest.raises(ValueError, match="JSON object"):
+        view.patch(view.request, "w", "x", page_id="y")
+    assert "lookups" not in calls
+
+
+@pytest.mark.parametrize("reply", [[], None, "text", 7])
+def test_post_non_object_live_reply_is_a_conversion_failure(monkeypatch, reply):
+    class Valid:
+        def __init__(self, data):
+            self.data = data
+
+        def is_valid(self, raise_exception=False):
+            return True
+
+        @property
+        def validated_data(self):
+            return self.data
+
+    view, _, _ = _pages_view(monkeypatch, binary=Valid)
+    import sys
+
+    class Reply:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return reply
+
+    class RequestException(Exception):
+        pass
+
+    requests = sys.modules["requests"]
+    requests.RequestException = RequestException
+    requests.post = lambda *args, **kwargs: Reply()
+    monkeypatch.setenv("CE_PLANE_LIVE_URL", "http://live.example.com")
+    view.request.data = {"name": "X", "description_html": "<p>x</p>"}
+    with pytest.raises(Exception) as caught:
+        view.post(view.request, "w", "x")
+    assert str(caught.value) == "Live document conversion unavailable; nothing written"
+    assert caught.value.status_code == 502
+
+
+def _row(page_id, owner, access):
+    """A page row as the view's filters see it: lookup path to value."""
+    return {
+        "id": page_id,
+        "owned_by": owner,
+        "access": access,
+        "workspace__slug": "w",
+        "project_pages__project_id": "x",
+        "project_pages__deleted_at__isnull": True,
+    }
+
+
+# Plane CE v1.4.3 rules, read from tag v1.4.3 (apps/api/plane/app/permissions/page.py
+# ProjectPagePermission, and apps/api/plane/app/views/page/base.py PagesDescriptionViewSet):
+# PATCH needs an active project role of admin or member; the owner of a page passes the
+# object check; a non-owner passes only on public pages (access 0); another user's private
+# page is denied; the description update and list/retrieve query use owned_by=user | access=0.
+# A guest without guest_view_all_features sees only own pages (PageViewSet.retrieve/list).
+PAGES = [
+    _row("own-private", "u", 1),
+    _row("own-public", "u", 0),
+    _row("other-public", "u2", 0),
+    _row("other-private", "u2", 1),
+]
+
+
+def _visible_ids(monkeypatch, **kwargs):
+    view, _, _ = _pages_view(monkeypatch, pages=PAGES, **kwargs)
+    return sorted(row["id"] for row in view.visible().items)
+
+
+def test_member_sees_own_pages_and_public_pages_of_others_only(monkeypatch):
+    # Non-owner PATCH on a public page is allowed by Plane (members edit public pages).
+    assert _visible_ids(monkeypatch) == ["other-public", "own-private", "own-public"]
+
+
+def test_another_owners_private_page_is_not_visible_to_patch_or_get(monkeypatch):
+    view, _, http404 = _pages_view(monkeypatch, pages=PAGES)
+    view.request.data = {
+        "description_html": "<p>x</p>",
+        "expected_updated_at": STAMP,
+        "force": True,
+    }
+    with pytest.raises(http404):
+        view.patch(view.request, "w", "x", page_id="other-private")
+    with pytest.raises(http404):
+        view.get(view.request, "w", "x", page_id="other-private")
+
+
+def test_non_owner_can_retrieve_a_public_page(monkeypatch):
+    view, _, _ = _pages_view(monkeypatch, pages=PAGES)
+    assert view.get(view.request, "w", "x", page_id="other-public").data["detail"]["id"] == (
+        "other-public"
+    )
+
+
+def test_guest_without_guest_view_all_features_sees_only_own_pages(monkeypatch):
+    ids = _visible_ids(monkeypatch, guest=True, guest_flag=False)
+    assert ids == ["own-private", "own-public"]
+
+
+def test_guest_with_guest_view_all_features_sees_public_pages(monkeypatch):
+    # Guests still cannot PATCH: ProjectPagePermission allows PATCH for admin/member only.
+    ids = _visible_ids(monkeypatch, guest=True, guest_flag=True)
+    assert ids == ["other-public", "own-private", "own-public"]
+
+
+def test_pages_view_is_gated_by_plane_page_permission_and_authentication(monkeypatch):
+    # Role checks (admin/member PATCH and POST, guest read only) live in Plane's
+    # ProjectPagePermission; the view must keep it and fail closed if CE changes it.
+    from plane_toolchain import pages_backend
+
+    _pages_view(monkeypatch)
+    view = pages_backend.routes()[1][0][1]
+    import sys
+
+    perms = view.permission_classes
+    assert perms[0] is sys.modules["rest_framework.permissions"].IsAuthenticated
+    assert [c.__name__ for c in perms[1:]] == ["Permission"]
+    sys.modules["plane.app.views.page.base"].PageViewSet.permission_classes = []
+    with pytest.raises(RuntimeError, match="permission contract changed"):
+        pages_backend.routes()
 
 
 def test_detail_route_allows_get_and_patch_only(monkeypatch):
@@ -786,7 +960,7 @@ def _tuples(log, *kinds):
 def test_patch_locks_before_recheck_and_writes_inside_one_transaction(monkeypatch):
     view, log, _ = _patch_env(monkeypatch)
     response = _run_patch(view)
-    assert response.data[0] == "detail"
+    assert response.data["detail"].id == view.kwargs["page_id"]
     order = [_first(log, k) for k in ("load", "publish", "sleep", "select_for_update")]
     assert order == sorted(order)
     enter, exit_ = _first(log, "atomic-enter"), _first(log, "atomic-exit")
@@ -821,21 +995,16 @@ def test_patch_keeps_versions_under_the_cap(monkeypatch):
     assert not _tuples(log, "prune")
 
 
-def test_patch_reports_late_live_store_as_overwritten_and_keeps_write(monkeypatch):
-    view, log, versions = _patch_env(monkeypatch, reads=(b"new", b"live"))
-    with pytest.raises(_ApiError) as caught:
-        _run_patch(view)
-    assert caught.value.status_code == 409
-    assert str(caught.value) == "Edit was overwritten by an open editor; retry"
+def test_patch_returns_at_once_with_a_late_store_hint_and_never_polls(monkeypatch):
+    from plane_toolchain.pages_backend import FORCE_CLOSE_WAIT_SECONDS
+
+    view, log, versions = _patch_env(monkeypatch)
+    response = _run_patch(view)
+    # Only the pre-write wait for Live's store remains; nothing sleeps after commit.
+    assert _tuples(log, "sleep") == [("sleep", FORCE_CLOSE_WAIT_SECONDS)]
+    assert _first(log, "sleep") < _first(log, "atomic-exit")
+    hint = response.data["late_store_check"]
+    assert hint["compare"] == "description_html"
+    assert hint["seconds"] >= 12
     assert ("save", True, b"new") in log
     assert len(versions) == 1
-
-
-def test_patch_watches_one_debounce_window_after_commit(monkeypatch):
-    from plane_toolchain.pages_backend import LATE_STORE_WINDOW_SECONDS
-
-    view, log, _ = _patch_env(monkeypatch)
-    _run_patch(view)
-    after = log[_first(log, "atomic-exit") :]
-    waited = sum(e[1] for e in _tuples(after, "sleep"))
-    assert waited >= LATE_STORE_WINDOW_SECONDS
