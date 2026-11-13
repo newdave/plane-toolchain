@@ -1,0 +1,28 @@
+tests/test_project_install.py
+  s_066dd3ba2255bd::t_0ad97be15d20a6 797-799,807
+  s_066dd3ba2255bd::t_5722f2b2a148cf 734-735,738-780,782-795,800-806,808-809,817-833,835-845
+  s_066dd3ba2255bd::t_8addd651eb5d5e 812-815,834
+  s_066dd3ba2255bd::t_85cef52bda58fe 781,796
+  s_066dd3ba2255bd::t_d2488c6db99e51 810-811,816
+  s_066dd3ba2255bd::t_faed0ae0336b5e 736-737
+CHANGELOG.md
+  s_066dd3ba2255bd::t_d040bc91759a8c 12
+scripts/install_project.py
+  s_066dd3ba2255bd::t_befbee546e2ee1 281-285,349,354-355,390,393-399,401-420,423-426,431-432,535-536
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "8396f392ef9a39ab67cd91377dd32f27dbc28597",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
