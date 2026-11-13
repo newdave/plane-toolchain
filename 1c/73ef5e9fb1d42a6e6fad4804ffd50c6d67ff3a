@@ -1,0 +1,31 @@
+tests/test_pages_deploy.py
+  s_066dd3ba2255bd::t_66384f7a5c33b7 1319
+src/plane_toolchain/mcp_deploy.py
+  s_066dd3ba2255bd::t_66384f7a5c33b7 302-309
+tests/test_mcp_deploy.py
+  s_066dd3ba2255bd::t_7fa0065174a040 12,804-818
+  s_066dd3ba2255bd::t_66384f7a5c33b7 794
+src/plane_toolchain/remote.py
+  s_066dd3ba2255bd::t_66384f7a5c33b7 81-89,101-104,121
+tests/test_remote.py
+  s_066dd3ba2255bd::t_66384f7a5c33b7 266-276
+  s_066dd3ba2255bd::t_d356b18522e7dc 5,255-257
+tests/test_workspace_rename_cli.py
+  s_066dd3ba2255bd::t_7fa0065174a040 214
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "1c73ef5e9fb1d42a6e6fad4804ffd50c6d67ff3a",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
