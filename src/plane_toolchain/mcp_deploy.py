@@ -282,36 +282,37 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
     # This file contains code only; Docker credentials and configuration stay untouched.
     try:
         rewrite(target, content)
-    except BaseException:
+    except BaseException as error:
         mask = hold_sigterm()
         try:
             rewrite(target, current)
             restore_receipt()
         finally:
-            release_sigterm(mask)
+            release_sigterm(mask, error)
         raise
     try:
         docker("restart", data["container"], stdout=subprocess.DEVNULL)
         healthy = wait_healthy(probe, sleep)
-    except BaseException:
+    except BaseException as error:
         mask = hold_sigterm()  # A SIGTERM now waits until the rollback and its report are done.
         try:
             if not restore():
                 say("MCP still unhealthy after rollback", sys.stderr)
         finally:
-            release_sigterm(mask)
+            release_sigterm(mask, error)
         raise
     if not healthy:
         mask = hold_sigterm()
+        failure = None
         try:
             came_back = restore()
+            failure = RuntimeError(
+                "MCP did not become healthy; previous entry point restored"
+                + ("" if came_back else "; MCP still unhealthy")
+            )
         finally:
-            release_sigterm(mask)
-        if came_back:
-            raise RuntimeError("MCP did not become healthy; previous entry point restored")
-        raise RuntimeError(
-            "MCP did not become healthy; previous entry point restored; MCP still unhealthy"
-        )
+            release_sigterm(mask, failure)
+        raise failure
     if operation == "apply":
         final = {"installed": sha256(content), "original": sha256(backup.read_bytes())}
         write_atomic(receipt, json.dumps(final))

@@ -475,7 +475,7 @@ def revert(current, payload, backup, docker, probe, health, now):
                 restore_any(name, backup, reverted, probe, docker, policy)
                 raise error  # Recovery error stays as __context__.
         finally:
-            release_sigterm(mask)
+            release_sigterm(mask, error)
         raise
     return "Original API container restored; derived container retained stopped" + retained_note(
         name, docker
@@ -558,15 +558,19 @@ def apply(current, payload, backup, docker, probe, create, health, now):
     try:
         docker("stop", name)
         docker("rename", name, backup)
-    except BaseException:
-        probe("start", name)  # Never leave the live API stopped; its policy is unchanged.
+    except BaseException as error:
+        mask = hold_sigterm()  # A SIGTERM now waits until the API is started again.
+        try:
+            probe("start", name)  # Never leave the live API stopped; its policy is unchanged.
+        finally:
+            release_sigterm(mask, error)
         raise
     set_restart(probe, "no", backup)  # After the rename: a failed rename keeps the policy.
     try:
         create(name, body)
         docker("start", name)
         health(name)
-    except BaseException:
+    except BaseException as error:
         mask = hold_sigterm()  # A SIGTERM now waits until the rollback is done.
         try:
             if probe("inspect", name):
@@ -578,7 +582,7 @@ def apply(current, payload, backup, docker, probe, create, health, now):
             set_restart(probe, policy, name)
             docker("start", name)
         finally:
-            release_sigterm(mask)
+            release_sigterm(mask, error)
         raise
     return (
         "Pages derived image applied; API healthy; original container retained for rollback"
