@@ -2,7 +2,8 @@
 
 These functions run on the host inside the stdlib-only REMOTE built by program(), so they take
 every path as an argument and use the standard library only. SHIPPED lists what program()
-ships: write_atomic (from mcp_deploy) and the receipt, Docker and backup functions below.
+ships: fsync_directory and write_atomic (from mcp_deploy), and the receipt, Docker and backup
+functions below.
 `say` and the `docker` helper come from remote.py; program() adds `say` itself.
 
 Messages never carry receipt or journal content.
@@ -15,7 +16,10 @@ import pathlib
 import stat
 import subprocess
 
-from plane_toolchain.mcp_deploy import write_atomic  # shipped to the host by program()
+from plane_toolchain.mcp_deploy import (
+    fsync_directory,
+    write_atomic,
+)  # shipped to the host by program()
 from plane_toolchain.remote import say  # shipped to the host by program()
 
 # Outage-window Docker orchestration. Only `docker stop`, `start`, `restart` and `exec` (plus
@@ -357,6 +361,7 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None):
 
 
 SHIPPED = (
+    fsync_directory,
     write_atomic,
     secure_receipt_dir,
     private_file_check,
