@@ -1,7 +1,7 @@
 # Plane Toolchain
 
 Plane CE MCP extensions, project integration controls and GitHub Actions examples.
-Extracted from TerrainLink under the MIT licence. No running services are changed by installing this repository.
+No running services are changed by installing this repository.
 
 - **CE tools:** additive work-item dependencies and project Pages (list, read, create).
 - **Project controls:** `mise run plane:enable`, `plane:disable` and offline `plane:status`.

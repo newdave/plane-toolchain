@@ -4,7 +4,7 @@ Run this file as the hosted MCP entry point. Official tools remain available;
 CE tools use the same request authentication, SDK and backend permissions.
 """
 
-# Dependencies below exist in the hosted Plane MCP image, not TerrainLink's environment.
+# Dependencies below exist in the hosted Plane MCP image, not this toolchain's environment.
 # pyright: reportMissingImports=false
 
 import os

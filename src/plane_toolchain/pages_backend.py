@@ -1,6 +1,6 @@
 """Project Pages compatibility for Plane CE v1.4.3.
 
-Installed in a derived backend image, never imported by TerrainLink's API.
+Installed in a derived backend image, never imported by the Plane API.
 Existing documents are edited only as a whole-body replacement with an updated_at
 precondition, after force-closing open editors through Live's Redis admin channel.
 """
@@ -9,7 +9,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
-# Dependencies below exist in the Plane backend image, not TerrainLink's environment.
+# Dependencies below exist in the Plane backend image, not this toolchain's environment.
 # pyright: reportMissingImports=false
 
 # List rows omit document bodies (description_*); retrieve keeps full detail.
