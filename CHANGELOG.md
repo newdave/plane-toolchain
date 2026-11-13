@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-14
+
 ### Fixed
 
 - Pages revert: a revert killed after the original was renamed back to `api` but before it started left `api` stopped, and a repeat revert reported "already restored" without starting it. A repeat revert now starts the stopped original, restoring the live restart policy, when a `<api>-pages-reverted-<digits>` container shows the revert was interrupted; a stopped `api` without one is still left alone as stopped on purpose (found by the new kill-injection harness; PTC-80).
