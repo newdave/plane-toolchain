@@ -666,209 +666,78 @@ def test_receipt_write_fsyncs_directory(root, monkeypatch):
     assert any(call[0] == root.resolve() or call[0] == root for call in opened)
 
 
-# PTC-28: neutral names are written; legacy names are still read and migrated (ADR 0001).
+# PTC-30: legacy-named host state is refused, never read.
 
+REFUSAL = (
+    "Legacy-named state found: {}. This release no longer reads it. "
+    "Migrate first with plane-toolchain at commit 1cb6153: "
+    "Pages revert (apply only if check passes there), MCP apply. Or reconcile manually."
+)
 NEUTRAL_BACKUP = "server.py.before-plane-toolchain-ce"
 NEUTRAL_RECEIPT = "plane-toolchain-ce-receipt.json"
-
-
-def legacy_host(root, pending_receipt=False):
-    """A host deployed before the rename: legacy backup and receipt, v1 installed."""
-    (root / MCP_BACKUP_NAME).write_bytes(ORIGINAL)
-    (root / MCP_BACKUP_NAME).chmod(0o640)
-    (root / "server.py").write_text(V1)
-    receipt = pending(V1.encode(), None) if pending_receipt else None
-    receipt = receipt or json.dumps({"installed": sha(V1.encode()), "original": sha(ORIGINAL)})
-    (root / MCP_RECEIPT_NAME).write_text(receipt)
-
-
-def neutral_final(installed):
-    return {"installed": sha(installed), "original": sha(ORIGINAL)}
 
 
 def snapshot(root):
     return {p.name: p.read_bytes() for p in sorted(root.iterdir())}
 
 
-def assert_migrated(root, installed):
-    assert not (root / MCP_BACKUP_NAME).exists()
-    assert not (root / MCP_RECEIPT_NAME).exists()
-    assert (root / NEUTRAL_BACKUP).read_bytes() == ORIGINAL
-    assert (root / NEUTRAL_BACKUP).stat().st_mode & 0o777 == 0o640
-    assert json.loads((root / NEUTRAL_RECEIPT).read_text()) == neutral_final(installed)
+def legacy_receipt(installed=V1):
+    return json.dumps({"installed": sha(installed.encode()), "original": sha(ORIGINAL)})
 
 
-def test_legacy_only_host_check_and_revert_read_legacy_names(root):
-    legacy_host(root)
+def assert_refused(root, operation, names, monkeypatch=None, shipped=False):
+    """The operation raises the exact refusal; no file changes and no container call happens."""
     fake = mcp_host()
-    assert deploy("check", root, fake, source=V1) == "MCP entry point verified"
-    assert deploy("revert", root, fake).startswith("MCP entry point revert verified")
-    assert (root / "server.py").read_bytes() == ORIGINAL
+    before = snapshot(root)
+    with pytest.raises(ValueError) as error:
+        if shipped:
+            remote(operation, root, fake, monkeypatch)
+        else:
+            deploy(operation, root, fake)
+    assert str(error.value) == REFUSAL.format(", ".join(names))
+    assert snapshot(root) == before
+    assert fake.calls == []
 
 
-def test_legacy_only_host_apply_repair_migrates(root):
-    legacy_host(root)
-    assert deploy("apply", root, mcp_host(), source=V1) == (
-        "MCP compatibility entry point already applied"
-    )
-    assert_migrated(root, V1.encode())
+@pytest.mark.parametrize("operation", ["check", "apply", "revert"])
+@pytest.mark.parametrize("shipped", [False, True])
+def test_legacy_backup_refused_for_every_operation(root, operation, shipped, monkeypatch):
+    (root / MCP_BACKUP_NAME).write_bytes(ORIGINAL)
+    assert_refused(root, operation, [MCP_BACKUP_NAME], monkeypatch, shipped)
 
 
-def test_legacy_only_host_upgrade_migrates_and_reverts(root):
-    legacy_host(root)
-    fake = mcp_host()
-    assert deploy("apply", root, fake, source=V2).startswith("MCP entry point apply verified")
-    assert_migrated(root, V2.encode())
-    assert deploy("revert", root, fake).startswith("MCP entry point revert verified")
-    assert (root / "server.py").read_bytes() == ORIGINAL
-
-
-def test_legacy_pending_receipt_is_migrated_verbatim_before_rewrite(root):
-    legacy_host(root, pending_receipt=True)
-    seen = []
-    watch_receipt(root, mcp_host(), V2, seen)
-    assert seen[0]["pending"] is True
-    assert not (root / MCP_RECEIPT_NAME).exists()
-    assert_migrated(root, V2.encode())
-
-
-def test_legacy_pending_receipt_can_revert(root):
-    legacy_host(root, pending_receipt=True)
+@pytest.mark.parametrize("operation", ["check", "apply", "revert"])
+def test_legacy_receipt_refused(root, operation):
+    (root / MCP_BACKUP_NAME).write_bytes(ORIGINAL)
     (root / "server.py").write_text(V1)
-    assert deploy("revert", root, mcp_host()).startswith("MCP entry point revert verified")
-    assert (root / "server.py").read_bytes() == ORIGINAL
+    (root / MCP_RECEIPT_NAME).write_text(legacy_receipt())
+    assert_refused(root, operation, [MCP_BACKUP_NAME, MCP_RECEIPT_NAME])
 
 
-def test_legacy_old_format_receipt_migrates(root):
-    legacy_host(root)
-    (root / MCP_RECEIPT_NAME).write_text(json.dumps({"installed": sha(V1.encode())}))
-    deploy("apply", root, mcp_host(), source=V2)
-    assert_migrated(root, V2.encode())
+@pytest.mark.parametrize("operation", ["check", "apply", "revert"])
+def test_legacy_receipt_tmp_alone_refused(root, operation):
+    (root / (MCP_RECEIPT_NAME + ".tmp")).write_text("{")
+    assert_refused(root, operation, [MCP_RECEIPT_NAME + ".tmp"])
 
 
-def test_legacy_host_through_shipped_remote_program(root, monkeypatch):
-    legacy_host(root)
-    remote("apply", root, mcp_host(), monkeypatch, source=V2)
-    assert_migrated(root, V2.encode())
-    remote("revert", root, mcp_host(), monkeypatch)
-    assert (root / "server.py").read_bytes() == ORIGINAL
-
-
-def kill_after_migration_step(monkeypatch, step):
-    """Raise KeyboardInterrupt right after the nth directory fsync (one per migration step)."""
-    calls = []
-    real = mcp_deploy.fsync_directory
-
-    def fsync_directory(path):
-        real(path)
-        calls.append(path)
-        if len(calls) == step:
-            raise KeyboardInterrupt
-
-    monkeypatch.setattr(mcp_deploy, "fsync_directory", fsync_directory)
-
-
-@pytest.mark.parametrize("source", [V1, V2], ids=["repair", "upgrade"])
-@pytest.mark.parametrize("step", [1, 2, 3])
-def test_kill_at_each_migration_step_leaves_recoverable_state(root, monkeypatch, step, source):
-    legacy_host(root)
-    fake = mcp_host()
-    with monkeypatch.context() as patch:
-        kill_after_migration_step(patch, step)
-        with pytest.raises(KeyboardInterrupt):
-            deploy("apply", root, fake, source=source)
-    assert (root / "server.py").read_text() == V1
-    names = set(snapshot(root))
-    assert (NEUTRAL_RECEIPT in names) is True
-    assert (NEUTRAL_BACKUP in names) is (step >= 2)
-    assert (MCP_BACKUP_NAME in names) is (step < 2)
-    assert (MCP_RECEIPT_NAME in names) is (step < 3)
-    assert deploy("check", root, fake, source=V1) == "MCP entry point verified"
-    # Revert works on the interrupted state, then apply completes the migration afresh.
-    before = snapshot(root)
-    assert deploy("revert", root, fake).startswith("MCP entry point revert verified")
-    assert (root / "server.py").read_bytes() == ORIGINAL
-    assert set(before) - {"server.py"} == set(snapshot(root)) - {"server.py"}
-    assert deploy("apply", root, fake, source=source).startswith("MCP entry point apply verified")
-    assert_migrated(root, source.encode())
-
-
-@pytest.mark.parametrize("step", [1, 2, 3])
-def test_apply_completes_migration_after_kill(root, monkeypatch, step):
-    legacy_host(root)
-    fake = mcp_host()
-    with monkeypatch.context() as patch:
-        kill_after_migration_step(patch, step)
-        with pytest.raises(KeyboardInterrupt):
-            deploy("apply", root, fake, source=V1)
-    assert deploy("apply", root, fake, source=V1) == (
-        "MCP compatibility entry point already applied"
-    )
-    assert_migrated(root, V1.encode())
-
-
-def test_mixed_host_neutral_receipt_with_legacy_backup_is_accepted(root):
-    legacy_host(root)
-    (root / NEUTRAL_RECEIPT).write_bytes((root / MCP_RECEIPT_NAME).read_bytes())
-    (root / MCP_RECEIPT_NAME).unlink()
-    deploy("apply", root, mcp_host(), source=V2)
-    assert_migrated(root, V2.encode())
-
-
-def test_mixed_host_neutral_backup_with_legacy_receipt_is_accepted(root):
-    legacy_host(root)
-    (root / MCP_BACKUP_NAME).rename(root / NEUTRAL_BACKUP)
-    fake = mcp_host()
-    assert deploy("revert", root, fake).startswith("MCP entry point revert verified")
-    (root / "server.py").write_text(V1)
-    deploy("apply", root, fake, source=V1)
-    assert_migrated(root, V1.encode())
-
-
-def test_identical_duplicates_are_accepted_by_every_operation(root):
-    legacy_host(root)
+@pytest.mark.parametrize("operation", ["check", "apply", "revert"])
+def test_mixed_legacy_and_neutral_refused(root, operation):
     (root / NEUTRAL_BACKUP).write_bytes(ORIGINAL)
-    (root / NEUTRAL_BACKUP).chmod(0o640)
-    # Reformatted JSON with the same content is still the same receipt.
-    (root / NEUTRAL_RECEIPT).write_text(json.dumps(neutral_final(V1.encode()), indent=2))
+    (root / NEUTRAL_RECEIPT).write_text(legacy_receipt(DESIRED))
+    (root / "server.py").write_text(DESIRED)
+    (root / MCP_RECEIPT_NAME).write_text(legacy_receipt())
+    assert_refused(root, operation, [MCP_RECEIPT_NAME])
+
+
+def test_neutral_host_unaffected(root):
     fake = mcp_host()
-    assert deploy("check", root, fake, source=V1) == "MCP entry point verified"
-    deploy("apply", root, fake, source=V2)
-    assert_migrated(root, V2.encode())
+    assert deploy("apply", root, fake).startswith("MCP entry point apply verified")
+    assert deploy("check", root, fake) == "MCP entry point verified"
+    assert deploy("revert", root, fake).startswith("MCP entry point revert verified")
+    assert (root / NEUTRAL_BACKUP).exists() and not (root / MCP_BACKUP_NAME).exists()
 
 
-def test_both_receipts_with_different_content_refused(root):
-    legacy_host(root)
-    (root / NEUTRAL_BACKUP).write_bytes(ORIGINAL)
-    (root / NEUTRAL_RECEIPT).write_text(json.dumps({"installed": sha(b"other")}))
-    before = snapshot(root)
-    for operation in ("apply", "revert"):
-        with pytest.raises(ValueError, match="reconcile") as error:
-            deploy(operation, root, mcp_host(), source=V2)
-        assert MCP_RECEIPT_NAME in str(error.value) and NEUTRAL_RECEIPT in str(error.value)
-    assert snapshot(root) == before
-
-
-def test_both_backups_with_different_bytes_refused(root):
-    legacy_host(root)
-    (root / NEUTRAL_BACKUP).write_bytes(b"get_header_mcp\n# other\n")
-    (root / NEUTRAL_RECEIPT).write_bytes((root / MCP_RECEIPT_NAME).read_bytes())
-    before = snapshot(root)
-    for operation in ("apply", "revert"):
-        with pytest.raises(ValueError, match="reconcile") as error:
-            deploy(operation, root, mcp_host(), source=V2)
-        assert MCP_BACKUP_NAME in str(error.value) and NEUTRAL_BACKUP in str(error.value)
-    assert snapshot(root) == before
-
-
-@pytest.mark.parametrize("source", [V1, V2], ids=["repair", "upgrade"])
-def test_legacy_backup_digest_mismatch_refused_and_nothing_changes(root, source):
-    legacy_host(root)
-    (root / MCP_BACKUP_NAME).write_bytes(b"tampered\n")
-    before = snapshot(root)
-    with pytest.raises(ValueError, match="Backup does not match the recorded original"):
-        deploy("apply", root, mcp_host(), source=source)
-    assert snapshot(root) == before
-    with pytest.raises(ValueError, match="reconcile"):
-        deploy("revert", root, mcp_host())
-    assert snapshot(root) == before
+def test_remote_ships_tripwire_and_no_legacy_reads():
+    compile(mcp_deploy.REMOTE, "<remote>", "exec")
+    assert "def legacy_state" in mcp_deploy.REMOTE and "def refusal" in mcp_deploy.REMOTE
+    assert "def migrate" not in mcp_deploy.REMOTE and "def locate" not in mcp_deploy.REMOTE

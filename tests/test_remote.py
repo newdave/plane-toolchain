@@ -145,7 +145,7 @@ def test_unshipped_detects_reduced_constants_mapping():
     full = remote.program(["json"], [pages_deploy.source_label], "pass\n", legacy.PAGES)
     reduced = remote.program(["json"], [pages_deploy.source_label], "pass\n", {})
     assert unshipped(full) == set()
-    assert unshipped(reduced) == {"PAGES_LABEL", "NEUTRAL_PAGES_LABEL"}
+    assert unshipped(reduced) == {"NEUTRAL_PAGES_LABEL"}
 
 
 @pytest.mark.parametrize("module", ["pages_deploy", "mcp_deploy"])

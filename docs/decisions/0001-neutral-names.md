@@ -1,6 +1,6 @@
 # 0001: Neutral names for legacy `terrainlink` identifiers
 
-- **Status:** Accepted on 2026-11-13 (owner sign-off recorded on PTC-25)
+- **Status:** Accepted; legacy reads removed early by owner override on 2026-11-13 (PTC-30)
 - **Date:** 2026-11-12
 - **Follow-up tasks:** PTC-26 (legacy-names module and guard), PTC-27 (Pages deploy),
   PTC-28 (MCP compat deploy), PTC-29 (prose and docs), PTC-23 (redeploy),
@@ -74,6 +74,30 @@ Legacy reads stay until all of these hold, and the owner confirms them on PTC-30
 Removal (PTC-30) deletes the legacy read paths and `legacy.py`, tightens the guard to
 CHANGELOG history only, and marks this ADR as superseded.
 
+### Removal (PTC-30)
+
+On 2026-11-13 the owner chose "Override the ADR now: remove the legacy reads and merge". This waived the deprecation window gates, which required that:
+
+- a tagged release ships the read-both behaviour;
+- the live host has been redeployed with that release (PTC-23) and `check` passes for both helpers;
+- at least 30 days have passed since that redeploy;
+- a read-only host inventory finds no legacy containers, images, labels, backups or receipts.
+
+At that time no tagged release shipped the read-both code (v0.1.0 predates it), the host had not been redeployed, the 30-day window had not started, and the host still had legacy labels, receipts and backups.
+
+The helpers now read and write only neutral names. One deviation from the plan above: `legacy.py` is kept, with four refuse-only names (the Pages backup suffix, the Pages source label, the MCP backup file and the MCP receipt). The Pages and MCP helpers refuse, before any change, when they find any of them (Pages `build` only creates an image and is not checked). The reason is safety. An unmigrated host must be refused, not misread as a clean host. The refusal points to commit `1cb6153`, the last read-both commit, whose owner tasks migrate such a host.
+
+The tripwire fails closed. It lists containers with one `docker ps -a --filter name=<api>` and matches names exactly, and it inspects the API and the neutral backup only when listed. A failed `ps` or inspect raises, so the run refuses. It does not filter on the label across all containers: retired `-pages-reverted-*` containers keep the legacy label and stay allowed.
+
+Migrate a refused host with plane-toolchain at commit `1cb6153`:
+
+- Pages: run `revert` (it restores the original, consumes the legacy backup and parks the legacy derived container as an inert `<api>-pages-reverted-<ts>`). Run `apply` there only if `check` passes there; it refuses when the deployed digest differs. Then run `apply` with this release.
+- MCP: run `apply` (it migrates the receipt and backup). MCP `revert` there does not migrate.
+- Retired `-pages-reverted-*` containers keep the legacy label, are not checked and are left for owner cleanup.
+- A Saltbox host's next build, from this release or the Saltbox role, must write the neutral label, or every operation refuses there.
+
+The guard now allows legacy names only in `legacy.py`, this ADR, the CHANGELOG, the guard itself and the tripwire test fixtures.
+
 ### Provenance line
 
 The README line "Extracted from TerrainLink under the MIT licence" is removed from the
@@ -83,11 +107,11 @@ attribution is lost.
 
 ### Agent rule
 
-The AGENTS.md rule "Preserve ... legacy rollback receipt names" is replaced by a rule
-that treats legacy `terrainlink` names as read-only compatibility inputs, kept in
+The AGENTS.md rule "Preserve ... legacy rollback receipt names" was replaced by a rule
+that treated legacy `terrainlink` names as read-only compatibility inputs, kept in
 `src/plane_toolchain/legacy.py` and changed only through the migration policy above. The
-rule also states that the current helpers still write legacy names until PTC-27 and PTC-28
-land, so nobody renames them ahead of the migration.
+rule also stated that the helpers still wrote legacy names until PTC-27 and PTC-28
+landed, so nobody renamed them ahead of the migration.
 
 ## Consequences
 
@@ -95,10 +119,12 @@ land, so nobody renames them ahead of the migration.
   text change. The migration rides on the same owner redeploy as the review queue (PTC-23).
 - Host state is mixed for a time: older retained containers and images keep legacy names
   until a later apply or an owner cleanup with explicit authority.
-- The helpers gain read-both and refuse-on-ambiguity paths. These need FakeDocker and
+- The helpers gained read-both and refuse-on-ambiguity paths. These needed FakeDocker and
   kill-step tests for every legacy, mixed and neutral layout before any redeploy.
-- Until PTC-26 lands, `legacy.py` does not exist. Until then, this ADR is the list of
-  legacy names.
+  Superseded by the Removal (PTC-30) section: the read paths are gone.
+- Until PTC-26 landed, `legacy.py` did not exist and this ADR was the list of legacy
+  names. Superseded by the Removal (PTC-30) section: `legacy.py` exists and holds the
+  four refused names.
 
 ## Alternatives considered
 

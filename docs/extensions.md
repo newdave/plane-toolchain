@@ -71,7 +71,7 @@ mise run owner:plane-pages:revert
 
 The MCP helper rewrites `server.py` in place (truncate, write, flush, fsync) so the bind-mounted inode survives. The rewrite is not atomic: a crash mid-write leaves a partial file, and the backup `server.py.before-plane-toolchain-ce` is the manual recovery copy. After the restart it polls the container (running, not restarting, healthy when a healthcheck exists, restart count stable) for up to 45 seconds. On timeout or a crash loop it restores the previous bytes, restarts again and fails. A pending receipt (`pending`, `previous`) is written atomically before the rewrite and replaced by the final receipt once healthy. A rollback restores the old receipt text exactly, or deletes it on a first apply. After a killed deploy, `revert` and `apply` accept either the installed or previous digest while the receipt is pending, and `apply` repairs a stale receipt. A leftover `plane-toolchain-ce-receipt.json.tmp` is harmless and is overwritten by the next write. Without a healthcheck, the container must stay running for about 5 seconds; a slow healthcheck (long interval or start_period) may need more than the default 45 attempts. Original-versus-installed detection compares SHA-256 digests with the receipt; with no recorded original it accepts only a plain entry point that references `get_header_mcp` and defines no functions or classes.
 
-The MCP helper writes only `server.py.before-plane-toolchain-ce` and `plane-toolchain-ce-receipt.json`. It still reads the legacy backup and receipt names. A successful `apply` or repair migrates them in three steps: write the neutral receipt atomically, move the backup after its digest matches the recorded original, then remove the legacy receipt. A kill between steps leaves identical copies that `check`, `revert` and `apply` accept, and the next `apply` completes the migration. If legacy and neutral files disagree (different receipt content, different backup bytes, or a legacy backup that does not match the recorded original) the helper refuses and names the files; reconcile them by hand. Migration runs after validation and before the entry point is rewritten, so a failed health check rolls back the entry point but keeps the migrated names. `revert` reads either name and does not migrate.
+The MCP helper writes and reads only `server.py.before-plane-toolchain-ce` and `plane-toolchain-ce-receipt.json`. It refuses legacy-named state; see [Hosts with legacy-named state](#hosts-with-legacy-named-state). It writes the receipt atomically and moves nothing between names. A failed health check rolls the entry point back. `revert` restores `server.py.before-plane-toolchain-ce`, verified against the receipt digest.
 
 A check fails when the installed source differs. The MCP helper refuses tracked or unexpected host entry points, preserves a backup and checks receipts before overwriting. The Pages helper builds a derived image from the running immutable image, preserves opaque Docker configuration and keeps the original container for rollback. It rejects auto-removal and static IP configurations requiring a specific migration. It checks backend HTTP health; verify authenticated MCP operations separately after applying.
 
@@ -91,15 +91,15 @@ The direct `apply` route is for non-Saltbox hosts.
 
 The extracted server payloads retain their original bytes, including comments, so existing deployment digests still match, except as noted below.
 
-**PTC-13 migration note.** `ce_tools.py` changed (canonical UUIDs, SDK private-call guard, `FASTMCP_HOST`), so its payload digest changed. `pages_backend.py` is unchanged. A host with a pre-PTC-13 `ce_tools.py` receipt will report a source difference on `owner:plane-mcp-compat:check`; review, then re-apply. Revert still works: it reads the legacy and neutral backup and receipt names.
+**PTC-13 migration note.** `ce_tools.py` changed (canonical UUIDs, SDK private-call guard, `FASTMCP_HOST`), so its payload digest changed. `pages_backend.py` is unchanged. A host with a pre-PTC-13 `ce_tools.py` receipt will report a source difference on `owner:plane-mcp-compat:check`; review, then re-apply. Revert still works with the neutral backup and receipt names.
 
 `ce_tools.py` is not version-pinned to the Plane SDK because the SDK lives in the hosted image. It calls private SDK methods (`relations._get`, `pages._get`, `pages._post`, `pages._patch`) and now raises a clear `RuntimeError` naming a missing method. Retest after upgrading the image. Project, work item and target IDs are canonicalised with `str(UUID(x))` (lowercase, hyphenated) before building paths.
 
 The MCP entry point binds to `FASTMCP_HOST` (bare host or address; default `0.0.0.0`, which the container needs to be reachable) and `FASTMCP_PORT` (default `8211`).
 
-The Pages helper writes `<name>-before-plane-toolchain-pages`, `plane-toolchain.pages.source`, `plane-toolchain-pages:<digest16>` and `plane.api.plane_toolchain_pages`. The MCP helper writes `server.py.before-plane-toolchain-ce` and `plane-toolchain-ce-receipt.json`. [ADR 0001](decisions/0001-neutral-names.md) sets these names and the migration from the legacy ones; see [Migrating from legacy names](#migrating-from-legacy-names). Do not rename them outside that migration.
+The Pages helper writes `<name>-before-plane-toolchain-pages`, `plane-toolchain.pages.source`, `plane-toolchain-pages:<digest16>` and `plane.api.plane_toolchain_pages`. The MCP helper writes `server.py.before-plane-toolchain-ce` and `plane-toolchain-ce-receipt.json`. [ADR 0001](decisions/0001-neutral-names.md) sets these names; see [Hosts with legacy-named state](#hosts-with-legacy-named-state). Do not rename them outside that ADR.
 
-**PTC-7 migration note.** The Pages helper now runs `docker update --restart=no` on every retired container (`<name>-before-plane-toolchain-pages`, or the legacy `<name>-before-terrainlink-pages` on hosts not yet migrated, `<name>-pages-reverted-*`, `<name>-pages-failed-*`) and restores the live restart policy when one is promoted back. Retained containers from earlier deployments keep their old policy and may restart with the daemon beside the live API. Before relying on this, run `docker update --restart=no` once on each existing retained container.
+**PTC-7 migration note.** The Pages helper now runs `docker update --restart=no` on every retired container (`<name>-before-plane-toolchain-pages`, `<name>-pages-reverted-*`, `<name>-pages-failed-*`) and restores the live restart policy when one is promoted back. Retained containers from earlier deployments keep their old policy and may restart with the daemon beside the live API. Before relying on this, run `docker update --restart=no` once on each existing retained container.
 
 Apply and revert restart services. Obtain deployment authority before running them. A retained rollback container must be reconciled before a later Pages upgrade; the helper refuses to discard it automatically. To upgrade after the Pages source changes, run revert, then apply: revert accepts a derived container built from older source, and apply then builds the new image.
 
@@ -117,6 +117,23 @@ mise run owner:plane-workspace-rename:revert
 
 Required environment: `PLANE_RENAME_FROM` and `PLANE_RENAME_TO` (slugs: letters, digits, `-` and `_`; they must differ), `PLANE_MCP_SSH`, `PLANE_API_CONTAINER` and `PLANE_LIVE_URL`. Optional: `PLANE_RENAME_RECEIPT_DIR` (absolute path on the host), `PLANE_API_URL` and the service overrides `PLANE_DB_CONTAINER`, `PLANE_REDIS_CONTAINER`, `PLANE_WEB_CONTAINER`, `PLANE_SPACE_CONTAINER`, `PLANE_ADMIN_CONTAINER`, `PLANE_WORKER_CONTAINER`, `PLANE_BEAT_CONTAINER`, `PLANE_LIVE_CONTAINER` and `PLANE_MQ_CONTAINER`. Every value is validated before any SSH call, and errors never print configuration. The request, including the Django snippet, goes to the host on stdin as JSON; nothing but the fixed program is in the SSH arguments. The remote exit code is the task's exit code. Ctrl-C locally prints guidance (the host program may still be running; check the receipt, then rerun to resume or run revert) and exits 130.
 
-## Migrating from legacy names
+## Hosts with legacy-named state
 
-Hosts deployed before the neutral names carry state under legacy `terrainlink` names: backup names, receipt names, image labels and backend module paths. They are compatibility metadata only. Both helpers read the legacy and the neutral names and write only the neutral ones. The Pages helper refuses to act when both a legacy and a neutral rollback container exist: reconcile manually. The MCP helper refuses when legacy and neutral receipts or backups disagree. ADR 0001 sets the policy: read both names, write only neutral names, refuse when they disagree, and remove legacy reads after a deprecation window. The legacy spellings live only in `src/plane_toolchain/legacy.py`. A Pages host with no retained original (the Saltbox path) keeps the legacy label until its next build, because Docker labels cannot change on a running container.
+The helpers read and write only neutral names. They refuse legacy-named state: a Pages rollback container, a Pages source label on the API container or the neutral backup container, or an MCP backup or receipt, under the old names. Pages `check`, `apply` and `revert`, and MCP `check`, `apply` and `revert`, refuse before any change. Pages `build` only creates an image and does not look for legacy state. The refusal names what it found, never content:
+
+```text
+Legacy-named state found: <names>. This release no longer reads it. Migrate first with plane-toolchain at commit 1cb6153: Pages revert (apply only if check passes there), MCP apply. Or reconcile manually.
+```
+
+To upgrade such a host, check out commit `1cb6153` and run these owner tasks there, then use this release:
+
+- Pages: run `revert` (it restores the original API container, consumes the legacy backup and parks the legacy derived container as an inert `<api>-pages-reverted-<ts>`). Run `apply` there only if `check` passes there. At that commit `apply` refuses when the deployed source digest differs from the shipped one, which is expected on a host deployed before the later payload changes.
+- MCP: run `apply` (it migrates the receipt and backup to the neutral names). MCP `revert` at that commit does not migrate.
+
+Then:
+
+- After the Pages `revert` at `1cb6153`, run Pages `apply` with this release.
+- Retired `<api>-pages-reverted-*` containers keep the legacy label. They are not checked and are left for owner cleanup.
+- A Saltbox host's next build, from this release or the Saltbox role (PTC-53), must write the neutral label, or every operation from this release refuses there.
+
+You can also reconcile the state by hand.
