@@ -3,6 +3,7 @@
 Stdlib only, so an external checkout can run it with any python3 >= 3.11:
 
     python3 /path/to/plane-toolchain/scripts/install_project.py apply .
+    python3 /path/to/plane-toolchain/scripts/install_project.py label .
     python3 /path/to/plane-toolchain/scripts/install_project.py revert .
 
 Every change is recorded in .plane/install.json. Apply never overwrites existing
@@ -16,14 +17,38 @@ import re
 import sys
 import tempfile
 import tomllib
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
+from uuid import UUID
 
 SOURCE = Path(__file__).resolve().parents[1]
 TEMPLATES = SOURCE / "templates/project"
 RECEIPT = ".plane/install.json"
 MARKER = "<!-- plane-toolchain:begin"
 BLOCK = (TEMPLATES / "AGENTS.md").read_text()
+# Plane block as installed by PTC-48, before the awaiting-decision rule. Installs made then
+# still carry it: revert accepts it, and apply reports it as outdated without rewriting it.
+LEGACY_BLOCK = (
+    "<!-- plane-toolchain:begin (managed by scripts/install_project.py; edit outside this block) -->\n"
+    "## Task management: Plane\n"
+    "\n"
+    "Plane is the authoritative system for this project's scope, acceptance criteria, dependencies and status.\n"
+    "\n"
+    "- Use the `plane` MCP server for every task read and write. Reread each write to verify it.\n"
+    "- Do not keep a parallel backlog in repository files, TODO comments or agent todo lists.\n"
+    '- Treat "tasks" or "the queue" as this project\'s Plane work items.\n'
+    "- Move a work item to In Progress only while it is actively worked on.\n"
+    "- Move it to Done only when its acceptance criteria are met. A merged PR alone is not Done.\n"
+    "- Store specs, plans and other planning narratives as project Pages, not repository files.\n"
+    "- Keep Plane endpoints, project IDs and credentials out of committed files. Non-secret values go in ignored `.plane/local.env`. The API key comes from the environment or SOPS-encrypted `.plane/plane.enc.env`.\n"
+    "- Check the local switch with `.plane/plane.sh status`. Change it with `.plane/plane.sh enable` or `disable`.\n"
+    "<!-- plane-toolchain:end -->\n"
+)
 SHIM = (TEMPLATES / "plane.sh").read_text()
+# Shim as installed by PTC-48, before the worktree fallback. Installs made then still carry it:
+# revert accepts it, and apply reports it as outdated without rewriting it.
+LEGACY_SHIM = (TEMPLATES / "plane.sh.legacy").read_text()
 GITIGNORE = (
     "# Local Plane values, secrets and switch state; never commit them.\n"
     "local.env\n*.enc.env\nenable-backup.json\n.plane-*\n.backup-*\n"
@@ -46,6 +71,12 @@ CODEX_BLOCK = (
     'args = [".plane/plane.sh", "mcp"]\n'
     "# plane-toolchain:end\n"
 )
+# Must match the awaiting-decision label definition used in the toolchain's own project.
+LABEL = {
+    "name": "awaiting-decision",
+    "color": "#EF4444",
+    "description": "Agent is blocked until a human answers the question in the latest comment.",
+}
 # Directories the installer may create and, once empty, remove again.
 DIRECTORIES = (".plane", ".claude", ".codex")
 
@@ -54,7 +85,7 @@ class Changed(ValueError):
     """An installed artefact no longer matches what the installer wrote."""
 
 
-def insert_file(content, *, reuse=False):
+def insert_file(content, *, reuse=False, also=()):
     def insert(old):
         # Revert keeps an identical .gitignore while ignored local files remain.
         if old is not None and not (reuse and old == content):
@@ -62,7 +93,7 @@ def insert_file(content, *, reuse=False):
         return content
 
     def remove(text, created):
-        if text != content:
+        if text != content and text not in also:
             raise Changed("changed since installation")
         return None
 
@@ -90,9 +121,10 @@ def strip(text, block, created):
 
 
 def remove_block(text, created):
-    if BLOCK not in text:
-        raise Changed("Plane block changed since installation")
-    return strip(text, BLOCK, created)
+    for block in (BLOCK, LEGACY_BLOCK):
+        if block in text:
+            return strip(text, block, created)
+    raise Changed("Plane block changed since installation")
 
 
 def load(old):
@@ -163,7 +195,7 @@ def remove_codex(text, created):
 
 
 KINDS = {
-    "shim": insert_file(SHIM),
+    "shim": insert_file(SHIM, also=(LEGACY_SHIM,)),
     "gitignore": insert_file(GITIGNORE, reuse=True),
     "include": insert_file("@AGENTS.md\n"),
     "block": (insert_block, remove_block),
@@ -257,8 +289,10 @@ def apply(target, values=None, toolchain=SOURCE):
     target = target.resolve(strict=True)
     receipt_path = guard(target, RECEIPT)
     if receipt_path.exists():
-        reverted(target, json.loads(receipt_path.read_text()))
+        receipt = json.loads(receipt_path.read_text())
+        reverted(target, receipt)
         print("Plane integration already installed")
+        outdated(target, receipt)
         return
     changes, entries = {}, {}
     for rel, kind in plan(target):
@@ -280,6 +314,128 @@ def apply(target, values=None, toolchain=SOURCE):
     print("Installed Plane integration; review the diff before committing.")
     print("Next: run 'mise run setup' in the toolchain, set .plane/local.env values,")
     print("run '.plane/plane.sh enable', then restart Codex or Claude sessions.")
+
+
+def settings(target, env):
+    """Return (api base, workspace, project, key); refuse before any network call."""
+    local = guard(target, ".plane/local.env")
+    if not local.is_file():
+        raise ValueError(".plane/local.env not found; run apply first")
+    values = {}
+    for line in local.read_text().splitlines():
+        match = re.fullmatch(r"\s*(?:export\s+)?(PLANE_[A-Z_]+)=(.*?)\s*", line)
+        if match:
+            values[match[1]] = match[2].split(" #", 1)[0].strip().strip("\"'")
+    # Exported values win, as they do for the MCP bridge. The key is never read from files.
+    for name in ("PLANE_ENABLED", "PLANE_WORKSPACE", "PLANE_PROJECT", "PLANE_API_URL"):
+        if env.get(name):
+            values[name] = env[name]
+    if values.get("PLANE_ENABLED") != "true":
+        raise ValueError("Plane integration disabled; run .plane/plane.sh enable")
+    try:
+        project = str(UUID(values.get("PLANE_PROJECT", "")))
+    except ValueError:
+        raise ValueError("PLANE_PROJECT must be set to a UUID in .plane/local.env") from None
+    workspace = values.get("PLANE_WORKSPACE", "")
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", workspace):
+        raise ValueError("PLANE_WORKSPACE must be set in .plane/local.env")
+    base = values.get("PLANE_API_URL", "")
+    parts = urlsplit(base)
+    local_host = parts.hostname in {"localhost", "127.0.0.1", "::1"}
+    if (
+        not parts.hostname
+        or parts.username
+        or parts.query
+        or parts.fragment
+        or parts.scheme not in {"https", "http"}
+        or (parts.scheme == "http" and not local_host)
+    ):
+        raise ValueError("PLANE_API_URL (Plane REST base, HTTPS) must be set")
+    key = env.get("PLANE_API_KEY", "")
+    if not key or any(ord(c) < 33 or ord(c) > 126 for c in key):
+        raise ValueError("PLANE_API_KEY must be exported in the environment")
+    return base.rstrip("/"), workspace, project, key
+
+
+def http_client(base, key):
+    """Return request(method, path, body) -> parsed JSON using the Plane REST API."""
+
+    def request(method, path, body=None):
+        data = None if body is None else json.dumps(body).encode()
+        req = urllib.request.Request(base + path, data=data, method=method)  # noqa: S310
+        req.add_header("X-API-Key", key)
+        req.add_header("Accept", "application/json")
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=30) as response:  # noqa: S310
+            return json.load(response)
+
+    return request
+
+
+def list_labels(request, path):
+    """Return every label, following Plane's cursor pagination when present."""
+    labels, cursor = [], None
+    for _ in range(100):
+        page = request("GET", path + "?per_page=100" + (f"&cursor={cursor}" if cursor else ""))
+        if isinstance(page, list):
+            return labels + page
+        labels += page.get("results", [])
+        cursor = page.get("next_cursor")
+        if not page.get("next_page_results") or not cursor:
+            return labels
+    raise ValueError("Label list did not end; refusing to continue")
+
+
+def label(target, env=None, client=None):
+    """Ensure the awaiting-decision label exists in the target's Plane project.
+
+    client(base, key) returns request(method, path, body); tests inject a fake.
+    """
+    target = target.resolve(strict=True)
+    receipt_path = guard(target, RECEIPT)
+    if not receipt_path.is_file():
+        raise ValueError("No installation receipt; run apply first")
+    receipt = json.loads(receipt_path.read_text())
+    outdated(target, receipt)
+    base, workspace, project, key = settings(target, os.environ if env is None else env)
+    request = (client or http_client)(base, key)
+    path = f"/api/v1/workspaces/{workspace}/projects/{project}/labels/"
+    found = [x for x in list_labels(request, path) if x.get("name") == LABEL["name"]]
+    if found:
+        existing = found[0]
+        if any(existing.get(k) != v for k, v in LABEL.items()):
+            print(
+                f"Label {LABEL['name']} exists with a different colour or description; "
+                "left unchanged. Reconcile it in Plane."
+            )
+            return
+        print(f"Label {LABEL['name']} already exists ({existing['id']}); nothing created")
+    else:
+        request("POST", path, LABEL)
+        found = [x for x in list_labels(request, path) if x.get("name") == LABEL["name"]]
+        if len(found) != 1 or any(found[0].get(k) != v for k, v in LABEL.items()):
+            raise ValueError("Label write could not be verified by rereading; check Plane")
+        existing = found[0]
+        print(f"Created and verified label {LABEL['name']} ({existing['id']})")
+    receipt["label"] = {"name": LABEL["name"], "id": existing["id"]}
+    write(receipt_path, json.dumps(receipt, indent=2) + "\n")
+
+
+def outdated(target, receipt):
+    """Say so when an intact install still has the pre-rule block; never rewrite it."""
+    for rel, entry in receipt["entries"].items():
+        text = read(target / rel)
+        if entry["kind"] == "block" and BLOCK not in text and LEGACY_BLOCK in text:
+            print(
+                f"{rel}: Plane block predates the awaiting-decision rule. Revert, then apply "
+                "again to get the current block."
+            )
+        if entry["kind"] == "shim" and text == LEGACY_SHIM:
+            print(
+                f"{rel}: shim predates the worktree fallback. Revert, then apply again "
+                "to get the current shim."
+            )
 
 
 def revert(target):
@@ -313,7 +469,7 @@ def revert(target):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("operation", choices=["apply", "revert"])
+    parser.add_argument("operation", choices=["apply", "revert", "label"])
     parser.add_argument("target", type=Path, help="target project checkout")
     parser.add_argument("--url", help="hosted MCP endpoint written to .plane/local.env")
     parser.add_argument("--workspace", help="workspace slug written to .plane/local.env")
@@ -327,6 +483,8 @@ def main(argv=None):
                 "PLANE_PROJECT": args.project,
             }
             apply(args.target, values)
+        elif args.operation == "label":
+            label(args.target)
         else:
             revert(args.target)
     except (ValueError, OSError) as error:
