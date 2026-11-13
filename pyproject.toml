@@ -12,12 +12,24 @@ readme = "README.md"
 dependencies = ["mcp==2.3.*", "httpx2>=2.16,<3"]
 
 [dependency-groups]
-dev = ["pytest>=8,<10", "ruff>=0.14,<1", "pyyaml>=6,<7"]
+dev = [
+    "pytest>=8,<10",
+    "ruff>=0.14,<1",
+    "pyyaml>=6,<7",
+    "pytest-cov>=6",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
 filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["plane_toolchain"]
+
+[tool.coverage.report]
+# Floor is the measured total (81.7% at PTC-80) rounded down. Raise it; never lower it.
+fail_under = 81
 
 [tool.ruff]
 line-length = 100
