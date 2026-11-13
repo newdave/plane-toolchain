@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Workspace rename: appending to `records.jsonl` after a kill that left a torn final line first repairs the tail (adds the missing newline to a whole record, or truncates a partial one back to the last newline, fsynced), so the new record is no longer glued onto it and lost or refused as a corrupt line (PTC-58).
+
 ## [0.2.1] - 2026-11-14
 
 ### Fixed

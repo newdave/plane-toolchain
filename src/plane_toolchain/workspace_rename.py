@@ -155,6 +155,34 @@ def advance(directory, step, uid=None):
     return receipt
 
 
+def repair_journal_tail(descriptor):
+    """Make an open (O_APPEND) journal end in a newline before the next record is appended.
+
+    A kill mid-append can leave a final line with no newline. Gluing a new record onto it would
+    corrupt both. A tail that is a whole JSON object only lacks its newline: add it. Any other
+    tail is a partial record: truncate back to the last newline. Both are fsynced."""
+    size = os.fstat(descriptor).st_size
+    if not size or os.pread(descriptor, 1, size - 1) == b"\n":
+        return
+    tail, start = b"", size
+    while start > 0:
+        start = max(0, start - 65536)
+        tail = os.pread(descriptor, size - start - len(tail), start) + tail
+        if b"\n" in tail:
+            break
+    cut = tail.rfind(b"\n") + 1
+    fragment = tail[cut:]
+    try:
+        whole = isinstance(json.loads(fragment), dict)
+    except ValueError:
+        whole = False
+    if whole:
+        os.write(descriptor, b"\n")
+    else:
+        os.ftruncate(descriptor, start + cut)
+    os.fsync(descriptor)
+
+
 def append_journal(directory, record, uid=None):
     """Append one sorted-key JSON line to records.jsonl and fsync before returning."""
     uid = os.geteuid() if uid is None else uid
@@ -164,8 +192,10 @@ def append_journal(directory, record, uid=None):
     if not created:
         private_file_check(path, uid, False)
     line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
-    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    descriptor = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
+        if not created:
+            repair_journal_tail(descriptor)
         os.write(descriptor, line.encode())
         os.fsync(descriptor)
     finally:
@@ -1118,6 +1148,7 @@ SHIPPED = (
     set_receipt_field,
     backup_database,
     receipt_dir,
+    repair_journal_tail,
     append_journal,
     load_journal,
     sha256_file,
