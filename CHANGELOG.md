@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The MCP compat deploy writes `server.py.before-plane-toolchain-ce` and `plane-toolchain-ce-receipt.json`. It still reads the legacy names and, on a successful apply or repair, migrates them (receipt first, then the digest-verified backup, then the legacy receipt). It refuses with a reconcile message when legacy and neutral files disagree (PTC-28).
 - Legacy deploy names are centralised in `plane_toolchain/legacy.py`, with a test that rejects new references elsewhere. Behaviour is unchanged.
 
 ### Fixed

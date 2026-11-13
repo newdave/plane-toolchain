@@ -1,6 +1,6 @@
 """The only module allowed to spell legacy identifiers; neutral replacements sit beside them.
 
-Deploy code still reads and writes the legacy names on existing hosts. See
+Deploy code reads the legacy names on existing hosts; the MCP helper writes only neutral names. See
 docs/decisions/0001-neutral-names.md for the mapping and migration plan. A guard test
 (tests/test_legacy_names.py) rejects new references elsewhere.
 """
@@ -36,4 +36,6 @@ PAGES = {
 MCP = {
     "MCP_BACKUP_NAME": MCP_BACKUP_NAME,
     "MCP_RECEIPT_NAME": MCP_RECEIPT_NAME,
+    "NEUTRAL_MCP_BACKUP_NAME": NEUTRAL_MCP_BACKUP_NAME,
+    "NEUTRAL_MCP_RECEIPT_NAME": NEUTRAL_MCP_RECEIPT_NAME,
 }
