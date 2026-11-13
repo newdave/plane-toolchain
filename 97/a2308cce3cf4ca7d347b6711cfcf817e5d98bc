@@ -1,0 +1,24 @@
+CHANGELOG.md
+  s_066dd3ba2255bd::t_283193acdae8bc 27
+  s_066dd3ba2255bd::t_b3a22cd59c9fc2 32-33
+docs/extensions.md
+  s_066dd3ba2255bd::t_283193acdae8bc 74,94,122-126
+docs/decisions/0001-neutral-names.md
+  s_066dd3ba2255bd::t_283193acdae8bc 79,81-88,104-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "97a2308cce3cf4ca7d347b6711cfcf817e5d98bc",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
