@@ -258,27 +258,60 @@ def django_modules(orm, live, api):
     return modules
 
 
+class SnippetDied(BaseException):
+    """The snippet process died (SIGKILL, OOM): no handler in the snippet runs, and an open
+    transaction rolls back, as Postgres does for a dead connection."""
+
+
+class DyingStdout(io.StringIO):
+    """Stdout that kills the snippet right after its `n`-th journal line has been printed,
+    before the row that line journals is written."""
+
+    def __init__(self, n):
+        super().__init__()
+        self.n, self.seen, self.journal_line = n, 0, False
+
+    def write(self, text):
+        written = super().write(text)
+        if '"event": "journal"' in text:
+            self.journal_line = True
+        elif text == "\n" and self.journal_line:
+            self.journal_line = False
+            self.seen += 1
+            if self.seen == self.n:
+                raise SnippetDied
+        return written
+
+
 class ManageShell:
     """FakeDocker `on_manage_shell` handler: exec the piped program as `manage.py shell` does,
     with Django, Plane and requests bound to `orm`, a FakeLiveService and the API status.
 
     Records each request (`requests`). Stdout is what the program printed; an exception that
-    escapes the program exits 1, as the real shell would."""
+    escapes the program exits 1, as the real shell would. `die_at = (op, n)` kills the next
+    run of `op` once, after its n-th journal line (exit 137, output so far delivered)."""
 
     def __init__(self, orm, live=None, api_status=200):
         self.orm, self.live = orm, live or FakeLiveService()
         self.api = {"status": api_status}
         self.requests = []
+        self.die_at = None
 
     def __call__(self, text):
         modules = django_modules(self.orm, self.live, self.api)
         saved = {name: sys.modules.get(name) for name in modules}
         sys.modules.update(modules)
-        out = io.StringIO()
+        first = text.split("\n", 1)[0]
+        dying = self.die_at and f'"op": "{self.die_at[0]}"' in first
+        out = DyingStdout(self.die_at[1]) if dying else io.StringIO()
+        if dying:
+            self.die_at = None
         namespace = {"__name__": "__main__"}
         try:
             with contextlib.redirect_stdout(out):
                 exec(compile(text, "<manage.py shell>", "exec"), namespace)  # noqa: S102
+        except SnippetDied:
+            return out.getvalue(), 137
         except Exception:  # noqa: BLE001 - the real shell exits non-zero
             return out.getvalue(), 1
         finally:
