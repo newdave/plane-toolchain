@@ -1,0 +1,53 @@
+tests/fixtures/plane.sh.pre-venv.shfmt-i2ci
+  s_066dd3ba2255bd::t_1d515d15cb51c4 1-70
+tests/fixtures/plane.sh.pre-shfmt.shfmt-i0
+  s_066dd3ba2255bd::t_1d515d15cb51c4 1-70
+docs/project-install.md
+  s_066dd3ba2255bd::t_f134ef3eeac147 28,32
+tests/fixtures/plane.sh.legacy.shfmt-i4
+  s_066dd3ba2255bd::t_1d515d15cb51c4 1-53
+CHANGELOG.md
+  s_066dd3ba2255bd::t_f134ef3eeac147 11,39-40
+tests/fixtures/plane.sh.shfmt-i0
+  s_066dd3ba2255bd::t_1d515d15cb51c4 1-70
+mise.toml
+  s_066dd3ba2255bd::t_96e619e503e4fc 19
+tests/fixtures/plane.sh.pre-shfmt.shfmt-i4
+  s_066dd3ba2255bd::t_1d515d15cb51c4 1-70
+tests/fixtures/plane.sh.shfmt-i4
+  s_066dd3ba2255bd::t_1d515d15cb51c4 1-70
+tests/test_project_install.py
+  s_066dd3ba2255bd::t_96e619e503e4fc 436,462-465,467-469,492-498,568-588,592-612,664,680
+  s_066dd3ba2255bd::t_0b70bcc5de1fb3 589-591
+  s_066dd3ba2255bd::t_f134ef3eeac147 682
+tests/fixtures/plane.sh.shfmt-i2ci
+  s_066dd3ba2255bd::t_1d515d15cb51c4 1-70
+tests/fixtures/plane.sh.legacy.shfmt-i2ci
+  s_066dd3ba2255bd::t_1d515d15cb51c4 1-53
+tests/fixtures/plane.sh.pre-venv.shfmt-i4
+  s_066dd3ba2255bd::t_1d515d15cb51c4 1-70
+tests/fixtures/plane.sh.legacy.shfmt-i0
+  s_066dd3ba2255bd::t_1d515d15cb51c4 1-53
+tests/fixtures/plane.sh.pre-venv.shfmt-i0
+  s_066dd3ba2255bd::t_1d515d15cb51c4 1-70
+scripts/install_project.py
+  s_066dd3ba2255bd::t_d7f6c2727c0fab 54-60,62,64-66,68-72,74-75,77-88,521,529-542
+tests/fixtures/plane.sh.pre-shfmt.shfmt-i2ci
+  s_066dd3ba2255bd::t_1d515d15cb51c4 1-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "0be3837c95f9d6a54820a90c4a6b4cf81e49209e",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
