@@ -23,8 +23,11 @@ Without mise, run `python3 /path/to/plane-toolchain/scripts/install_project.py a
 | `CLAUDE.md` | Created as `@AGENTS.md` if absent; gets the same block if it exists without that include |
 | `.mcp.json`, `.codex/config.toml` | Add a `plane` server that runs `.plane/plane.sh mcp` |
 | `.claude/settings.json`, `.codex/hooks.json` | Add a SessionStart hook that runs `.plane/plane.sh session` |
+| `.claude/settings.json` | Also adds `plane` to `enabledMcpjsonServers`, so Claude connects without an approval prompt |
 
-Apply refuses, without writing anything, when a target already has a `plane` MCP server, a Plane block, a `.plane/plane.sh`, a symlinked path or a file it cannot parse. JSON files it edits are rewritten with two-space indentation. Repeating apply on an intact installation does nothing.
+Apply refuses, without writing anything, when a target already has a `plane` MCP server, a Plane block, a `.plane/plane.sh`, a symlinked path or a file it cannot parse. JSON files it edits are rewritten with two-space indentation. Repeating apply on an intact installation does nothing. It also refuses when `.claude/settings.json` is not valid JSON or its `enabledMcpjsonServers` is not a list.
+
+`plane` is appended to `enabledMcpjsonServers` once; other keys and servers are kept. If `plane` was already listed, the receipt records the file with the hook only, and revert never removes your entry. Otherwise revert removes only the `plane` entry (and the hook), so entries or keys you added to the file after apply survive, and a file the installer created is deleted when nothing else is left. Receipts from before this change have no such record; revert leaves the list alone for them.
 
 Revert removes only artefacts that are still as installed. JSON files (`.mcp.json`, hook files, the receipt) are compared as parsed JSON, so a prettier reformat does not block revert, and the shim ships shfmt-stable so a shfmt hook leaves it unchanged; any other edit is refused. Revert restores files the installer created or appended to. If anything was edited, it refuses and changes nothing; reconcile the file by hand first. Revert keeps ignored local files under `.plane/`, together with the `.gitignore` that protects them, and lists them.
 

@@ -509,3 +509,83 @@ def test_revert_refuses_semantically_changed_json(tmp_path):
 def test_shipped_shim_equals_shfmt_output_fixture():
     shipped = (ROOT / "templates/project/plane.sh").read_text()
     assert shipped == (ROOT / "tests/fixtures/plane.sh.shfmt").read_text()
+
+
+def enabled(target):
+    return json.loads((target / ".claude/settings.json").read_text()).get("enabledMcpjsonServers")
+
+
+def test_fresh_install_preapproves_plane_and_revert_removes_file_and_dir(tmp_path):
+    apply(tmp_path)
+    assert enabled(tmp_path) == ["plane"]
+    (tmp_path / ".plane/local.env").unlink()
+    revert(tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
+def test_existing_settings_keep_other_keys_and_revert_restores_them(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    original = (
+        json.dumps({"model": "m", "enabledMcpjsonServers": ["other"], "x": {"y": [1]}}, indent=2)
+        + "\n"
+    )
+    (tmp_path / ".claude/settings.json").write_text(original)
+    apply(tmp_path)
+    assert enabled(tmp_path) == ["other", "plane"]
+    assert json.loads((tmp_path / ".claude/settings.json").read_text())["model"] == "m"
+    (tmp_path / ".plane/local.env").unlink()
+    revert(tmp_path)
+    assert (tmp_path / ".claude/settings.json").read_text() == original
+
+
+def test_plane_already_listed_is_kept_by_revert(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    original = json.dumps({"enabledMcpjsonServers": ["plane", "other"]}, indent=2) + "\n"
+    (tmp_path / ".claude/settings.json").write_text(original)
+    apply(tmp_path)
+    assert enabled(tmp_path) == ["plane", "other"]
+    (tmp_path / ".plane/local.env").unlink()
+    revert(tmp_path)
+    assert (tmp_path / ".claude/settings.json").read_text() == original
+
+
+def test_settings_edited_after_apply_lose_only_plane(tmp_path):
+    apply(tmp_path)
+    path = tmp_path / ".claude/settings.json"
+    data = json.loads(path.read_text())
+    data["enabledMcpjsonServers"].append("mine")
+    data["model"] = "m"
+    path.write_text(json.dumps(data))
+    revert(tmp_path)
+    after = json.loads(path.read_text())
+    assert after == {"enabledMcpjsonServers": ["mine"], "model": "m"}
+
+
+def test_receipt_without_server_record_still_reverts(tmp_path):
+    apply(tmp_path)
+    receipt = tmp_path / ".plane/install.json"
+    data = json.loads(receipt.read_text())
+    data["entries"][".claude/settings.json"]["kind"] = "hooks-json"
+    receipt.write_text(json.dumps(data))
+    path = tmp_path / ".claude/settings.json"
+    old = json.loads(path.read_text())
+    del old["enabledMcpjsonServers"]
+    path.write_text(json.dumps(old))
+    (tmp_path / ".plane/local.env").unlink()
+    revert(tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
+def test_invalid_settings_json_refused_without_writing(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text("{nope")
+    with pytest.raises(ValueError, match="settings.json"):
+        apply(tmp_path)
+    assert snapshot(tmp_path) == {".claude/settings.json": "{nope"}
+
+
+def test_non_list_enabled_servers_refused(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text('{"enabledMcpjsonServers": "plane"}')
+    with pytest.raises(ValueError, match="enabledMcpjsonServers"):
+        apply(tmp_path)

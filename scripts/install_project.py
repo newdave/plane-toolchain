@@ -185,8 +185,8 @@ def insert_hook(old):
     return dump(data)
 
 
-def remove_hook(text, created):
-    data = load(text)
+def remove_hook(text, created, data=None):
+    data = load(text) if data is None else data
     groups = data.get("hooks", {}).get("SessionStart", [])
     if HOOK_GROUP not in groups:
         raise Changed("Plane SessionStart hook changed since installation")
@@ -196,6 +196,32 @@ def remove_hook(text, created):
     if not data["hooks"]:
         del data["hooks"]
     return None if created and not data else dump(data)
+
+
+def approved(data):
+    """Return the enabledMcpjsonServers list; refuse any other shape."""
+    servers = data.setdefault("enabledMcpjsonServers", [])
+    if not isinstance(servers, list):
+        raise ValueError("enabledMcpjsonServers is not a list")
+    return servers
+
+
+def insert_settings(old):
+    """Hook plus pre-approval of the plane MCP server, so Claude does not prompt for it."""
+    data = load(old)
+    approved(data).append("plane")
+    return insert_hook(dump(data))
+
+
+def remove_settings(text, created):
+    """Drop the hook and the plane approval this install added; other edits stay."""
+    data = load(text)
+    servers = data.get("enabledMcpjsonServers")
+    if isinstance(servers, list) and "plane" in servers:
+        servers.remove("plane")
+    if servers == []:
+        del data["enabledMcpjsonServers"]
+    return remove_hook(None, created, data)
 
 
 def insert_codex(old):
@@ -219,6 +245,7 @@ KINDS = {
     "block": (insert_block, remove_block),
     "mcp-json": (insert_server, remove_server),
     "hooks-json": (insert_hook, remove_hook),
+    "settings-json": (insert_settings, remove_settings),
     "codex-toml": (insert_codex, remove_codex),
 }
 
@@ -252,6 +279,18 @@ def guard(target, rel):
     raise ValueError(f"{rel}: outside target")
 
 
+def settings_kind(target):
+    """Pre-approval is recorded as its own kind, so revert removes `plane` only when apply
+    added it. Receipts from before it (hooks-json) and installs that found it listed never
+    touch the list. Unreadable settings fall through; apply then refuses with the reason."""
+    try:
+        text = read(guard(target, ".claude/settings.json"))
+        servers = load(text).get("enabledMcpjsonServers", [])
+        return "hooks-json" if isinstance(servers, list) and "plane" in servers else "settings-json"
+    except ValueError:
+        return "settings-json"
+
+
 def plan(target):
     """Return (relative path, kind) pairs for this target's current layout."""
     claude = read(guard(target, "CLAUDE.md"))
@@ -266,7 +305,7 @@ def plan(target):
         steps.append(("CLAUDE.md", "block"))
     return steps + [
         (".mcp.json", "mcp-json"),
-        (".claude/settings.json", "hooks-json"),
+        (".claude/settings.json", settings_kind(target)),
         (".codex/config.toml", "codex-toml"),
         (".codex/hooks.json", "hooks-json"),
     ]
