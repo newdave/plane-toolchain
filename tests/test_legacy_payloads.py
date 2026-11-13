@@ -12,7 +12,7 @@ def test_server_payloads_match_existing_deployment_receipts():
     expected = {
         # PTC-13: digest changed (canonical UUIDs, SDK guard, FASTMCP_HOST); see docs/extensions.md.
         # PTC-44: digest changed (ce_page update action); see docs/extensions.md.
-        # PTC-29: digest changed (comment wording only; TerrainLink provenance removed).
+        # PTC-29: digest changed (comment wording only; provenance line removed).
         "ce_tools.py": "3251a424debf574af740455e95abc4861c8edc7d2b4953fc2f29aa33700dc855",
         # PTC-19: digest changed (client messages from a fixed table; CodeQL stack-trace alerts).
         # PTC-44: digest changed (page update route, force_close via Redis); see docs/extensions.md.

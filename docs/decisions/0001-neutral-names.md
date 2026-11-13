@@ -1,6 +1,6 @@
 # 0001: Neutral names for legacy `terrainlink` identifiers
 
-- **Status:** Accepted on 2026-11-13 (owner sign-off recorded on PTC-25)
+- **Status:** Accepted; legacy reads removed early by owner override on 2026-11-13 (PTC-30)
 - **Date:** 2026-11-12
 - **Follow-up tasks:** PTC-26 (legacy-names module and guard), PTC-27 (Pages deploy),
   PTC-28 (MCP compat deploy), PTC-29 (prose and docs), PTC-23 (redeploy),
@@ -74,6 +74,14 @@ Legacy reads stay until all of these hold, and the owner confirms them on PTC-30
 Removal (PTC-30) deletes the legacy read paths and `legacy.py`, tightens the guard to
 CHANGELOG history only, and marks this ADR as superseded.
 
+### Removal (PTC-30)
+
+On 2026-11-13 the owner chose "Override the ADR now: remove the legacy reads and merge". This waived the deprecation window gates. At that time no tagged release shipped the read-both code (v0.1.0 predates it), the host had not been redeployed, the 30-day window had not started, and the host still had legacy labels, receipts and backups.
+
+The helpers now read and write only neutral names. One deviation from the plan above: `legacy.py` is kept, with four refuse-only names (the Pages backup suffix, the Pages source label, the MCP backup file and the MCP receipt). The Pages and MCP helpers refuse, before any change, when they find any of them. The reason is safety. An unmigrated host must be refused, not misread as a clean host. The refusal points to commit `1cb6153`, the last read-both commit, whose owner tasks migrate such a host.
+
+The guard now allows legacy names only in `legacy.py`, this ADR, the CHANGELOG, the guard itself and the tripwire test fixtures.
+
 ### Provenance line
 
 The README line "Extracted from TerrainLink under the MIT licence" is removed from the
@@ -83,8 +91,8 @@ attribution is lost.
 
 ### Agent rule
 
-The AGENTS.md rule "Preserve ... legacy rollback receipt names" is replaced by a rule
-that treats legacy `terrainlink` names as read-only compatibility inputs, kept in
+The AGENTS.md rule "Preserve ... legacy rollback receipt names" was replaced by a rule
+that treated legacy `terrainlink` names as read-only compatibility inputs, kept in
 `src/plane_toolchain/legacy.py` and changed only through the migration policy above. The
 rule also states that the current helpers still write legacy names until PTC-27 and PTC-28
 land, so nobody renames them ahead of the migration.
