@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Deploy helper follow-ups to PR #61 (PTC-82): an idempotent MCP `revert` clears a stale `reverting` marker from the receipt; Pages `prune` never removes the newest `<api>-pages-reverted-<digits>` container (the evidence and restart policy a killed revert needs to recover) and skips a container that vanishes between its listing and inspect; a failed Pages build redacts the repository path and any `lookup <host>` DNS host from the stderr tail; a rollback failure is reported on stderr before a deferred SIGTERM exits 143, and the Pages apply restart of the live API after a failed retire is held against SIGTERM too. Real-process tests cover SIGTERM during a failure-triggered Pages rollback. Not changed: the few bytecodes between entering an `except` and `hold_sigterm()` cannot be closed in Python without blocking SIGTERM during the whole health wait, and docker children keep the blocked mask during a rollback on purpose.
+
 ## [0.3.1] - 2026-11-14
 
 ### Fixed
