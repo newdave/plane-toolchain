@@ -1,0 +1,30 @@
+CHANGELOG.md
+  s_066dd3ba2255bd::t_d21e3db4c03158 13
+tests/fake_docker.py
+  s_066dd3ba2255bd::t_b0064045fb5491 14-17,32-39,132-134,154-155,163-200
+  s_066dd3ba2255bd::t_f3e43cfb7d5eb9 131,156-162
+  s_066dd3ba2255bd::t_ef4c81e2e99be2 201
+src/plane_toolchain/workspace_rename.py
+  s_066dd3ba2255bd::t_0fa31da1a6e9d8 236-238,318,320-322
+  s_066dd3ba2255bd::t_7da0d056bab8da 12,17,20-29,192-235,239-317,319,323-359
+tests/test_workspace_rename_deploy.py
+  s_066dd3ba2255bd::t_d1351436153ad8 238
+  s_066dd3ba2255bd::t_032bd6cc56859b 1-181,183-237,239-244
+  s_066dd3ba2255bd::t_3255a1517fdc41 182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "256bdcf090b21eb6d600abc53f6ddb7f15231620",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
