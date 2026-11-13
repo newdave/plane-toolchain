@@ -28,7 +28,7 @@ run = [
   "zsh -n scripts/plane-prompt.zsh",
 ]
 [tasks.test]
-run = "uv run --locked pytest -q"
+run = "uv run --locked pytest -q --cov --cov-report=term:skip-covered"
 env = { VIRTUAL_ENV = false }
 [tasks.check]
 depends = ["lint", "lint:ci", "test"]
@@ -66,6 +66,10 @@ run = "uv run --locked python -m plane_toolchain.pages_deploy build"
 env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-pages:revert"]
 run = "uv run --locked python -m plane_toolchain.pages_deploy revert"
+env = { VIRTUAL_ENV = false }
+[tasks."owner:plane-pages:prune"]
+description = "Dry run by default; PLANE_PAGES_PRUNE=yes removes retired derived containers"
+run = "uv run --locked python -m plane_toolchain.pages_deploy prune"
 env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-pages:check"]
 run = "uv run --locked python -m plane_toolchain.pages_deploy check"

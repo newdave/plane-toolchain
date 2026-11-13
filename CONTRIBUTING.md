@@ -30,3 +30,5 @@ Dry run on a scratch fork (never on the real repository):
 2. Push the tag `vX.Y.Z`. Expect the release to be created with the notes and a `Pin:` line.
 3. Negative test: tag a commit whose `check` is red, still running or absent (for example a commit pushed with CI skipped). Expect the gate step to fail with "no successful 'check' run" and no release.
 4. If a tag is pushed before CI finishes, re-run the workflow once `check` has passed.
+
+Run a subset of tests with `uv run pytest -q tests/test_x.py`. `mise run test` (and so `mise run check`) enforces the 81% coverage floor over the whole suite, so a subset run through it fails the floor.

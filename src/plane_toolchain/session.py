@@ -65,6 +65,7 @@ def local_layers(root: Path) -> list[Path]:
 
     A worktree's own config/local.env overrides the main checkout's key by key. The main
     checkout is consulted only when the worktree has neither config/local.env nor .deploy/env.
+    .deploy/env is a legacy layer kept for older checkouts: used only when config/local.env is absent.
     """
     local = root / "config/local.env"
     legacy = root / ".deploy/env"

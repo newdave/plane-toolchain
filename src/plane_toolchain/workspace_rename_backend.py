@@ -81,6 +81,7 @@ ROW_FIELDS = ("description_html", *REBUILD_FIELDS)
 # Journalled as base64 text; journal_values decodes them back to bytes.
 BINARY_COLUMNS = ("description_binary", "comment_binary")
 PAGE_SIZE = 200
+PROGRESS_EVERY = 500  # rows scanned between `progress` events (they re-arm the host's deadline)
 
 
 def _scope(key, workspace_id):
@@ -126,8 +127,10 @@ def _plan(orm, workspace_id, old, hosts, emit):
         names = [c for c, _ in columns]
         owner = () if key in UNOWNED else ("workspace_id",)
         rows = orm.models[key].all_objects.filter(**_scope(key, workspace_id))
-        rows = rows.values("pk", *owner, *names)
-        for row in rows:
+        rows = rows.values("pk", *owner, *names).iterator()
+        for scanned, row in enumerate(rows, 1):
+            if scanned % PROGRESS_EVERY == 0:
+                emit({"event": "progress"})
             if not _owned(key, row, workspace_id, old):
                 continue
             for column, kind in columns:
@@ -177,31 +180,103 @@ def _unfixed(orm, workspace_id, old, hosts, emit):
         for column, kind in columns:
             owner = () if key in UNOWNED else ("workspace_id",)
             rows = orm.models[key].all_objects.values("pk", *owner, column).iterator()
-            ids = [
-                str(r["pk"])
-                for r in rows
-                if not _owned(key, r, workspace_id, old) and _count(r[column], kind, old, hosts)
-            ]
+            ids = []
+            for scanned, r in enumerate(rows, 1):
+                if scanned % PROGRESS_EVERY == 0:
+                    emit({"event": "progress"})
+                if not _owned(key, r, workspace_id, old) and _count(r[column], kind, old, hosts):
+                    ids.append(str(r["pk"]))
             if ids:
                 total += len(ids)
                 _report(emit, table, column, ids, "other_workspace")
     for db_table, model, attname, column, kind in orm.text_columns():
         if (db_table, column) in in_scope:
             continue
-        ids = [
-            str(r["pk"])
-            for r in model.all_objects.values("pk", attname).iterator()
-            if _count(r[attname], kind, old, hosts)
-        ]
+        ids = []
+        for scanned, r in enumerate(model.all_objects.values("pk", attname).iterator(), 1):
+            if scanned % PROGRESS_EVERY == 0:
+                emit({"event": "progress"})
+            if _count(r[attname], kind, old, hosts):
+                ids.append(str(r["pk"]))
         if ids:
             total += len(ids)
             _report(emit, db_table, column, ids, "out_of_scope")
     return total
 
 
+def _expected_schema():
+    """What the snippet assumes of Plane CE's models: {model key: (table, {field: kind})}.
+
+    Kinds: "text" (html, stripped text, slug), "json" (must be jsonb), "binary" (bytea) or None
+    (the field only has to exist). Built from the scope tables above, so a new column added to a
+    step is probed without a second list."""
+    kinds = {"html": "text", "text": "text", "json": "json"}
+    schema = {key: (table, {}) for table, key, _ in REWRITE_SCOPE}
+    schema["workspace"] = ("workspaces", {"slug": "text", "deleted_at": None})
+    for table, key, columns in (*REWRITE_SCOPE, *SLUG_STEP):
+        for column, kind in columns:
+            schema[key][1][column] = kinds[kind]
+        if key not in UNOWNED:
+            schema[key][1]["workspace_id"] = None
+    for table, key, _ in REWRITE_SCOPE:
+        for column in DERIVED_COLUMNS.get(table, ()):
+            kind = "json" if column.endswith("_json") else "text"
+            kind = "binary" if column in BINARY_COLUMNS else kind
+            schema[key][1][column] = kind
+    return schema
+
+
+def probe_models(args, orm, emit, convert=None):
+    """Read-only: check each assumed model, table, manager and field against Plane's `_meta`.
+
+    Reports every mismatch by model and field name (`mismatch` events with the reason, and the
+    expected and found kind where they differ), never row content, then a summary. Models the
+    ORM does not carry are skipped: the real ORM fails to import without them."""
+    wanted_db = {"json": "jsonb", "binary": "bytea"}
+    bad = False
+
+    def mismatch(model, field, reason, **detail):
+        nonlocal bad
+        bad = True
+        emit({"event": "mismatch", "model": model, "field": field, "reason": reason, **detail})
+
+    for key, (table, fields) in sorted(_expected_schema().items()):
+        if key not in orm.models:
+            continue
+        if not orm.has_manager(key):
+            mismatch(key, "", "manager")
+        found_table = orm.table_name(key)
+        if found_table != table:
+            mismatch(key, "", "table", expected=table, found=found_table)
+        for field, kind in sorted(fields.items()):
+            found = orm.describe(key, field)
+            if found is None:
+                mismatch(key, field, "missing")
+            elif kind and found["kind"] != kind:
+                mismatch(key, field, "kind", expected=kind, found=found["kind"])
+            elif kind in wanted_db and found["db_type"] != wanted_db[kind]:
+                mismatch(key, field, "db_type", expected=wanted_db[kind], found=found["db_type"])
+    emit({"event": "summary", "ok": not bad, "step": "probe"})
+    return not bad
+
+
+def _probe_quietly(orm, emit):
+    """Run probe_models for check: mismatch events pass through, the probe's own summary does
+    not (check ends with its own). True when every assumption holds."""
+    events = []
+    ok = probe_models({}, orm, events.append)
+    for event in events:
+        if event["event"] != "summary":
+            emit(event)
+    return ok
+
+
 def check(args, orm, emit, convert=None):
     """Read-only: validate the rename and report planned rewrites. True if apply may run."""
     old, new = args["old"], args["new"]
+    if not _probe_quietly(orm, emit):
+        emit({"event": "summary", "ok": False})
+        return False
     hosts = hosts_from_url(orm.settings.WEB_URL)
     workspace_id = _workspace_id(orm, old, new, emit)
     if workspace_id is None:
@@ -692,6 +767,7 @@ def flush_cache(args, orm, emit, convert=None):
 
 OPERATIONS = {
     "check": check,
+    "probe": probe_models,
     "step_slug": step_slug,
     "step_rows": step_rows,
     "restore": restore,
@@ -756,7 +832,9 @@ def _django_orm():
     """Bind the real Plane models; only called inside the API container."""
     from django.apps import apps
     from django.conf import settings
+    from django.core.exceptions import FieldDoesNotExist
     from django.core.cache import cache
+    from django.db import connection
     from django.db import models as dj
     from django.db import transaction
     from plane.db.models import (
@@ -803,6 +881,26 @@ def _django_orm():
                 yield model._meta.db_table, Unfiltered(model), field.attname, field.column, kind
 
     orm.text_columns = lambda: list(text_columns())
+
+    def describe(key, name):
+        """{"kind", "db_type"} of a model field by name or attname, or None when it is absent."""
+        try:
+            field = models[key]._meta.get_field(name)
+        except FieldDoesNotExist:
+            return None
+        kinds = (
+            ("json", dj.JSONField),
+            ("binary", dj.BinaryField),
+            ("text", (dj.TextField, dj.CharField)),
+        )
+        kind = next((label for label, cls in kinds if isinstance(field, cls)), "other")
+        return {"kind": kind, "db_type": field.db_type(connection)}
+
+    orm.describe = describe
+    orm.table_name = lambda key: models[key]._meta.db_table
+    orm.has_manager = lambda key: (
+        hasattr(models[key], "all_objects") or hasattr(models[key], "_base_manager")
+    )
     return orm
 
 

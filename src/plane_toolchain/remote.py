@@ -8,13 +8,15 @@ import inspect
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 
 # A dropped SSH session sends SIGHUP and closes the output channel. Ignore both so the remote
 # operation and its rollback run to the end; `say` drops writes to a closed channel. Not
 # daemonised: a surviving session still sees the final message. SIGKILL or a reboot cannot be
-# caught; a later apply reconciles Pages containers, and MCP keeps a pending receipt.
+# caught; a later apply reconciles Pages containers, and MCP keeps a pending receipt. `guarded`
+# turns SIGTERM into SystemExit so the BaseException rollbacks run (PTC-66).
 PREAMBLE = (
     "signal.signal(signal.SIGHUP, signal.SIG_IGN)\nsignal.signal(signal.SIGPIPE, signal.SIG_IGN)\n"
 )
@@ -31,13 +33,21 @@ def docker(*args, **kw):
     return subprocess.run(["docker", *args], **kw).stdout or b""  # noqa: S603,S607
 
 
-def docker_ok(*args):
-    """Run the Docker CLI without raising or output; return whether it succeeded."""
-    result = subprocess.run(  # noqa: S603 - fixed docker argv
-        ["docker", *args],  # noqa: S607 - docker on PATH
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+def docker_ok(*args, timeout=None):
+    """Run the Docker CLI without raising or output; return whether it succeeded.
+
+    With a timeout (seconds) a hung command counts as failure.
+    """
+    extra = {} if timeout is None else {"timeout": timeout}
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed docker argv
+            ["docker", *args],  # noqa: S607 - docker on PATH
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **extra,
+        )
+    except subprocess.TimeoutExpired:
+        return False
     return result.returncode == 0
 
 
@@ -89,13 +99,42 @@ def quiet_failure(kind, failure, trace):
     say(kind.__name__ + ": " + str(failure) + where, sys.stderr)
 
 
+def terminate(signum, frame):
+    """SIGTERM handler for the remote program: unwind as SystemExit(143) so rollbacks run.
+
+    The first signal ignores further ones, so a second SIGTERM cannot cut the rollback short.
+    """
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    say("Terminated (SIGTERM); rolling back", sys.stderr)
+    sys.exit(143)
+
+
+def hold_sigterm():
+    """Block SIGTERM for a rollback; return the old mask for `release_sigterm`.
+
+    A SIGTERM that arrives meanwhile stays pending and is delivered (exit 143) once the
+    rollback is done, so it can never cut a rollback short.
+    """
+    return signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+
+
+def release_sigterm(mask):
+    signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+
+
 def guarded(entry):
-    """Prefix a remote entry stub with the quiet excepthook.
+    """Prefix a remote entry stub with the quiet excepthook and the SIGTERM handler.
 
     An uncaught exception on the host then prints one line instead of a traceback with host
-    paths, and the interpreter still exits 1. Tests that exec a program see exceptions as before.
+    paths, and the interpreter still exits 1. SIGTERM raises SystemExit(143) through the
+    program's `except BaseException` rollbacks. Tests that exec a program see exceptions as before.
     """
-    return inspect.getsource(quiet_failure) + "sys.excepthook = quiet_failure\n\n" + entry
+    return (
+        inspect.getsource(quiet_failure)
+        + inspect.getsource(terminate)
+        + "sys.excepthook = quiet_failure\nsignal.signal(signal.SIGTERM, terminate)\n\n"
+        + entry
+    )
 
 
 SSH_FAILED = (

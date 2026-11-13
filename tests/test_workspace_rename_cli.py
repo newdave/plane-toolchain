@@ -17,7 +17,13 @@ ENV = {
     "PLANE_API_CONTAINER": "secretapi",
     "PLANE_LIVE_URL": "https://secret-live.example:3000",
 }
-OPTIONAL = ("PLANE_RENAME_RECEIPT_DIR", "PLANE_API_URL", *workspace_rename.SERVICE_VARIABLES)
+OPTIONAL = (
+    "PLANE_RENAME_RECEIPT_DIR",
+    "PLANE_API_URL",
+    "PLANE_RENAME_ALLOW_UNDRAINED",
+    "PLANE_RENAME_SNIPPET_IDLE_SECONDS",
+    *workspace_rename.SERVICE_VARIABLES,
+)
 
 
 @pytest.fixture
@@ -154,6 +160,7 @@ def test_entry_wrapper_failure_message_leaks_no_config(run, monkeypatch, capsys)
     )
     import runpy
 
+    monkeypatch.delitem(sys.modules, "plane_toolchain.workspace_rename")
     with pytest.raises(SystemExit) as stop:
         runpy.run_module("plane_toolchain.workspace_rename", run_name="__main__")
     assert stop.value.code == 1

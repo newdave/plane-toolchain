@@ -1124,5 +1124,7 @@ def test_label_http_client_never_sends_key_across_a_redirect(code):
             request("POST", "/api/v1/labels/", {"name": "x"})
     finally:
         origin.shutdown()
+        origin.server_close()
         target.shutdown()
+        target.server_close()
     assert seen == []

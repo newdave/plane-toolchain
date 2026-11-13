@@ -25,7 +25,8 @@ Plane stores every relation and asset key against the workspace UUID, so only th
 Apply writes a receipt directory on the host (default `~/.local/state/plane-toolchain/workspace-rename` of the SSH user, mode 0700, files 0600):
 
 - `receipt.json`: the step, phase and rotation record.
-- `records.jsonl`: the journal, one line per rewritten row with its original values, written before the row changes.
+- `records.jsonl`: the journal, one line per rewritten row with its original values, written before the row changes. A kill mid-append can leave a torn last line; the next append repairs it first, so it never corrupts the record that follows.
+- `run.lock`: the lock file that keeps two runs apart.
 - `backup.dump`: a `pg_dump -Fc` of the Plane database, with its SHA-256 in the receipt.
 
 The receipt directory holds copies of workspace content. Keep it owner-only, never print or share it, and never delete it.
@@ -44,6 +45,8 @@ The receipt directory holds copies of workspace content. Keep it owner-only, nev
 | `PLANE_API_CONTAINER` | API container name. |
 | `PLANE_LIVE_URL` | Live URL reachable from the API container, used to rebuild editor documents. |
 | `PLANE_RENAME_RECEIPT_DIR` | Optional absolute path for the receipt directory on the host. |
+| `PLANE_RENAME_SNIPPET_IDLE_SECONDS` | Optional. Seconds a snippet may print nothing before it is treated as hung (default 900, up to 86400). |
+| `PLANE_RENAME_ALLOW_UNDRAINED` | Optional. Set to `1` to continue when jobs are still queued after the 60 second drain (see [Apply](#apply)). Any other value is refused. |
 | `PLANE_API_URL` | Optional API base URL, as seen inside the API container, for the health probe (default `http://127.0.0.1:8000`). |
 | `PLANE_DB_CONTAINER` | Optional, default `plane-db`. |
 | `PLANE_REDIS_CONTAINER` | Optional, default `plane-redis`. |
@@ -54,6 +57,8 @@ The receipt directory holds copies of workspace content. Keep it owner-only, nev
 | `PLANE_BEAT_CONTAINER` | Optional, default `plane-beat-worker`. |
 | `PLANE_LIVE_CONTAINER` | Optional, default `plane-live`. |
 | `PLANE_MQ_CONTAINER` | Optional, default `plane-mq` (RabbitMQ). |
+
+The API container must be a different container from every service container above (database, Redis, web, space, admin, worker, beat, Live and RabbitMQ): stopping a service would otherwise take the API container down. A clash is refused before any SSH call, and again on the host, with `the API container is also a service container`.
 
 The defaults are the Saltbox container names. On other hosts set every override that differs. Values are validated before any SSH call and never printed. The request, including the Django snippet, goes to the host on stdin; the remote exit code is the task's exit code. Ctrl-C locally prints guidance and exits 130, but the host program may still be running: check the receipt, then rerun the same task to resume, or run revert.
 
@@ -68,6 +73,10 @@ mise run owner:plane-workspace-rename:revert
 ## Verify before any live run
 
 The code is tested against fakes, not a real Plane. Verify these against a Plane CE v1.4.3 container before the first apply. Treat any mismatch as a blocker.
+
+`check` now probes the structural assumptions itself, read-only, through Django's `_meta`, and refuses (so apply refuses too) when one is wrong. For each model it checks the table name, that a manager exists (`all_objects`, else the base manager; every real Django model has the base manager, so this check only guards the test doubles and cannot be the cause of a live mismatch) and that every field the snippet reads or writes exists with the expected kind: the link columns are text, the JSON columns are JSON stored as `jsonb`, the binary columns are binary, and `workspace_id` exists on every owned model (including `Page` and `Description`). Every mismatch is printed by model and field, never row content, for example `Model mismatch: page.workspace_id (missing)` or `Model mismatch: notification.data (db_type, expected jsonb, found json)`. A mismatch means the snippet was written for a different Plane: do not work around it, report it. The list below is what the probe cannot know.
+
+The owner should run `mise run owner:plane-workspace-rename:check` once against the real v1.4.3 deployment (or a copy) and record the result: the probe has only been run against fakes.
 
 - `EmailNotificationLog` exists (table `email_notification_logs`) and has no workspace column. The snippet attributes a row to the old workspace when its `data` names `workspace_slug` with the old slug. A reused old slug or a nested key could match unrelated logs, so prefer the top-level key.
 - `Description.workspace_id` exists (table `descriptions`), and comments link to a `Description` row.
@@ -94,6 +103,7 @@ What each refusal means:
 | Message | Meaning and action |
 | --- | --- |
 | `container not found for service <key>` | A container name is wrong. Set the matching `PLANE_*_CONTAINER`. |
+| `Model mismatch: <model>.<field> (<reason>)` | The Plane models differ from what the snippet assumes (reasons `missing`, `kind`, `db_type`, `table`, `manager`). See [Verify before any live run](#verify-before-any-live-run). |
 | `old_missing_or_deleted` | No live workspace has the old slug. |
 | `new_slug_invalid` | The new slug breaks the format, is over 48 characters, is restricted or is already taken (soft-deleted workspaces keep their slug as `<slug>__<epoch>`). The detail says which. |
 | `old_slug_taken`, `workspace_mismatch` | The slugs and the journalled workspace disagree. Find which workspace holds each slug before doing anything else. |
@@ -131,8 +141,8 @@ Every refusal runs before the first stop, so a refused apply changes nothing. Th
 | Step | What happened |
 | --- | --- |
 | `pending` | Receipt written. |
-| `stopped` | Outage window starts. Beat stops, the queue drains for up to 60 seconds (leftover jobs are reported and never purged), then worker, web, space and admin stop. Live restarts to drop editor sessions. API, database, Redis and RabbitMQ stay up. |
-| `backed_up` | `pg_dump` to `backup.dump`, SHA-256 recorded. An empty dump is refused. |
+| `stopped` | Outage window starts. Beat stops, the queue drains for up to 60 seconds, then worker, web, space and admin stop. With the worker already stopped (a resume or revert after a failure) nothing can drain, so jobs still queued refuse at once with `N jobs still queued and the workers are stopped`, the jobs kept; `PLANE_RENAME_ALLOW_UNDRAINED=1` continues. Jobs still queued after the 60 seconds refuse (`N jobs still queued after 60 s; not purged`): the step fails before the slug change, services restart and the receipt goes back to `pending`, so the workers keep draining; rerun later, or set `PLANE_RENAME_ALLOW_UNDRAINED=1` to continue with jobs left (never purged). The same gate applies to revert. Live restarts to drop editor sessions. API, database, Redis and RabbitMQ stay up. |
+| `backed_up` | Free space in the receipt directory is checked first (at least the database size, and 64 MiB). Then `pg_dump` to `backup.dump`, which must read back with `pg_restore -f /dev/null` inside the database container before it is kept (that reads every data block and writes nothing, so it proves the dump is complete and readable, not that a restore would succeed); SHA-256 recorded. An empty, failed or unreadable dump is refused, and the failure carries a short stderr tail with quoted text redacted. |
 | `slug_done` | One transaction: the slug, comment HTML, linked descriptions and notification data. Originals are journalled first. |
 | `rows_done` | Work item and Page descriptions rewritten one row at a time, editor documents rebuilt through Live, originals journalled first. |
 | `cache_done` | The cache is cleared (`FLUSHDB`). |
@@ -141,7 +151,9 @@ Every refusal runs before the first stop, so a refused apply changes nothing. Th
 
 The outage lasts from `stopped` to `started`, and grows with the number of rows to rebuild through Live.
 
-A run that is already `complete` says `Rename already complete`. A rerun after a kill says `Resuming the rename from step <step>` and stops services again before continuing.
+Apply and revert hold an exclusive lock (`run.lock` in the receipt directory, mode 0600) for the whole run. A second run, for example a double start or a rerun while the host program of a dropped SSH session is still going, refuses before it stops anything with `Refused: another apply or revert holds the lock on the receipt directory`. Wait for the first run, or look on the host for it. The lock goes when the run ends or its process dies. `check` takes no lock. The lock belongs to the receipt directory: it must be on a local filesystem (`flock` is unreliable on NFS), and the directory must never be archived or moved while `run.lock` is held. A revert with no receipt directory (or none holding a receipt) refuses at once with `no receipt for this rename; nothing to revert`, before any Docker call.
+
+A run that is already `complete` runs the health check again and says `Rename already complete and healthy`, with how to archive the receipt directory (see [After a finished revert](#after-a-finished-revert); the same applies after a completed apply before an opposite rename, which otherwise refuses with `receipt belongs to a different rename`). A failing health check refuses instead. A rerun after a kill says `Resuming the rename from step <step>` and stops services again before continuing.
 
 ### Failures before slug_done
 
@@ -161,6 +173,15 @@ There is no automatic rollback. Message: `Rename stopped at <step> (moving to <t
 `Rename health check failed: ...` means services are running and the receipt is left at `started`. Investigate, then rerun apply to recheck, or run revert.
 
 Snippet errors such as `convert_failed`, `row_changed` (a row changed after it was read), `write_failed` or `cache_clear_failed` name only ids and error types.
+
+### Hung or orphaned snippets
+
+Each snippet runs in the API container with a per-run `PLANE_RENAME_RUN=<token>` in its environment. Stopping the local `docker exec` client does not stop that Python process, so after any abort the tool runs a small stdlib script in the container (`python -c`, reading `/proc`) that sends SIGTERM and then SIGKILL to the marked processes and confirms none is left. Only then does the failure continue to the usual handling (restart and reset before the slug change, or stay stopped after it).
+
+- A snippet that prints nothing for 15 minutes is treated as hung and stopped: `<op> timed out after 900 s without output; the snippet process was stopped in the API container`. The timer restarts on every output line, and the scans in `check` print a `progress` line every 500 rows, so a long step that keeps answering is never cut off. Set `PLANE_RENAME_SNIPPET_IDLE_SECONDS` (seconds, up to 86400) to change the 900.
+- `snippet process could not be confirmed stopped` means the kill could not be confirmed. Services are not restarted and the receipt is not reset. Find and stop the process by hand in the API container (its environment holds `PLANE_RENAME_RUN`), then rerun apply or revert.
+- Each marker carries an id of the receipt directory (`PLANE_RENAME_RUN=<dir id>:<token>`). Apply and revert sweep first: any process marked by this directory's id, left by an earlier killed run, is stopped before the preflight. A marked process of a different directory is a live run elsewhere on the instance: the run refuses with `another rename run is active on this instance` and kills nothing. The run also refuses (`could not confirm that no earlier snippet is running`) if that cannot be confirmed. `check` never sweeps, because it takes no lock and could meet a live run's snippet.
+- The kill script needs `python` and a readable `/proc` in the API container, as the Plane backend image has.
 
 ## Revert
 
