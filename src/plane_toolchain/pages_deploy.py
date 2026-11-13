@@ -215,8 +215,9 @@ def build_image(base, source, digest, docker):
     """Build the derived image tag for `digest` from `base` and `source`; return the tag.
 
     stdout is discarded. On failure the error carries the exit code and a bounded tail of
-    docker's stderr (last 5 lines, 200 characters each): the build context holds no runtime
-    configuration, so none can appear.
+    docker's stderr (last 5 lines, 200 characters each, with the base image reference, its
+    repository path and any `lookup <host>` DNS host redacted): the build context holds no
+    runtime configuration, so none can appear.
     """
     image = NEUTRAL_PAGES_IMAGE_PREFIX + digest[:16]
     try:
@@ -231,9 +232,18 @@ def build_image(base, source, digest, docker):
         )
     except subprocess.CalledProcessError as failure:
         text = (failure.stderr or b"").decode(errors="replace")
-        # Docker echoes the base image reference; keep the registry host out of the message.
-        for reference in (base, base.partition("@")[0], base.partition("/")[0]):
+        # Docker echoes the base image reference; keep the registry host and repository path out
+        # of the message, longest first so the shorter ones do not split a longer match.
+        repository = base.partition("@")[0]
+        for reference in (
+            base,
+            repository,
+            repository.partition("/")[2],
+            repository.partition("/")[0],
+        ):
             text = text.replace(reference, "<base image>") if reference else text
+        # A DNS failure names the host actually dialled, which may differ from the reference.
+        text = re.sub(r"\blookup \S+", "lookup <host>", text)
         lines = text.splitlines()
         tail = " | ".join(line.strip()[:200] for line in lines[-5:] if line.strip())
         raise ValueError(
