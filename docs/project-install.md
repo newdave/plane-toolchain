@@ -9,7 +9,7 @@ mise run owner:project:label -- /path/to/project      # optional, needs PLANE_AP
 mise run owner:project:revert -- /path/to/project
 ```
 
-Without mise, run `python3 /path/to/plane-toolchain/scripts/install_project.py apply /path/to/project`. Apply also accepts `--url`, `--workspace` and `--project` to seed the non-secret values. It never accepts the API key.
+Without mise, run `python3 /path/to/plane-toolchain/scripts/install_project.py apply /path/to/project`. Apply also accepts `--url`, `--workspace` and `--project` to seed the non-secret values. It never accepts the API key. When apply finishes it lists only the `PLANE_MCP_URL`, `PLANE_WORKSPACE` and `PLANE_PROJECT` values still missing from `.plane/local.env`, then points at `.plane/plane.sh enable`. The shim, the bridge and the owner tasks run `uv` with `VIRTUAL_ENV` cleared, so an active unrelated virtualenv gives no uv warning.
 
 ## What apply changes
 

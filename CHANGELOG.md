@@ -36,6 +36,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The installed shim, the MCP bridge and the `plane:enable`, `plane:disable`, `owner:plane:apply`, `owner:plane:revert` and `owner:project:*` mise tasks run `uv` with `VIRTUAL_ENV` cleared, so an active unrelated virtualenv no longer triggers the uv "does not match the project environment" warning. The post-apply message names only the `.plane/local.env` values still missing or empty, and otherwise points straight at `.plane/plane.sh enable`. Installs with the previous shim still revert (PTC-56).
 - Project install revert accepts installs reformatted by the target's prettier and shfmt hooks. The installed `.mcp.json`, hook JSON and receipt are compared as parsed JSON, not bytes; `.plane/plane.sh` is now shfmt-stable, and the previous (unformatted) shim is still accepted on revert. Content changes are still refused as edits (PTC-54).
 - The Plane bridge and session status resolve git-ignored `config/local.env`, `config/plane.enc.env` and `tools/mcp-remote/node_modules` from the main checkout when a linked worktree lacks them (`config/local.env` merges per key, the worktree overriding). Only linked worktrees fall back.
 - Pages revert accepts a derived container built from older source, so an upgrade can run revert, then apply.

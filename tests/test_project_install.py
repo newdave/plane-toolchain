@@ -461,6 +461,8 @@ def test_revert_survives_prettier_style_json_and_shfmt_stable_shell(tmp_path, st
 
 SHIM_FORMS = [
     "templates/project/plane.sh",
+    "templates/project/plane.sh.pre-venv",
+    "tests/fixtures/plane.sh.pre-venv.shfmt",
     "templates/project/plane.sh.pre-shfmt",
     "tests/fixtures/plane.sh.pre-shfmt.shfmt",
     "templates/project/plane.sh.legacy",
@@ -589,3 +591,72 @@ def test_non_list_enabled_servers_refused(tmp_path):
     (tmp_path / ".claude/settings.json").write_text('{"enabledMcpjsonServers": "plane"}')
     with pytest.raises(ValueError, match="enabledMcpjsonServers"):
         apply(tmp_path)
+
+
+def test_shim_clears_virtual_env_for_uv(tmp_path):
+    apply(tmp_path)
+    toolchain = tmp_path / "tc"
+    (toolchain / "src/plane_toolchain").mkdir(parents=True)
+    (toolchain / "src/plane_toolchain/session.py").write_text("")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    out = tmp_path / "uv.out"
+    fake = bin_dir / "uv"
+    fake.write_text(f'#!/bin/sh\necho "${{VIRTUAL_ENV-unset}}" > {out}\n')
+    fake.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "VIRTUAL_ENV": "/somewhere/else",
+        "PLANE_TOOLCHAIN": str(toolchain),
+    }
+    subprocess.run([str(tmp_path / ".plane/plane.sh"), "enable"], env=env, check=True)  # noqa: S603
+    assert out.read_text().strip() == "unset"
+
+
+def test_uv_run_tasks_and_bridge_clear_virtual_env():
+    tasks = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]
+    names = [
+        "plane:enable",
+        "plane:disable",
+        "owner:plane:apply",
+        "owner:plane:revert",
+        "owner:project:apply",
+        "owner:project:label",
+        "owner:project:revert",
+    ]
+    for name in names:
+        assert tasks[name]["run"].startswith("env -u VIRTUAL_ENV uv run "), name
+    for line in (ROOT / "scripts/plane-mcp.sh").read_text().splitlines():
+        if "uv run" in line:
+            assert "env -u VIRTUAL_ENV uv run" in line
+
+
+def next_step(tmp_path, capsys, values):
+    apply(tmp_path, values)
+    return capsys.readouterr().out.split("Next:", 1)[1]
+
+
+def test_hint_names_only_missing_values(tmp_path, capsys):
+    out = next_step(tmp_path, capsys, {"PLANE_WORKSPACE": "demo"})
+    assert "Set PLANE_MCP_URL and PLANE_PROJECT in .plane/local.env" in out
+    assert "PLANE_WORKSPACE" not in out
+
+
+def test_hint_lists_all_when_nothing_seeded(tmp_path, capsys):
+    out = next_step(tmp_path, capsys, None)
+    assert "Set PLANE_MCP_URL, PLANE_WORKSPACE and PLANE_PROJECT in .plane/local.env" in out
+
+
+def test_no_set_hint_when_all_seeded(tmp_path, capsys):
+    values = {"PLANE_MCP_URL": "https://x.example", "PLANE_WORKSPACE": "w", "PLANE_PROJECT": "p"}
+    out = next_step(tmp_path, capsys, values)
+    assert "Set PLANE" not in out
+    assert ".plane/plane.sh enable" in out
+
+
+def test_hint_when_local_env_preexists(tmp_path, capsys):
+    (tmp_path / ".plane").mkdir()
+    (tmp_path / ".plane/local.env").write_text("PLANE_WORKSPACE=w\nPLANE_PROJECT=\n")
+    out = next_step(tmp_path, capsys, None)
+    assert "Set PLANE_MCP_URL and PLANE_PROJECT in .plane/local.env" in out

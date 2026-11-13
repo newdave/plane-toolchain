@@ -62,8 +62,11 @@ KNOWN_SHIM_SHA256 = {
     "915912c27ab6315ac4963a6da4737671b79330ec24da8eb1a5840e2cf57de867",
     # templates/project/plane.sh.pre-shfmt: shim before PTC-54 (PTC-47 worktree fallback).
     "35124f25fcdf23a3c5b300915cf752161e4721201d2cdc19f1fae30be2c73710",
-    # Its shfmt form equals the PTC-54 template (digest ba068b6d...), accepted as current.
+    # templates/project/plane.sh.pre-venv: PTC-54 shim before the VIRTUAL_ENV clearing.
+    # It is shfmt-stable, so its shfmt form is the same bytes.
+    "ba068b6d1f6ad6b1e09c1e6d1e979587eda7ddc675bdfa9dd2d715ef079b97a9",
 }
+SETTING_NAMES = ("PLANE_MCP_URL", "PLANE_WORKSPACE", "PLANE_PROJECT")
 GITIGNORE = (
     "# Local Plane values, secrets and switch state; never commit them.\n"
     "local.env\n*.enc.env\nenable-backup.json\n.plane-*\n.backup-*\n"
@@ -342,6 +345,16 @@ def local_env(toolchain, values):
     )
 
 
+def missing_values(text):
+    """Names of the settings still unset or empty in local.env text (values are never shown)."""
+    found = {}
+    for line in text.splitlines():
+        name, sep, value = line.partition("=")
+        if sep:
+            found[name.strip()] = value.strip()
+    return [name for name in SETTING_NAMES if not found.get(name)]
+
+
 def apply(target, values=None, toolchain=SOURCE):
     target = target.resolve(strict=True)
     receipt_path = guard(target, RECEIPT)
@@ -369,8 +382,12 @@ def apply(target, values=None, toolchain=SOURCE):
     receipt = {"version": 1, "directories": created, "entries": entries}
     write(receipt_path, json.dumps(receipt, indent=2) + "\n")
     print("Installed Plane integration; review the diff before committing.")
-    print("Next: run 'mise run setup' in the toolchain, set .plane/local.env values,")
-    print("run '.plane/plane.sh enable', then restart Codex or Claude sessions.")
+    print("Next: run 'mise run setup' in the toolchain.")
+    missing = missing_values(seeded if seeded is not None else local.read_text())
+    if missing:
+        names = ", ".join(missing[:-1]) + (" and " if len(missing) > 1 else "") + missing[-1]
+        print(f"Set {names} in .plane/local.env.")
+    print("Then run '.plane/plane.sh enable' and restart Codex or Claude sessions.")
 
 
 def settings(target, env):

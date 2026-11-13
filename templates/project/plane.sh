@@ -61,7 +61,7 @@ enable | disable)
     exit 1
   }
   cd "$toolchain"
-  exec uv run --locked python -m plane_toolchain.config "$1"
+  exec env -u VIRTUAL_ENV uv run --locked python -m plane_toolchain.config "$1"
   ;;
 *)
   echo "Usage: .plane/plane.sh mcp|session|status|enable|disable" >&2

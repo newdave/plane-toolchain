@@ -32,15 +32,15 @@ depends = ["lint", "lint:ci", "test"]
 [tasks."plane:cli"]
 run = "uv run --locked python -m plane_toolchain.cli"
 [tasks."plane:enable"]
-run = "uv run --locked python -m plane_toolchain.config enable"
+run = "env -u VIRTUAL_ENV uv run --locked python -m plane_toolchain.config enable"
 [tasks."plane:disable"]
-run = "uv run --locked python -m plane_toolchain.config disable"
+run = "env -u VIRTUAL_ENV uv run --locked python -m plane_toolchain.config disable"
 [tasks."plane:status"]
 run = "python3 src/plane_toolchain/session.py status"
 [tasks."owner:plane:apply"]
-run = "uv run --locked python -m plane_toolchain.config apply"
+run = "env -u VIRTUAL_ENV uv run --locked python -m plane_toolchain.config apply"
 [tasks."owner:plane:revert"]
-run = "uv run --locked python -m plane_toolchain.config revert"
+run = "env -u VIRTUAL_ENV uv run --locked python -m plane_toolchain.config revert"
 [tasks."owner:plane-mcp-compat:apply"]
 run = "uv run --locked python -m plane_toolchain.mcp_deploy apply"
 [tasks."owner:plane-mcp-compat:revert"]
@@ -68,8 +68,8 @@ run = "uv run --locked python scripts/github_examples.py apply"
 [tasks."owner:github-examples:revert"]
 run = "uv run --locked python scripts/github_examples.py revert"
 [tasks."owner:project:apply"]
-run = "uv run --locked python scripts/install_project.py apply"
+run = "env -u VIRTUAL_ENV uv run --locked python scripts/install_project.py apply"
 [tasks."owner:project:label"]
-run = "uv run --locked python scripts/install_project.py label"
+run = "env -u VIRTUAL_ENV uv run --locked python scripts/install_project.py label"
 [tasks."owner:project:revert"]
-run = "uv run --locked python scripts/install_project.py revert"
+run = "env -u VIRTUAL_ENV uv run --locked python scripts/install_project.py revert"
