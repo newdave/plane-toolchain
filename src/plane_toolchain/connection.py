@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import time
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -34,40 +35,45 @@ def paced(call, *, clock=time.monotonic, sleep=asyncio.sleep):
     return wrapped
 
 
+class ToolError(ValueError):
+    """The code's own MCP tool failure; its message is fixed text, safe to print."""
+
+
 def decode(result) -> Any:
     """Unwrap FastMCP union results without mistaking an API error for data."""
     if result.is_error:
-        raise ValueError("Plane MCP tool failed; remote outcome must be checked")
+        raise ToolError("Plane MCP tool failed; remote outcome must be checked")
     data = result.structured_content
     if data is None:
         blocks = [block.text for block in result.content if block.type == "text"]
         if len(blocks) != 1:
-            raise ValueError("Unexpected MCP result")
+            raise ToolError("Unexpected MCP result")
         data = json.loads(blocks[0])
     elif isinstance(data, dict) and set(data) == {"result"}:
         data = data["result"]
     if not isinstance(data, (dict, list)) and data is not None:
-        raise ValueError("Unexpected MCP result")
+        raise ToolError("Unexpected MCP result")
     return data
 
 
-def configuration() -> Settings:
+def configuration(env: Mapping[str, str] | None = None) -> Settings:
     """Validate connection values without exposing credentials."""
-    settings = Settings.from_env(os.environ)
+    settings = Settings.from_env(os.environ if env is None else env)
     return settings
 
 
 @asynccontextmanager
-async def connection():
+async def connection(env: Mapping[str, str] | None = None):
     """Yield an MCP tool caller; never log transport bodies or authentication."""
-    configuration()
+    env = os.environ if env is None else env
+    configuration(env)
     headers = {
-        "Authorization": "Bearer " + os.environ["PLANE_API_KEY"],
-        "x-workspace-slug": os.environ["PLANE_WORKSPACE"],
+        "Authorization": "Bearer " + env["PLANE_API_KEY"],
+        "x-workspace-slug": env["PLANE_WORKSPACE"],
     }
     async with (
         httpx2.AsyncClient(headers=headers, timeout=60) as http,
-        streamable_http_client(os.environ["PLANE_MCP_URL"], http_client=http) as streams,
+        streamable_http_client(env["PLANE_MCP_URL"], http_client=http) as streams,
         ClientSession(streams[0], streams[1]) as session,
     ):
         await session.initialize()
@@ -76,7 +82,7 @@ async def connection():
 
         async def call(name: str, arguments: dict) -> Any:
             if name not in names:
-                raise ValueError("Required MCP tool unavailable")
+                raise ToolError("Required MCP tool unavailable")
             result = await session.call_tool(name, arguments)
             return decode(result)
 

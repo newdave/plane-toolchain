@@ -26,7 +26,7 @@ Neither CLI replaces the CE extensions. Python's CLI is the stronger optional st
 
 For this toolchain, build a thin MCP client: translate command arguments into existing tools, preserve their permissions and reuse the bounded transport. Start with task list/show/update, comments, Pages list/read/create and relations list/add, with JSON output and predictable exit codes. Keep business logic in the MCP server and keep the CE extensions beneath it. Existing Page editing remains unsupported.
 
-The general-purpose CLI is tracked in Plane and is not yet implemented. The GitHub automation driver demonstrates MCP calls but does not constitute that CLI.
+The general-purpose CLI is described in [CLI](cli.md). The GitHub automation driver demonstrates MCP calls but is separate from that CLI.
 
 ## Upstream sources
 

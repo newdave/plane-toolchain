@@ -33,6 +33,7 @@ Follow [configuration](docs/configuration.md) before enabling remote access. Sta
 - [Workspace slug rename runbook](docs/workspace-rename.md)
 - [Installing into other projects](docs/project-install.md)
 - [GitHub Actions integration](docs/github-actions.md)
+- [Plane CLI](docs/cli.md)
 - [Live CLI evaluation and recommendation](docs/cli-evaluation.md)
 - [Contributing](CONTRIBUTING.md)
 

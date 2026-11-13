@@ -1,6 +1,6 @@
 """Small Actions example: use MCP, explicit IDs and verified remote writes.
 
-This is an automation example, not the planned general-purpose CLI.
+This is an automation example, not the general-purpose CLI (see docs/cli.md).
 """
 
 import asyncio

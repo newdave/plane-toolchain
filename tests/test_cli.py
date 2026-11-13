@@ -1,0 +1,624 @@
+import asyncio
+import io
+import json
+import logging
+from contextlib import asynccontextmanager
+
+import anyio
+import pytest
+from plane_toolchain.connection import ToolError
+from plane_toolchain.cli import ReadbackError, UsageError, classify, environment, main
+
+PROJECT = "00000000-0000-0000-0000-000000000001"
+OTHER = "00000000-0000-0000-0000-000000000002"
+KEY = "plane_api_FAKEKEY123"
+ENV = {
+    "PLANE_ENABLED": "true",
+    "PLANE_MCP_URL": "https://plane.example.com/mcp",
+    "PLANE_WORKSPACE": "example-workspace",
+    "PLANE_PROJECT": PROJECT,
+    "PLANE_API_KEY": KEY,
+}
+
+
+class Fake:
+    def __init__(self, results=None, error=None):
+        self.calls = []
+        self.entered = 0
+        self.results = list(results or [])
+        self.error = error
+
+    @asynccontextmanager
+    async def connect(self, env=None):
+        self.entered += 1
+
+        async def call(name, args):
+            self.calls.append((name, args))
+            if self.error:
+                raise self.error
+            return self.results.pop(0)
+
+        yield call
+
+
+def run(argv, fake, tmp, env=ENV):
+    out, err = io.StringIO(), io.StringIO()
+    code = main(argv, env=env, root=tmp, connect=fake.connect, out=out, err=err)
+    return code, out.getvalue(), err.getvalue()
+
+
+def test_task_list_calls_workitem_list_without_pql_and_prints_json(tmp_path):
+    result = {"results": [{"id": "a"}]}
+    fake = Fake([result])
+    code, out, _ = run(["task", "list"], fake, tmp_path)
+    assert code == 0
+    assert fake.calls == [("workitem", {"action": "list", "project_id": PROJECT})]
+    assert json.loads(out) == result
+
+
+def test_task_list_passes_paging(tmp_path):
+    fake = Fake([{}])
+    run(["task", "list", "--per-page", "5", "--cursor", "c"], fake, tmp_path)
+    assert fake.calls[0][1] == {
+        "action": "list",
+        "project_id": PROJECT,
+        "per_page": 5,
+        "cursor": "c",
+    }
+
+
+def test_task_show_resolves_lowercase_identifier(tmp_path):
+    fake = Fake([{"project": OTHER, "id": W1}, {"id": W1}])
+    code, out, _ = run(["task", "show", "ptc-12"], fake, tmp_path)
+    assert code == 0
+    assert fake.calls == [
+        ("workitem", {"action": "retrieve_by_identifier", "workitem_identifier": "PTC-12"}),
+        ("workitem", {"action": "retrieve", "project_id": OTHER, "workitem_id": W1}),
+    ]
+    assert json.loads(out) == {"id": W1}
+
+
+def test_task_show_uuid_uses_default_project(tmp_path):
+    fake = Fake([{"id": "x"}])
+    run(["task", "show", OTHER], fake, tmp_path)
+    assert fake.calls == [
+        ("workitem", {"action": "retrieve", "project_id": PROJECT, "workitem_id": OTHER})
+    ]
+
+
+def test_task_show_rejects_bad_reference_without_connecting(tmp_path):
+    fake = Fake()
+    code, out, err = run(["task", "show", "not-a-ref!"], fake, tmp_path)
+    assert code == 2
+    assert fake.entered == 0
+    assert out == ""
+    assert err.startswith("plane: ")
+
+
+def test_project_option_overrides_default(tmp_path):
+    fake = Fake([{}, {}])
+    run(["--project", OTHER, "task", "list"], fake, tmp_path)
+    run(["task", "list", "--project", OTHER], fake, tmp_path)
+    assert [c[1]["project_id"] for c in fake.calls] == [OTHER, OTHER]
+
+
+def test_bad_project_option_is_usage_error(tmp_path):
+    fake = Fake()
+    code, _, _ = run(["--project", "x", "task", "list"], fake, tmp_path)
+    assert code == 2
+    assert fake.entered == 0
+
+
+def test_disabled_plane_is_configuration_error(tmp_path):
+    fake = Fake()
+    code, _, err = run(["task", "list"], fake, tmp_path, {**ENV, "PLANE_ENABLED": "false"})
+    assert code == 3
+    assert err.startswith("plane: ")
+    assert fake.entered == 0
+
+
+def test_unexpected_error_hides_key_and_traceback(tmp_path):
+    fake = Fake(error=RuntimeError(f"boom {KEY}"))
+    code, out, err = run(["task", "list"], fake, tmp_path)
+    assert code == 4
+    assert err == "plane: Plane MCP request failed; remote outcome must be checked\n"
+    assert KEY not in out + err
+
+
+def test_value_error_from_transport_is_exit_4(tmp_path):
+    fake = Fake(error=ToolError("Required MCP tool unavailable"))
+    code, _, err = run(["task", "list"], fake, tmp_path)
+    assert code == 4
+    assert err == "plane: Required MCP tool unavailable\n"
+
+
+def test_argparse_usage_exit_code(tmp_path):
+    assert run(["bogus"], Fake(), tmp_path)[0] == 2
+
+
+def test_environment_reads_files_but_never_key_from_files(tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/local.env").write_text(f"PLANE_PROJECT={PROJECT}\nPLANE_API_KEY=x\n")
+    merged = environment({}, tmp_path)
+    assert merged["PLANE_PROJECT"] == PROJECT
+    assert "PLANE_API_KEY" not in merged
+    assert environment({"PLANE_API_KEY": KEY}, tmp_path)["PLANE_API_KEY"] == KEY
+    assert environment({"PLANE_PROJECT": OTHER}, tmp_path)["PLANE_PROJECT"] == OTHER
+
+
+def test_connection_validates_the_passed_environment_not_os_environ(monkeypatch):
+    import asyncio
+
+    from plane_toolchain.connection import connection
+
+    for name in ENV:
+        monkeypatch.setenv(name, ENV[name])
+
+    async def enter(env):
+        async with connection(env):
+            pass
+
+    with pytest.raises(ValueError, match="disabled"):
+        asyncio.run(enter({**ENV, "PLANE_ENABLED": "false"}))
+
+
+def test_environment_enabled_falls_back_to_switch(tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/local.env").write_text("PLANE_ENABLED=true\n")
+    assert environment({}, tmp_path)["PLANE_ENABLED"] == "true"
+    assert environment({"PLANE_ENABLED": "false"}, tmp_path)["PLANE_ENABLED"] == "false"
+
+
+def grouped(error):
+    """A connect whose body runs in a real anyio task group, like the transport."""
+
+    class Grouped(Fake):
+        @asynccontextmanager
+        async def connect(self, env=None):
+            self.entered += 1
+
+            async def call(name, args):
+                raise error
+
+            async with anyio.create_task_group():
+                yield call
+
+    return Grouped()
+
+
+def test_grouped_value_error_keeps_message_and_exit_4(tmp_path):
+    fake = grouped(ToolError("Required MCP tool unavailable"))
+    code, _, err = run(["task", "list"], fake, tmp_path)
+    assert (code, err) == (4, "plane: Required MCP tool unavailable\n")
+
+
+def test_grouped_readback_error_is_exit_5(tmp_path):
+    code, _, err = run(["task", "list"], grouped(ReadbackError()), tmp_path)
+    assert code == 5
+    assert err.startswith("plane: write not confirmed")
+
+
+def test_grouped_usage_error_is_exit_2(tmp_path):
+    code, _, err = run(["task", "list"], grouped(UsageError("bad")), tmp_path)
+    assert (code, err) == (2, "plane: bad\n")
+
+
+def test_grouped_cancelled_error_is_exit_4_without_traceback(tmp_path):
+    code, out, err = run(["task", "list"], grouped(asyncio.CancelledError()), tmp_path)
+    assert code == 4
+    assert err == "plane: Plane MCP request failed; remote outcome must be checked\n"
+    assert "Traceback" not in out + err
+
+
+def test_readback_outranks_value_error_in_a_group():
+    group = BaseExceptionGroup("g", [ValueError("v"), ExceptionGroup("h", [ReadbackError()])])
+    assert classify(group)[0] == 5
+
+
+def test_missing_key_is_configuration_error_without_connecting(tmp_path):
+    fake = Fake()
+    env = {k: v for k, v in ENV.items() if k != "PLANE_API_KEY"}
+    code, _, err = run(["task", "list"], fake, tmp_path, env)
+    assert code == 3
+    assert err == "plane: Missing or invalid PLANE_API_KEY\n"
+    assert fake.entered == 0
+
+
+def test_invalid_enabled_value_is_named(tmp_path):
+    code, _, err = run(["task", "list"], Fake(), tmp_path, {**ENV, "PLANE_ENABLED": "maybe"})
+    assert (code, err) == (3, "plane: Invalid PLANE_ENABLED\n")
+
+
+def test_task_update_sends_only_given_fields_and_rereads(tmp_path):
+    item = {"id": OTHER, "name": "New", "priority": "high"}
+    fake = Fake([{}, item])
+    argv = ["task", "update", OTHER, "--name", "New", "--priority", "high"]
+    code, out, _ = run(argv, fake, tmp_path)
+    assert code == 0
+    assert fake.calls == [
+        (
+            "workitem",
+            {
+                "action": "update",
+                "project_id": PROJECT,
+                "workitem_id": OTHER,
+                "name": "New",
+                "priority": "high",
+            },
+        ),
+        ("workitem", {"action": "retrieve", "project_id": PROJECT, "workitem_id": OTHER}),
+    ]
+    assert json.loads(out) == item
+
+
+def test_task_update_state_and_html_readback(tmp_path):
+    fake = Fake([{}, {"state": OTHER, "description_html": "<p>x</p>"}])
+    code, _, _ = run(["task", "update", OTHER, "--state", OTHER, "--html", "x"], fake, tmp_path)
+    assert code == 0
+    assert fake.calls[0][1]["description_html"] == "x"
+
+
+def test_task_update_without_fields_is_usage_error_without_connecting(tmp_path):
+    fake = Fake()
+    code, _, err = run(["task", "update", OTHER], fake, tmp_path)
+    assert (code, err) == (2, "plane: Nothing to update\n")
+    assert fake.entered == 0
+
+
+def test_task_update_readback_mismatch_exits_5(tmp_path):
+    fake = Fake([{}, {"name": "Other"}])
+    code, _, err = run(["task", "update", OTHER, "--name", "New"], fake, tmp_path)
+    assert code == 5
+    assert err.startswith("plane: write not confirmed")
+
+
+def test_comment_add_reads_file_and_confirms_by_listing(tmp_path):
+    path = tmp_path / "c.html"
+    path.write_text("<p>hi</p>", encoding="utf-8")
+    created = {"id": "c1"}
+    fake = Fake([created, {"results": [{"id": "c0"}, {"id": "c1"}]}])
+    code, out, _ = run(["comment", "add", OTHER, "--file", str(path)], fake, tmp_path)
+    assert code == 0
+    assert fake.calls == [
+        (
+            "workitem_comment",
+            {
+                "action": "create",
+                "project_id": PROJECT,
+                "workitem_id": OTHER,
+                "comment_html": "<p>hi</p>",
+            },
+        ),
+        (
+            "workitem_comment",
+            {"action": "list", "project_id": PROJECT, "workitem_id": OTHER, "per_page": 100},
+        ),
+    ]
+    assert json.loads(out) == created
+
+
+def test_comment_add_from_stdin(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO("<p>é</p>".encode())))
+    fake = Fake([{"id": "c1"}, [{"id": "c1"}]])
+    code, _, _ = run(["comment", "add", OTHER, "--file", "-"], fake, tmp_path)
+    assert code == 0
+    assert fake.calls[0][1]["comment_html"] == "<p>é</p>"
+
+
+def test_body_file_not_utf8_is_usage_error_without_connecting(tmp_path):
+    path = tmp_path / "bad"
+    path.write_bytes(b"\xff\xfe")
+    fake = Fake()
+    code, _, err = run(["comment", "add", OTHER, "--file", str(path)], fake, tmp_path)
+    assert (code, err) == (2, "plane: Cannot read --html or --file\n")
+    assert fake.entered == 0
+    missing = run(["comment", "add", OTHER, "--file", str(tmp_path / "none")], fake, tmp_path)
+    assert missing[0] == 2
+    assert fake.entered == 0
+
+
+def test_comment_add_requires_a_body_without_connecting(tmp_path):
+    fake = Fake()
+    code, _, err = run(["comment", "add", OTHER], fake, tmp_path)
+    assert (code, err) == (2, "plane: --html or --file is required\n")
+    assert fake.entered == 0
+
+
+def test_comment_add_missing_from_listing_exits_5(tmp_path):
+    fake = Fake([{"id": "c1"}, {"results": [{"id": "c0"}]}])
+    code, _, _ = run(["comment", "add", OTHER, "--html", "x"], fake, tmp_path)
+    assert code == 5
+
+
+def test_comment_list_calls_workitem_comment_list(tmp_path):
+    fake = Fake([[{"id": "c1"}]])
+    code, out, _ = run(["comment", "list", OTHER], fake, tmp_path)
+    assert code == 0
+    assert fake.calls == [
+        ("workitem_comment", {"action": "list", "project_id": PROJECT, "workitem_id": OTHER})
+    ]
+    assert json.loads(out) == [{"id": "c1"}]
+
+
+def test_writes_are_not_retried(tmp_path):
+    fake = Fake(error=RuntimeError("boom"))
+    code, _, _ = run(["task", "update", OTHER, "--name", "x"], fake, tmp_path)
+    assert code == 4
+    assert [c[1]["action"] for c in fake.calls] == ["update"]
+
+
+def test_comment_add_follows_pages_to_find_the_comment(tmp_path):
+    page1 = {"results": [{"id": "c0"}], "next_page_results": True, "next_cursor": "n1"}
+    page2 = {"results": [{"id": "c1"}], "next_page_results": False}
+    fake = Fake([{"id": "c1"}, page1, page2])
+    code, _, _ = run(["comment", "add", OTHER, "--html", "x"], fake, tmp_path)
+    assert code == 0
+    listed = [c[1] for c in fake.calls[1:]]
+    assert listed[0]["per_page"] == 100
+    assert "cursor" not in listed[0]
+    assert listed[1]["cursor"] == "n1"
+
+
+def test_comment_add_page_cap_stops_the_loop(tmp_path):
+    page = {"results": [{"id": "c0"}], "next_page_results": True, "next_cursor": "n"}
+    fake = Fake([{"id": "c1"}] + [page] * 60)
+    code, _, _ = run(["comment", "add", OTHER, "--html", "x"], fake, tmp_path)
+    assert code == 5
+    assert len(fake.calls) == 1 + 50
+
+
+def test_comment_list_passes_paging(tmp_path):
+    fake = Fake([{}])
+    run(["comment", "list", OTHER, "--per-page", "5", "--cursor", "c"], fake, tmp_path)
+    assert fake.calls[0][1]["per_page"] == 5
+    assert fake.calls[0][1]["cursor"] == "c"
+
+
+def test_empty_bodies_are_usage_errors_without_connecting(tmp_path):
+    empty = tmp_path / "empty"
+    empty.write_text("  \n")
+    fake = Fake()
+    for argv in (
+        ["task", "update", OTHER, "--html", ""],
+        ["comment", "add", OTHER, "--file", str(empty)],
+    ):
+        code, _, err = run(argv, fake, tmp_path)
+        assert (code, err) == (2, "plane: --html or --file must not be empty\n")
+    assert fake.entered == 0
+
+
+def test_priority_none_accepts_null_readback(tmp_path):
+    fake = Fake([{}, {"priority": None}])
+    code, _, _ = run(["task", "update", OTHER, "--priority", "none"], fake, tmp_path)
+    assert code == 0
+
+
+PAGE = "00000000-0000-0000-0000-0000000000a1"
+W1 = "00000000-0000-0000-0000-0000000000b1"
+W2 = "00000000-0000-0000-0000-0000000000b2"
+
+
+def relations(kind, *ids):
+    return {
+        "dependencies": {kind: [{"id": i, "project_id": PROJECT} for i in ids]},
+        "custom": {},
+    }
+
+
+def test_page_create_private_by_default_and_rereads(tmp_path):
+    fake = Fake([{"id": PAGE, "name": "Plan"}, {"id": PAGE, "name": "Plan"}])
+    code, out, _ = run(["page", "create", "--name", "Plan", "--html", "<p>x</p>"], fake, tmp_path)
+    assert code == 0
+    assert fake.calls == [
+        (
+            "ce_page",
+            {
+                "action": "create",
+                "project_id": PROJECT,
+                "name": "Plan",
+                "description_html": "<p>x</p>",
+                "access": 1,
+            },
+        ),
+        ("ce_page", {"action": "retrieve", "project_id": PROJECT, "page_id": PAGE}),
+    ]
+    assert json.loads(out)["id"] == PAGE
+
+
+def test_page_create_public_flag(tmp_path):
+    fake = Fake([{"id": PAGE, "name": "Plan"}, {"id": PAGE, "name": "Plan"}])
+    run(["page", "create", "--name", "Plan", "--html", "<p>x</p>", "--public"], fake, tmp_path)
+    assert fake.calls[0][1]["access"] == 0
+
+
+def test_page_create_name_mismatch_exits_5(tmp_path):
+    fake = Fake([{"id": PAGE, "name": "Plan"}, {"id": PAGE, "name": "Other"}])
+    code, _, err = run(["page", "create", "--name", "Plan", "--html", "<p>x</p>"], fake, tmp_path)
+    assert code == 5
+    assert "readback" in err
+
+
+def test_page_list_and_show(tmp_path):
+    fake = Fake([[{"id": PAGE}], {"id": PAGE}])
+    assert run(["page", "list"], fake, tmp_path)[0] == 0
+    assert run(["page", "show", PAGE], fake, tmp_path)[0] == 0
+    assert fake.calls == [
+        ("ce_page", {"action": "list", "project_id": PROJECT}),
+        ("ce_page", {"action": "retrieve", "project_id": PROJECT, "page_id": PAGE}),
+    ]
+
+
+def test_page_show_rejects_non_uuid_without_connecting(tmp_path):
+    fake = Fake()
+    assert run(["page", "show", "nope"], fake, tmp_path)[0] == 2
+    assert fake.entered == 0
+
+
+def test_page_edit_is_not_a_command(tmp_path):
+    fake = Fake()
+    for verb in ("edit", "update"):
+        assert run(["page", verb, PAGE, "--html", "<p>x</p>"], fake, tmp_path)[0] == 2
+    assert fake.entered == 0
+
+
+def test_relation_add_resolves_identifiers_and_confirms(tmp_path):
+    listing = relations("blocked_by", W2)
+    fake = Fake([{"project": OTHER, "id": W1}, {"project": OTHER, "id": W2}, {}, listing])
+    code, out, _ = run(["relation", "add", "ptc-1", "PTC-2"], fake, tmp_path)
+    assert code == 0
+    assert fake.calls[2] == (
+        "ce_workitem_relation",
+        {
+            "action": "create",
+            "project_id": OTHER,
+            "workitem_id": W1,
+            "workitem_ids": [W2],
+            "relation_type": "blocked_by",
+        },
+    )
+    assert fake.calls[3][1]["action"] == "list"
+    assert json.loads(out) == listing
+
+
+def test_relation_add_missing_from_listing_exits_5(tmp_path):
+    fake = Fake([{}, relations("blocking", W1)])
+    code, _, _ = run(["relation", "add", W1, W2, "--type", "blocking"], fake, tmp_path)
+    assert code == 5
+
+
+def test_relation_add_rejects_self_relation(tmp_path):
+    fake = Fake([{"project": OTHER, "id": W1}])
+    code, _, err = run(["relation", "add", W1, "PTC-1"], fake, tmp_path)
+    assert code == 2
+    assert [c[0] for c in fake.calls] == ["workitem"]
+    assert err.startswith("plane: ")
+
+
+def test_relation_add_rejects_duplicate_literals_without_connecting(tmp_path):
+    fake = Fake()
+    assert run(["relation", "add", W1, W2, "ptc-3", "PTC-3"], fake, tmp_path)[0] == 2
+    assert fake.entered == 0
+
+
+def test_relation_add_rejects_duplicates_after_resolving(tmp_path):
+    fake = Fake([{"project": OTHER, "id": W1}, {"project": OTHER, "id": W2}])
+    code, _, _ = run(["relation", "add", W1, W2, "PTC-2"], fake, tmp_path)
+    assert code == 2
+    assert all(c[0] == "workitem" for c in fake.calls)
+
+
+def test_relation_list(tmp_path):
+    fake = Fake([relations("blocked_by")])
+    assert run(["relation", "list", W1], fake, tmp_path)[0] == 0
+    assert fake.calls == [
+        ("ce_workitem_relation", {"action": "list", "project_id": PROJECT, "workitem_id": W1})
+    ]
+
+
+def test_relation_remove_is_not_a_command(tmp_path):
+    fake = Fake()
+    for verb in ("remove", "delete"):
+        assert run(["relation", verb, W1, W2], fake, tmp_path)[0] == 2
+    assert fake.entered == 0
+
+
+def test_missing_ce_tool_exits_4(tmp_path):
+    fake = Fake(error=ToolError("Required MCP tool unavailable"))
+    code, _, err = run(["page", "list"], fake, tmp_path)
+    assert code == 4
+    assert err == "plane: Required MCP tool unavailable\n"
+
+
+def test_relation_add_uppercase_uuid_target_confirms(tmp_path):
+    fake = Fake([{}, relations("blocked_by", W2)])
+    code, _, _ = run(["relation", "add", W1, W2.upper()], fake, tmp_path)
+    assert code == 0
+    assert fake.calls[0][1]["workitem_ids"] == [W2]
+
+
+def test_relation_add_case_mixed_self_and_duplicate_rejected(tmp_path):
+    fake = Fake()
+    assert run(["relation", "add", W1, W1.upper()], fake, tmp_path)[0] == 2
+    assert run(["relation", "add", W1, W2, W2.upper()], fake, tmp_path)[0] == 2
+    assert fake.calls == []
+
+
+def test_relation_add_rejects_targets_in_another_project(tmp_path):
+    fake = Fake([{"project": OTHER, "id": W2}])
+    code, _, err = run(["relation", "add", W1, "PTC-2"], fake, tmp_path)
+    assert code == 2
+    assert "one project" in err
+    assert [c[0] for c in fake.calls] == ["workitem"]
+
+
+def test_pydantic_validation_error_does_not_leak_server_content(tmp_path):
+    from pydantic import BaseModel
+
+    class Reply(BaseModel):
+        count: int
+
+    try:
+        Reply.model_validate({"count": f"bad {KEY}"})
+    except ValueError as error:
+        raised = error
+    assert KEY in str(raised)
+    code, out, err = run(["task", "list"], Fake(error=raised), tmp_path)
+    assert code == 4
+    assert err == "plane: Plane MCP request failed; remote outcome must be checked\n"
+    assert KEY not in out + err
+
+
+def test_other_value_error_uses_fixed_text(tmp_path):
+    code, _, err = run(["task", "list"], Fake(error=ValueError(f"x {KEY}")), tmp_path)
+    assert (code, err) == (4, "plane: Plane MCP request failed; remote outcome must be checked\n")
+
+
+def test_library_logging_stays_off_stderr(tmp_path, capfd):
+    class Logging(Fake):
+        @asynccontextmanager
+        async def connect(self, env=None):
+            async def call(name, args):
+                try:
+                    raise RuntimeError(f"body {KEY}")
+                except RuntimeError:
+                    logging.getLogger("mcp.client.streamable_http").exception(
+                        "Error parsing JSON response"
+                    )
+                    raise
+
+            yield call
+
+    before = logging.lastResort
+    code, out, err = run(["task", "list"], Logging(), tmp_path)
+    captured = capfd.readouterr()
+    assert code == 4
+    assert err == "plane: Plane MCP request failed; remote outcome must be checked\n"
+    assert captured.err == "" and KEY not in captured.out
+    assert logging.lastResort is before
+
+
+@pytest.mark.parametrize(
+    "argv,results",
+    [
+        (["task", "update", OTHER, "--name", "x"], []),
+        (["comment", "add", OTHER, "--html", "x"], []),
+        (["page", "create", "--name", "P", "--html", "x"], []),
+        (["relation", "add", OTHER, PROJECT], []),
+    ],
+)
+def test_interrupt_during_write_says_outcome_unknown(tmp_path, argv, results):
+    code, _, err = run(argv, Fake(error=KeyboardInterrupt()), tmp_path)
+    assert (code, err) == (130, "plane: interrupted; remote outcome must be checked\n")
+
+
+def test_interrupt_during_read_is_silent(tmp_path):
+    code, _, err = run(["task", "list"], Fake(error=KeyboardInterrupt()), tmp_path)
+    assert (code, err) == (130, "")
+
+
+def test_name_readback_ignores_surrounding_whitespace(tmp_path):
+    fake = Fake([{}, {"name": "Plan"}])
+    assert run(["task", "update", OTHER, "--name", " Plan "], fake, tmp_path)[0] == 0
+    fake = Fake([{"id": PAGE, "name": " Plan"}, {"id": PAGE, "name": "Plan "}])
+    code, _, _ = run(["page", "create", "--name", "Plan", "--html", "<p>x</p>"], fake, tmp_path)
+    assert code == 0
