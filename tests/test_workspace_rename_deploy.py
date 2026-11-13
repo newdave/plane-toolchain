@@ -838,6 +838,9 @@ def scripted(lines, directory):
         def wait(self):
             return 0
 
+        def kill(self):
+            pass
+
     return lambda argv, **kw: Gone() if "-c" in argv else Process()
 
 

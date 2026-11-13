@@ -199,9 +199,11 @@ class FakeDocker:
         if not container["running"]:
             return 1, b""
         if rest[1:3] == ["python", "-c"] and "PLANE_RENAME_RUN" in rest[3]:
-            token = rest[4]  # the kill script: stop the marked snippet processes, report
+            token = rest[4]  # the kill script: a full marker value, or "<dir id>:" to sweep
             self.kill_calls.append(token)
-            matches = lambda t: not token or t == token  # noqa: E731
+            if token.endswith(":") and any(not t.startswith(token) for t in self.procs):
+                return 2, b"foreign\n"
+            matches = lambda t: t.startswith(token)  # noqa: E731
             if not self.immortal:
                 self.procs = [t for t in self.procs if not matches(t)]
             alive = any(matches(t) for t in self.procs)

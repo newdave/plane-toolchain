@@ -44,21 +44,23 @@ MIN_FREE_BYTES = 64 << 20
 SALTBOX_LABEL = "com.github.saltbox.saltbox_managed"
 DRAIN_SECONDS = 60
 DRAIN_INTERVAL = 2
-SNIPPET_IDLE_SECONDS = (
-    900  # a snippet silent this long is hung: kill it (the timer restarts per line)
-)
-SNIPPET_MARKER = "PLANE_RENAME_RUN"  # env var carrying the per-run token inside the API container
+SNIPPET_IDLE_SECONDS = 900  # silent this long: hung, kill it (restarts per line; see PROGRESS)
+KILL_WAIT = 30  # seconds the kill script may take before its client is killed (not confirmed)
+SNIPPET_MARKER = "PLANE_RENAME_RUN"  # env var: <receipt-dir id>:<token> inside the API container
 STUCK = "snippet process could not be confirmed stopped"
-# Runs inside the API container as `python -c KILLER <token> <seconds>` (stdlib only). Finds the
-# processes whose environment carries SNIPPET_MARKER=<token> (any token when empty) in /proc,
-# sends SIGTERM and then SIGKILL, and prints "gone" (exit 0) once none is left, else "alive".
+# Runs inside the API container as `python -c KILLER <match> <seconds>` (stdlib only). Finds, in
+# /proc, the processes whose environment has SNIPPET_MARKER=<value> with value starting with
+# <match>. A <match> ending in ":" is a sweep of one receipt directory's id: processes marked
+# by any other directory are "foreign" and, if any exist, nothing is killed and it prints
+# "foreign" (exit 2). Otherwise SIGTERM then SIGKILL; prints "gone" (exit 0) or "alive" (1).
 KILLER = """\
 import os, signal, sys, time
-token, wait = sys.argv[1], float(sys.argv[2])
+match, wait = sys.argv[1].encode(), float(sys.argv[2])
 root = sys.argv[3] if len(sys.argv) > 3 else "/proc"
+sweep = match.endswith(b":")
 prefix = b"PLANE_RENAME_RUN="
 def marked():
-    found = []
+    mine, foreign = [], []
     for name in os.listdir(root):
         if not name.isdigit() or int(name) == os.getpid():
             continue
@@ -67,12 +69,17 @@ def marked():
                 items = handle.read().split(b"\\0")
         except OSError:
             continue
-        if any(i.startswith(prefix) and token.encode() in (b"", i[len(prefix):]) for i in items):
-            found.append(int(name))
-    return found
+        for item in items:
+            if item.startswith(prefix):
+                (mine if item[len(prefix):].startswith(match) else foreign).append(int(name))
+                break
+    return mine, foreign
 sig = signal.SIGTERM
 for _ in range(int(wait * 2) + 1):
-    pids = marked()
+    pids, others = marked()
+    if sweep and others:
+        print("foreign")
+        sys.exit(2)
     if not pids:
         print("gone")
         sys.exit(0)
@@ -83,7 +90,7 @@ for _ in range(int(wait * 2) + 1):
             pass
     sig = signal.SIGKILL
     time.sleep(0.5)
-left = marked()
+left = marked()[0]
 print("alive" if left else "gone")
 sys.exit(1 if left else 0)
 """
@@ -334,17 +341,35 @@ def drain_queue(mq, docker, clock, sleep, timeout=DRAIN_SECONDS, interval=DRAIN_
     return remaining
 
 
+def worker_running(names, docker):
+    """Whether the worker container runs; an unreadable state counts as running."""
+    try:
+        state = json.loads(docker("inspect", names["worker"]))[0].get("State") or {}
+        return bool(state.get("Running"))
+    except Exception:  # noqa: BLE001 - when unsure, wait the full drain time
+        return True
+
+
 def stop_services(names, docker, clock, sleep, crash=lambda label: None, allow_undrained=False):
     """Beat, drain, worker, web, space, admin; then restart Live. API, db and Redis stay up.
 
     Jobs still queued after DRAIN_SECONDS refuse (nothing past beat is stopped yet) unless
-    `allow_undrained` is set, which continues and says so. Jobs are never purged."""
+    `allow_undrained` is set, which continues and says so. With the worker already stopped
+    (a resume or revert after a failure) nothing can drain, so a non-empty queue refuses at once.
+    Jobs are never purged."""
+    waiting = worker_running(names, docker)
     crash("before_stop_" + names["beat"])
     docker("stop", names["beat"])
     crash("after_stop_" + names["beat"])
-    remaining = drain_queue(names["mq"], docker, clock, sleep)
+    remaining = drain_queue(names["mq"], docker, clock, sleep, DRAIN_SECONDS if waiting else 0)
     if remaining is None:
         say("Warning: celery queue not found; drain not verified")
+    elif remaining and not allow_undrained and not waiting:
+        raise RuntimeError(
+            f"{remaining} jobs still queued and the workers are stopped, so the queue cannot "
+            "drain; the jobs are kept (not purged). Set PLANE_RENAME_ALLOW_UNDRAINED=1 to "
+            "continue anyway"
+        )
     elif remaining and not allow_undrained:
         raise RuntimeError(
             f"{remaining} jobs still queued after {DRAIN_SECONDS} s; not purged. Let the workers "
@@ -405,9 +430,10 @@ def set_receipt_field(directory, name, value, uid=None):
     write_receipt(directory, receipt)
 
 
-def stderr_tail(handle, limit=300):
+def stderr_tail(handle, limit=300, hide=()):
     """The last few lines of a child's stderr, safe to show: quoted text (names, roles, hosts
-    and paths in quotes) is replaced, control characters are dropped and the result is capped.
+    and paths in quotes) and every name in `hide` (container names) is replaced, control
+    characters are dropped and the result is capped.
 
     Best effort: a child could still name a value unquoted, which is why only a short tail is
     kept and nothing the tool read from the environment is ever added."""
@@ -417,7 +443,10 @@ def stderr_tail(handle, limit=300):
     handle.seek(max(0, size - 4096))
     text = handle.read().decode("utf-8", "replace")
     lines = [line.strip() for line in text.splitlines() if line.strip()][-3:]
-    text = re.sub(r"\"[^\"]*\"|'[^']*'", "<redacted>", " | ".join(lines))
+    text = " | ".join(lines)
+    for name in sorted({h for h in hide if h}, key=len, reverse=True):
+        text = text.replace(name, "<container>")
+    text = re.sub(r"\"[^\"]*\"|'[^']*'", "<redacted>", text)
     return "".join(c for c in text if c.isprintable())[:limit]
 
 
@@ -454,43 +483,38 @@ def check_free_space(directory, db, popen):
         )
 
 
-def validate_dump(db, dump, popen):
-    """Run `pg_restore -l` on the finished dump inside the db container; raise if it fails.
+def validate_dump(db, dump, popen, hide=()):
+    """Check the finished dump with `pg_restore -f /dev/null` inside the db container.
 
-    Listing the table of contents proves the archive is readable by the tool that restores it.
-    The dump goes in on stdin; nothing is written to the database."""
+    That reads the whole archive, every data block included, and writes it nowhere: it proves
+    the dump is complete and readable by the tool that restores it, without touching the
+    database. The dump goes in on stdin."""
     with tempfile.TemporaryFile() as errors, open(dump, "rb") as source:
         process = popen(
-            ["docker", "exec", "-i", db, "pg_restore", "-l"],
+            ["docker", "exec", "-i", db, "pg_restore", "-f", "/dev/null"],
             stdin=source,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
             stderr=errors,
         )
         try:
-            listed = 0
-            while True:
-                chunk = process.stdout.read(1 << 20)
-                if not chunk:
-                    break
-                listed += len(chunk)
             code = process.wait()
         except BaseException:
             process.kill()
             process.wait()
             raise
-        if code != 0 or not listed:
-            reason = stderr_tail(errors)
+        if code != 0:
+            reason = stderr_tail(errors, hide=hide)
             raise RuntimeError(
-                "backup refused: the dump does not list with pg_restore -l"
+                "backup refused: pg_restore cannot read the dump"
                 + (" (" + reason + ")" if reason else "")
             )
 
 
-def backup_database(db, directory, popen, crash=lambda label: None, uid=None):
+def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hide=()):
     """Stream pg_dump to backup.dump (0600), hashing and fsyncing; record the SHA-256.
 
-    Before the dump the receipt directory must have room for it. After it, `pg_restore -l` must
-    read the file. A failed, empty or unreadable dump raises before any caller changes data,
+    Before the dump the receipt directory must have room for it. After it, `pg_restore -f
+    /dev/null` must read the whole file. A failed, empty or unreadable dump raises before any caller changes data,
     leaving no dump file; failures carry a short, redacted stderr tail.
     """
     uid = os.geteuid() if uid is None else uid
@@ -521,7 +545,7 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None):
                 size += len(chunk)
                 os.write(descriptor, chunk)
             if process.wait() != 0:
-                reason = stderr_tail(errors)
+                reason = stderr_tail(errors, hide=hide)
                 failure = "backup failed: pg_dump exited with an error" + (
                     " (" + reason + ")" if reason else ""
                 )
@@ -540,7 +564,7 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None):
     try:
         if failure:
             raise RuntimeError(failure)
-        validate_dump(db, temporary, popen)
+        validate_dump(db, temporary, popen, hide)
     except BaseException:
         os.unlink(temporary)
         raise
@@ -601,19 +625,44 @@ def is_stuck(reason):
     return str(reason).startswith(STUCK)
 
 
-def stop_snippet(api, token, popen):
-    """Stop the snippet processes marked with `token` (all marked ones when empty) in the API
-    container and return whether none is left. Any error counts as not confirmed."""
+def run_id(directory):
+    """A short id of a receipt directory (hash of its real path), carried in every snippet's
+    marker so one run can only ever stop its own directory's snippets."""
+    return hashlib.sha256(os.path.realpath(str(directory)).encode()).hexdigest()[:12]
+
+
+def run_killer(api, match, popen):
+    """Run the kill script in the API container for `match` (a full marker value, or a
+    directory id ending in ":" to sweep); return "gone", "alive", "foreign" or "" (unknown).
+
+    The script's wait is bounded by KILL_WAIT: past it the client is killed and the result is
+    unknown."""
+    process, timer = None, None
     try:
         process = popen(
-            ["docker", "exec", api, "python", "-c", KILLER, token, "15"],
+            ["docker", "exec", api, "python", "-c", KILLER, match, "15"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
-        out = process.stdout.read(64)
-        return process.wait() == 0 and out.strip() == b"gone"
+        timer = threading.Timer(KILL_WAIT, process.kill)
+        timer.daemon = True
+        timer.start()
+        word = process.stdout.read(64).strip().decode()
+        code = process.wait()
+        return word if code == {"gone": 0, "alive": 1, "foreign": 2}.get(word) else ""
     except Exception:  # noqa: BLE001 - an unconfirmed stop is reported, never guessed
-        return False
+        if process is not None:
+            process.kill()
+        return ""
+    finally:
+        if timer is not None:
+            timer.cancel()
+
+
+def stop_snippet(api, token, popen):
+    """Stop the snippet process with marker value `token` in the API container; return
+    whether it is confirmed gone. Any error counts as not confirmed."""
+    return run_killer(api, token, popen) == "gone"
 
 
 def run_snippet(api, snippet, op, args, directory, popen, uid=None):
@@ -624,7 +673,7 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None):
     appended to the journal (fsynced) before the next line is read, and is never kept or
     printed. Returns (summary or None, other events). A non-zero exit gives no summary.
 
-    The process runs with a per-run `PLANE_RENAME_RUN` token in its environment. Killing the
+    The process runs with a `PLANE_RENAME_RUN=<receipt-dir id>:<token>` marker in its environment. Killing the
     local `docker exec` client does not stop the Python process in the container, so every
     abort (a deadline of SNIPPET_IDLE_SECONDS without output, an error, an interrupt, a
     non-zero exit) is followed by stop_snippet, and the caller hears of the failure only once
@@ -633,7 +682,7 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None):
     """
     request = json.dumps({"op": op, "args": args}, sort_keys=True)
     source = "RENAME_REQUEST = __import__('json').loads(" + repr(request) + ")\n" + snippet
-    token = os.urandom(8).hex()
+    token = run_id(directory) + ":" + os.urandom(8).hex()
     process = popen(
         ["docker", "exec", "-i", "-e", SNIPPET_MARKER + "=" + token, api, *SHELL],
         stdin=subprocess.PIPE,
@@ -676,14 +725,20 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None):
                 append_journal(directory, event["record"], uid)
             elif event.get("event") == "summary":
                 summary = event
-            else:
+            elif event.get("event") != "progress":  # progress only re-arms the deadline
                 events.append(event)
     except BaseException as failure:
         disarm()
         process.kill()
         process.wait()
-        if not stop_snippet(api, token, popen) and isinstance(failure, Exception):
-            raise RuntimeError(STUCK + " (" + op + ")") from None
+        if not stop_snippet(api, token, popen):
+            if isinstance(failure, Exception):
+                raise RuntimeError(STUCK + " (" + op + ")") from None
+            say(
+                "A snippet may still be running in the API container (stop could not be "
+                "confirmed); stop it by hand before rerunning.",
+                sys.stderr,
+            )
         raise
     disarm()
     code = process.wait()
@@ -788,13 +843,22 @@ def refuse_api_service(names, api):
         )
 
 
-def sweep_orphans(api, popen, operation):
-    """Before apply or revert, stop any snippet left running by an earlier killed run.
+def sweep_orphans(api, popen, operation, directory):
+    """Before apply or revert, stop snippets of THIS receipt directory left by a killed run.
 
-    The run lock means no other apply or revert is live, so every marked process is an orphan.
-    `check` takes no lock and never sweeps (it could be a live run's snippet). Refuses when the
-    API container cannot confirm that none is left."""
-    if operation in ("apply", "revert") and not stop_snippet(api, "", popen):
+    The run lock (per receipt directory) means no other apply or revert on this directory is
+    live, so its marked processes are orphans. A marked process of a different directory is a
+    live run elsewhere on this instance: refuse, never kill it. `check` takes no lock and never
+    sweeps (it could be a live run's snippet)."""
+    if operation not in ("apply", "revert"):
+        return
+    word = run_killer(api, run_id(directory) + ":", popen)
+    if word == "foreign":
+        raise RuntimeError(
+            "another rename run is active on this instance (a snippet marked by a different "
+            "receipt directory is running in the API container)"
+        )
+    if word != "gone":
         raise RuntimeError(
             "could not confirm that no earlier snippet is running in the API container"
         )
@@ -979,7 +1043,7 @@ def run_apply(data, seams):
     try:
         refuse_api_service(names, api)
         inspect_services(names, api, docker)
-        sweep_orphans(api, popen, operation)
+        sweep_orphans(api, popen, operation, directory)
         receipt = None
         if operation == "apply" or os.path.lexists(directory):
             receipt = load_receipt(directory, old, new, uid)
@@ -1054,7 +1118,9 @@ def run_apply(data, seams):
             elif os.path.lexists(dump):
                 say("Backup already taken; SHA-256 matches")
             else:
-                backup_database(names["db"], directory, popen, crash, uid)
+                backup_database(
+                    names["db"], directory, popen, crash, uid, hide=(*names.values(), api)
+                )
                 say("Database backed up")
         elif target == "slug_done":
             args = {"old": old, "new": new}
@@ -1112,6 +1178,8 @@ def run_apply(data, seams):
             )
         if target == "started":
             state = "Some services did not start"
+        elif "jobs still queued" in reason:  # the drain gate refused; nothing more was stopped
+            state = "Services were left as they are (workers stopped, jobs kept)"
         elif target == step:  # stopping services again on resume failed
             state = "Some services may still be running; stop them by hand"
         else:
@@ -1231,7 +1299,7 @@ def run_revert(data, seams):
     try:
         refuse_api_service(names, api)
         inspect_services(names, api, docker)
-        sweep_orphans(api, popen, "revert")
+        sweep_orphans(api, popen, "revert", directory)
         if not os.path.lexists(directory / "receipt.json"):
             raise RuntimeError("no receipt for this rename; nothing to revert")
         receipt = load_receipt(directory, old, new, uid)
@@ -1354,7 +1422,9 @@ def run_revert(data, seams):
                 "receipt was not changed. Stop the snippet process in the API container by hand "
                 "(its environment has PLANE_RENAME_RUN), then rerun revert."
             )
-        if target == "reverting":
+        if "jobs still queued" in reason:
+            state = "Services were left as they are (workers stopped, jobs kept)"
+        elif target == "reverting":
             state = "Nothing was changed by the revert; services were left as they are"
         elif target == "restored":
             state = (
@@ -1394,18 +1464,21 @@ LOCK_FILE = "run.lock"
 
 
 def lock_run(directory, uid, create):
-    """Take the exclusive run lock of a receipt directory; return its descriptor, or None.
+    """Take the exclusive run lock of a receipt directory; return its descriptor.
 
     Apply and revert hold it for the whole run, so a second run (a double start, or a dropped
     SSH session whose remote program keeps going) refuses instead of driving a second state
     machine over one receipt. It is `flock` on `run.lock` (0600, same private-file checks as the
-    receipt), released by closing the descriptor or when the process dies. With create False and
-    no directory there is nothing to lock: the preflight refuses with "no receipt"."""
+    receipt), released by closing the descriptor or when the process dies. The lock belongs to
+    this receipt directory, which must be on a local filesystem (not NFS), and the directory
+    must never be archived while it is held. A revert (`create` False) with no directory, or
+    none holding a receipt once locked, refuses at once with no docker call: otherwise an apply
+    could start between the lookup and the preflight and run beside it."""
     directory = pathlib.Path(directory)
     if create:
         secure_receipt_dir(directory, uid)
     elif not os.path.lexists(directory):
-        return None
+        raise RuntimeError("Refused: no receipt for this rename; nothing to revert")
     else:
         secure_receipt_dir(directory, uid)
     path = directory / LOCK_FILE
@@ -1421,20 +1494,29 @@ def lock_run(directory, uid, create):
                 "Refused: another apply or revert holds the lock on the receipt directory; "
                 "wait for it to finish, or check the host for a run still going"
             ) from None
+        if not create and not os.path.lexists(directory / "receipt.json"):
+            raise RuntimeError("Refused: no receipt for this rename; nothing to revert")
     except BaseException:
         os.close(descriptor)
         raise
     return descriptor
 
 
-def run_locked(data, seams, run, create):
-    """Run `run(data, seams)` while holding the run lock of the receipt directory."""
+def run_locked(data, seams, run, create, lock=True):
+    """Run `run(data, seams)` under the run lock of the receipt directory (none for check).
+
+    A valid `snippet_idle_seconds` in the payload replaces SNIPPET_IDLE_SECONDS for the run."""
+    global SNIPPET_IDLE_SECONDS
     uid = os.geteuid() if seams.get("uid") is None else seams["uid"]
     directory = pathlib.Path(data.get("receipt_dir") or receipt_dir(os.environ))
-    descriptor = lock_run(directory, uid, create)
+    descriptor = lock_run(directory, uid, create) if lock else None
+    idle, previous = data.get("snippet_idle_seconds"), SNIPPET_IDLE_SECONDS
+    if isinstance(idle, (int, float)) and not isinstance(idle, bool) and 0 < idle <= 86400:
+        SNIPPET_IDLE_SECONDS = idle
     try:
         return run(data, seams)
     finally:
+        SNIPPET_IDLE_SECONDS = previous
         if descriptor is not None:
             os.close(descriptor)
 
@@ -1449,7 +1531,7 @@ def deploy(data, seams):
         return revert(data, seams)
     if operation == "apply":
         return run_locked(data, seams, run_apply, True)
-    return run_apply(data, seams)
+    return run_locked(data, seams, run_apply, False, lock=False)
 
 
 def revert(data, seams):
@@ -1499,6 +1581,9 @@ SHIPPED = (
     sha256_file,
     leftover_files,
     journal_workspace,
+    worker_running,
+    run_id,
+    run_killer,
     is_stuck,
     stop_snippet,
     run_snippet,
@@ -1525,6 +1610,7 @@ SHIPPED_CONSTANTS = {
     "DB_SIZE": DB_SIZE,
     "MIN_FREE_BYTES": MIN_FREE_BYTES,
     "SNIPPET_IDLE_SECONDS": SNIPPET_IDLE_SECONDS,
+    "KILL_WAIT": KILL_WAIT,
     "SNIPPET_MARKER": SNIPPET_MARKER,
     "STUCK": STUCK,
     "KILLER": KILLER,
@@ -1639,6 +1725,14 @@ def main(argv=None):
     undrained = os.environ.get("PLANE_RENAME_ALLOW_UNDRAINED") or None
     if undrained not in (None, "1"):
         sys.exit("Invalid PLANE_RENAME_ALLOW_UNDRAINED (use 1)")
+    idle = os.environ.get("PLANE_RENAME_SNIPPET_IDLE_SECONDS") or None
+    if idle is not None:
+        try:
+            idle = float(idle)
+        except ValueError:
+            idle = 0
+        if not 0 < idle <= 86400:
+            sys.exit("Invalid PLANE_RENAME_SNIPPET_IDLE_SECONDS (seconds, up to 86400)")
     directory = os.environ.get("PLANE_RENAME_RECEIPT_DIR") or None
     if directory and (not directory.startswith("/") or any(c.isspace() for c in directory)):
         sys.exit("Invalid PLANE_RENAME_RECEIPT_DIR")
@@ -1655,6 +1749,8 @@ def main(argv=None):
             payload[key] = value
     if undrained:
         payload["allow_undrained"] = True
+    if idle:
+        payload["snippet_idle_seconds"] = idle
     sys.exit(run_remote(host, REMOTE, payload, check=False, interrupted=LOCAL_INTERRUPTED))
 
 

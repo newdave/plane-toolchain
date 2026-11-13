@@ -135,33 +135,25 @@ def backup_dir(tmp_path):
     return directory
 
 
-def test_backup_lists_the_dump_with_pg_restore_before_keeping_it(fake, tmp_path):
+def test_backup_reads_the_whole_dump_with_pg_restore_before_keeping_it(fake, tmp_path):
     directory = backup_dir(tmp_path)
     wr.backup_database("plane-db", directory, fake.popen)
-    assert ("exec", "-i", "plane-db", "pg_restore", "-l") in fake.calls
+    assert ("exec", "-i", "plane-db", "pg_restore", "-f", "/dev/null") in fake.calls
     assert fake.restore_input == fake.pg_dump  # the whole dump went in on stdin
     assert (directory / "backup.dump").read_bytes() == fake.pg_dump
     assert not list(directory.glob("*.tmp"))
 
 
-def test_dump_that_fails_pg_restore_list_is_refused_and_removed(fake, tmp_path):
+def test_dump_that_fails_pg_restore_is_refused_and_removed(fake, tmp_path):
     directory = backup_dir(tmp_path)
     fake.pg_restore_code = 1
     fake.pg_restore_stderr = b"pg_restore: error: unsupported version (1.99) in file header\n"
-    with pytest.raises(RuntimeError, match=r"does not list with pg_restore -l") as caught:
+    with pytest.raises(RuntimeError, match=r"pg_restore cannot read the dump") as caught:
         wr.backup_database("plane-db", directory, fake.popen)
     assert "unsupported version" in str(caught.value)
     assert not (directory / "backup.dump").exists()
     assert not list(directory.glob("*.tmp"))
     assert "backup_sha256" not in wr.load_receipt(directory, "a", "b")
-
-
-def test_empty_pg_restore_listing_is_refused(fake, tmp_path):
-    directory = backup_dir(tmp_path)
-    fake.pg_restore_out = b""
-    with pytest.raises(RuntimeError, match="does not list"):
-        wr.backup_database("plane-db", directory, fake.popen)
-    assert not (directory / "backup.dump").exists()
 
 
 def test_failed_pg_dump_message_has_a_redacted_stderr_tail(fake, tmp_path):
@@ -343,18 +335,19 @@ def test_revert_unconfirmed_stop_keeps_services_down(host, quick):
 
 
 def test_apply_and_revert_sweep_orphans_but_check_does_not(host):
-    host.fake.procs = ["left-by-a-killed-run"]
+    mine = wr.run_id(host.directory) + ":"
+    host.fake.procs = [mine + "left-by-a-killed-run"]
     host.deploy("check")
-    assert host.fake.kill_calls == [] and host.fake.procs == ["left-by-a-killed-run"]
+    assert host.fake.kill_calls == [] and host.fake.procs == [mine + "left-by-a-killed-run"]
     host.deploy()
-    assert host.fake.kill_calls[0] == "" and host.fake.procs == []
-    host.fake.procs = ["another"]
+    assert host.fake.kill_calls[0] == mine and host.fake.procs == []
+    host.fake.procs = [mine + "another"]
     host.deploy("revert")
     assert host.fake.procs == []
 
 
 def test_orphan_that_cannot_be_stopped_refuses_before_any_stop(host):
-    host.fake.procs = ["orphan"]
+    host.fake.procs = [wr.run_id(host.directory) + ":orphan"]
     host.fake.immortal = True
     with pytest.raises(RuntimeError, match=r"Refused: .*earlier snippet"):
         host.deploy()
@@ -391,13 +384,21 @@ def test_kill_script_stops_only_the_marked_processes(tmp_path, monkeypatch, caps
     assert (tmp_path / "4002").exists() and (tmp_path / "4003").exists()
 
 
-def test_kill_script_without_a_token_stops_every_marked_process(tmp_path, monkeypatch):
-    fake_proc(tmp_path, 4001, [b"PLANE_RENAME_RUN=a"])
-    fake_proc(tmp_path, 4002, [b"PLANE_RENAME_RUN=b"])
+def test_kill_script_sweep_stops_only_its_directory_and_refuses_foreign_runs(
+    tmp_path, monkeypatch, capsys
+):
+    fake_proc(tmp_path, 4001, [b"PLANE_RENAME_RUN=h1:a"])
+    fake_proc(tmp_path, 4002, [b"PLANE_RENAME_RUN=h1:b"])
     fake_proc(tmp_path, 4003, [b"PLANE_RENAME_RUNNER=b"])
     monkeypatch.setattr(os, "kill", lambda pid, sig: shutil.rmtree(tmp_path / str(pid)))
-    assert run_killer(tmp_path, "", monkeypatch) == 0
+    assert run_killer(tmp_path, "h1:", monkeypatch) == 0
     assert [p.name for p in tmp_path.iterdir()] == ["4003"]
+    fake_proc(tmp_path, 4004, [b"PLANE_RENAME_RUN=h1:c"])
+    fake_proc(tmp_path, 4005, [b"PLANE_RENAME_RUN=h2:live"])
+    capsys.readouterr()
+    assert run_killer(tmp_path, "h1:", monkeypatch) == 2  # a foreign run: kill nothing
+    assert capsys.readouterr().out.strip() == "foreign"
+    assert (tmp_path / "4004").exists() and (tmp_path / "4005").exists()
 
 
 def test_kill_script_escalates_to_sigkill_and_reports_a_survivor(tmp_path, monkeypatch, capsys):
@@ -618,6 +619,10 @@ def test_revert_with_an_undrained_queue_refuses_unless_overridden(host):
     ["plane-worker", "plane", "plane-space", "plane-admin", "plane-beat-worker", "plane-live"],
 )
 def test_api_container_that_is_a_service_container_is_refused_before_anything(host, operation, api):
+    if operation == "revert":
+        host.deploy()
+        host.fake.calls.clear()
+        host.shell.requests.clear()
     with pytest.raises(RuntimeError, match=r"Refused: the API container is also .* service"):
         host.deploy(operation, api=api)
     assert not mutating(host.fake)
@@ -707,3 +712,198 @@ def test_cli_override_flag_and_api_container_check(monkeypatch):
     monkeypatch.setenv("PLANE_WEB_CONTAINER", "plane-api")
     assert "API container" in run()
     assert len(sent) == count  # refused before any SSH
+
+
+# --- fix round 1 -------------------------------------------------------------------------------
+
+
+def test_revert_with_no_receipt_refuses_before_any_docker_call(host):
+    with pytest.raises(RuntimeError, match="no receipt for this rename; nothing to revert"):
+        host.deploy("revert")
+    assert host.fake.calls == [] and not host.directory.exists()
+    wr.secure_receipt_dir(host.directory)  # a directory without a receipt: same, still no call
+    with pytest.raises(RuntimeError, match="nothing to revert"):
+        host.deploy("revert")
+    assert host.fake.calls == []
+
+
+def test_apply_cannot_start_while_a_revert_is_in_its_preflight(host, monkeypatch):
+    host.deploy()
+    seen = []
+    real = wr.sweep_orphans
+
+    def sweep(*args):
+        with pytest.raises(RuntimeError, match="holds the lock") as caught:
+            host.deploy()  # an apply starting in the window between lock and preflight
+        seen.append(str(caught.value))
+        return real(*args)
+
+    monkeypatch.setattr(wr, "sweep_orphans", sweep)
+    host.fake.calls.clear()
+    assert host.deploy("revert").startswith("Revert complete")
+    assert seen
+
+
+def drained_failure(host):
+    """An apply that fails in step_rows: past slug_done, workers stopped, jobs left queued."""
+    host.shell.live.fail = True
+    with pytest.raises(RuntimeError, match="Rename stopped at slug_done"):
+        host.deploy()
+    assert not host.running()["plane-worker"]
+    host.fake.queue_depths = [3]
+
+
+@pytest.mark.parametrize("operation", ["revert", "apply"])
+def test_stopped_workers_cannot_drain_so_the_gate_fails_fast_with_accurate_words(host, operation):
+    drained_failure(host)
+    host.shell.live.fail = False
+    before = host.clock.now
+    with pytest.raises(RuntimeError) as caught:
+        host.deploy(operation)
+    text = str(caught.value)
+    assert host.clock.now == before  # no 60 s wait
+    assert "3 jobs still queued and the workers are stopped" in text
+    assert "kept (not purged)" in text and "PLANE_RENAME_ALLOW_UNDRAINED=1" in text
+    assert "Let the workers finish" not in text and "stop them by hand" not in text
+    assert "left as they are" in text
+    assert not host.running()["plane-worker"]
+    # the override carries on
+    done = host.deploy(operation, allow_undrained=True)
+    assert done.startswith("Rename complete" if operation == "apply" else "Revert complete")
+
+
+def test_marker_carries_the_receipt_directory_id(host, tmp_path):
+    snippet_call(host)
+    argv = next(c for c in host.fake.calls if "manage.py" in c)
+    assert argv[3].split("=", 1)[1].startswith(wr.run_id(host.directory) + ":")
+    assert wr.run_id(host.directory) != wr.run_id(tmp_path / "elsewhere")
+    assert len(wr.run_id(host.directory)) == 12
+
+
+def test_sweep_refuses_and_kills_nothing_when_another_directory_has_a_live_run(host):
+    host.fake.procs = ["0123456789ab:live-run-elsewhere"]
+    with pytest.raises(
+        RuntimeError, match="Refused: another rename run is active on this instance"
+    ):
+        host.deploy()
+    assert host.fake.procs == ["0123456789ab:live-run-elsewhere"]
+    assert not mutating(host.fake)
+
+
+def test_sweep_kills_this_directory_only_when_no_foreign_run_exists(host):
+    mine = wr.run_id(host.directory) + ":stale"
+    host.fake.procs = [mine]
+    assert host.deploy().startswith("Rename complete")
+    assert host.fake.procs == []
+
+
+def test_idle_deadline_override_in_the_payload_applies_and_is_restored(host):
+    host.fake.hang_ops = {"step_slug"}
+    with pytest.raises(RuntimeError, match=r"timed out after 0\.3 s"):
+        host.deploy(snippet_idle_seconds=0.3)
+    assert wr.SNIPPET_IDLE_SECONDS == 900
+
+
+def test_invalid_idle_override_in_the_payload_is_ignored(host):
+    host.deploy("check", snippet_idle_seconds=-5)
+    host.deploy("check", snippet_idle_seconds=True)
+    assert wr.SNIPPET_IDLE_SECONDS == 900
+
+
+def test_cli_idle_override_is_validated_and_sent(monkeypatch):
+    from plane_toolchain import remote
+
+    sent = []
+    env = {
+        "PLANE_RENAME_FROM": "old-slug",
+        "PLANE_RENAME_TO": "new-slug",
+        "PLANE_MCP_SSH": "owner@203.0.113.7",
+        "PLANE_API_CONTAINER": "plane-api",
+        "PLANE_LIVE_URL": "https://plane.example.com",
+    }
+    for name in (*env, "PLANE_RENAME_SNIPPET_IDLE_SECONDS", "PLANE_RENAME_ALLOW_UNDRAINED"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        remote.subprocess,
+        "run",
+        lambda argv, **kw: sent.append(kw["input"]) or SimpleNamespace(returncode=0),
+    )
+
+    def run():
+        with pytest.raises(SystemExit) as stop:
+            wr.main(["check"])
+        return stop.value.code
+
+    monkeypatch.setenv("PLANE_RENAME_SNIPPET_IDLE_SECONDS", "3600")
+    assert run() == 0 and json.loads(sent[-1])["snippet_idle_seconds"] == 3600
+    for bad in ("0", "-1", "abc", "99999"):
+        monkeypatch.setenv("PLANE_RENAME_SNIPPET_IDLE_SECONDS", bad)
+        assert "Invalid PLANE_RENAME_SNIPPET_IDLE_SECONDS" in run()
+    assert len(sent) == 1
+
+
+def test_check_scans_emit_progress_that_the_host_does_not_keep(host, monkeypatch):
+    from plane_toolchain import workspace_rename_backend as backend
+    from test_workspace_rename_backend import make_orm, run_check
+
+    monkeypatch.setattr(backend, "PROGRESS_EVERY", 1)
+    ok, events = run_check(make_orm())
+    assert ok and sum(e["event"] == "progress" for e in events) > 10
+    source = wr.snippet_source().replace("PROGRESS_EVERY = 500", "PROGRESS_EVERY = 1")
+    summary, kept = wr.run_snippet(
+        "plane-api",
+        source,
+        "check",
+        {"old": "old-slug", "new": "new-slug"},
+        wr.secure_receipt_dir(host.directory),
+        host.fake.popen,
+    )
+    assert summary["ok"] is True
+    assert not any(e["event"] == "progress" for e in kept)
+
+
+def test_container_names_are_hidden_in_backup_failure_text(host):
+    host.fake.pg_dump_code = 1
+    host.fake.pg_dump_stderr = b"could not translate host name plane-db for plane-api\n"
+    with pytest.raises(RuntimeError, match="pg_dump exited with an error") as caught:
+        host.deploy()
+    text = str(caught.value)
+    assert "<container>" in text and "plane-db" not in text and "plane-api" not in text
+
+
+def test_killer_wait_is_bounded_and_unknown_is_not_confirmed(monkeypatch):
+    import threading
+
+    from fake_docker import Hung
+
+    monkeypatch.setattr(wr, "KILL_WAIT", 0.2)
+    dead = threading.Event()
+
+    class Stuck:
+        stdout = Hung(dead)
+
+        def kill(self):
+            dead.set()
+
+        def wait(self):
+            return -9
+
+    started = time.monotonic()
+    assert wr.stop_snippet("plane-api", "h:t", lambda argv, **kw: Stuck()) is False
+    assert time.monotonic() - started < 5
+    assert dead.is_set()
+
+
+def test_interrupt_with_an_unconfirmed_stop_warns_on_stderr(host, monkeypatch, capsys):
+    host.fake.snippet_outlives_client = True
+    host.fake.immortal = True
+
+    def interrupted(*args, **kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(wr, "append_journal", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        snippet_call(host, "step_slug")
+    assert "snippet may still be running" in capsys.readouterr().err

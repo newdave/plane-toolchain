@@ -81,6 +81,7 @@ ROW_FIELDS = ("description_html", *REBUILD_FIELDS)
 # Journalled as base64 text; journal_values decodes them back to bytes.
 BINARY_COLUMNS = ("description_binary", "comment_binary")
 PAGE_SIZE = 200
+PROGRESS_EVERY = 500  # rows scanned between `progress` events (they re-arm the host's deadline)
 
 
 def _scope(key, workspace_id):
@@ -127,7 +128,9 @@ def _plan(orm, workspace_id, old, hosts, emit):
         owner = () if key in UNOWNED else ("workspace_id",)
         rows = orm.models[key].all_objects.filter(**_scope(key, workspace_id))
         rows = rows.values("pk", *owner, *names)
-        for row in rows:
+        for scanned, row in enumerate(rows, 1):
+            if scanned % PROGRESS_EVERY == 0:
+                emit({"event": "progress"})
             if not _owned(key, row, workspace_id, old):
                 continue
             for column, kind in columns:
@@ -177,22 +180,24 @@ def _unfixed(orm, workspace_id, old, hosts, emit):
         for column, kind in columns:
             owner = () if key in UNOWNED else ("workspace_id",)
             rows = orm.models[key].all_objects.values("pk", *owner, column).iterator()
-            ids = [
-                str(r["pk"])
-                for r in rows
-                if not _owned(key, r, workspace_id, old) and _count(r[column], kind, old, hosts)
-            ]
+            ids = []
+            for scanned, r in enumerate(rows, 1):
+                if scanned % PROGRESS_EVERY == 0:
+                    emit({"event": "progress"})
+                if not _owned(key, r, workspace_id, old) and _count(r[column], kind, old, hosts):
+                    ids.append(str(r["pk"]))
             if ids:
                 total += len(ids)
                 _report(emit, table, column, ids, "other_workspace")
     for db_table, model, attname, column, kind in orm.text_columns():
         if (db_table, column) in in_scope:
             continue
-        ids = [
-            str(r["pk"])
-            for r in model.all_objects.values("pk", attname).iterator()
-            if _count(r[attname], kind, old, hosts)
-        ]
+        ids = []
+        for scanned, r in enumerate(model.all_objects.values("pk", attname).iterator(), 1):
+            if scanned % PROGRESS_EVERY == 0:
+                emit({"event": "progress"})
+            if _count(r[attname], kind, old, hosts):
+                ids.append(str(r["pk"]))
         if ids:
             total += len(ids)
             _report(emit, db_table, column, ids, "out_of_scope")
