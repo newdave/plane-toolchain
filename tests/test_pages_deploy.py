@@ -1002,8 +1002,8 @@ def seams(fake):
     return dict(docker=fake.docker, probe=fake.probe, create=fake.create, health=health)
 
 
-def deploy(operation, fake):
-    return pages_deploy.deploy(payload(operation), now=lambda: NOW + 0.5, **seams(fake))
+def deploy(operation, fake, later=0):
+    return pages_deploy.deploy(payload(operation), now=lambda: NOW + later + 0.5, **seams(fake))
 
 
 def test_seam_apply_success(host):
@@ -1164,16 +1164,100 @@ def test_matrix_fresh_host_writes_only_neutral_names(host):
     assert "terrainlink" not in dockerfile
 
 
-def test_matrix_legacy_host_checks_and_reapply_migrates_backup_name():
+def test_matrix_legacy_host_checks_then_reapply_rebuilds_with_neutral_label_and_module():
     fake = legacy_applied()
+    old_id = fake.containers["api"]["id"]
     assert deploy("check", fake) == "Pages image and API health verified"
-    assert deploy("apply", fake) == "Pages image already applied; API healthy"
-    assert NEW_BACKUP in fake.containers and LEGACY_BACKUP not in fake.containers
-    assert restart(fake, NEW_BACKUP) == "no" and not fake.containers[NEW_BACKUP]["running"]
-    assert running(fake) == ["api"]
-    # Revert still finds the migrated backup.
-    assert deploy("revert", fake).startswith("Original API container restored")
+    assert deploy("apply", fake).startswith("Pages derived image applied")
+    assert_neutral_layout(fake)
+    assert fake.containers["api"]["id"] != old_id
+    [(tag, files)] = fake.builds
+    dockerfile = files["Dockerfile"].decode()
+    assert tag == NEW_IMAGE
+    assert "COPY plane_pages.py /code/plane/api/plane_toolchain_pages.py\n" in dockerfile
+    assert "from plane.api.plane_toolchain_pages import routes" in dockerfile
+    # The legacy derived is retained stopped under a revert name; it never auto-starts.
+    retired = f"api-pages-reverted-{NOW}"
+    assert fake.containers[retired]["id"] == old_id and not fake.containers[retired]["running"]
+    assert restart(fake, retired) == "no"
+    assert deploy("check", fake) == "Pages image and API health verified"
+    # Revert finds the migrated backup and restores the original.
+    assert deploy("revert", fake, later=10).startswith("Original API container restored")
     assert_original_restored_any(fake)
+    assert restart(fake, "api") == "unless-stopped"
+
+
+def test_matrix_legacy_host_reapply_keeps_live_restart_policy():
+    fake = legacy_applied()
+    fake.containers["api"]["host_config"]["RestartPolicy"] = {
+        "Name": "on-failure",
+        "MaximumRetryCount": 3,
+    }
+    deploy("apply", fake)
+    assert_neutral_layout(fake, policy="on-failure")
+    assert fake.containers["api"]["host_config"]["RestartPolicy"]["MaximumRetryCount"] == 3
+    assert deploy("revert", fake, later=10).startswith("Original API container restored")
+    assert restart(fake, "api") == "on-failure"
+
+
+def assert_legacy_host_intact(fake):
+    """The legacy layout survives a failed migration and every operation still accepts it."""
+    assert running(fake) == ["api"]
+    assert fake.containers["api"]["labels"] == {"owner": "kept", LEGACY_LABEL: DIGEST}
+    assert fake.containers[LEGACY_BACKUP]["labels"] == {"owner": "kept"}
+    assert NEW_BACKUP not in fake.containers
+    assert restart(fake, "api") == "unless-stopped"
+    assert set(retained(fake).values()) == {"no"}
+    assert deploy("check", fake) == "Pages image and API health verified"
+
+
+@pytest.mark.parametrize(
+    "failure", ["create", "start", "health", ("rename", "api", f"api-pages-reverted-{NOW}")]
+)
+def test_matrix_legacy_reapply_failure_restores_legacy_host(failure):
+    fake = legacy_applied()
+    if failure == "health":
+        fake.created_healthy = False
+    else:
+        fake.fail.append(failure)
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        deploy("apply", fake)
+    assert_legacy_host_intact(fake)
+    # Revert and a retried apply still accept the state.
+    fake.created_healthy = True
+    assert deploy("apply", fake).startswith("Pages derived image applied")
+    assert_neutral_layout(fake)
+
+
+def test_matrix_legacy_reapply_killed_mid_swap_leaves_mid_revert_layout():
+    fake = legacy_applied()
+    retired = f"api-pages-reverted-{NOW}"
+    # A kill after the retire rename and before create: no `api`, original waits as backup.
+    fake.containers[retired] = fake.containers.pop("api")
+    fake.containers[retired]["running"] = False
+    fake.containers[retired]["host_config"]["RestartPolicy"] = {"Name": "no"}
+    assert deploy("revert", fake) == "Original API container restored"
+    assert_original_restored_any(fake)
+    fake = legacy_applied()
+    fake.containers[retired] = fake.containers.pop("api")
+    fake.containers[retired]["running"] = False
+    fake.containers[retired]["host_config"]["RestartPolicy"] = {"Name": "no"}
+    deploy("apply", fake)
+    assert_neutral_layout(fake)
+
+
+def test_matrix_reconciled_legacy_backup_then_apply_failure_restores_original():
+    fake = legacy_applied()
+    del fake.containers["api"]
+    fake.created_healthy = False
+    with pytest.raises(ValueError, match="health"):
+        deploy("apply", fake)
+    assert running(fake) == ["api"]
+    assert fake.containers["api"]["labels"] == {"owner": "kept"}
+    assert LEGACY_BACKUP not in fake.containers and NEW_BACKUP not in fake.containers
+    failed = fake.containers[f"api-pages-failed-{NOW}"]
+    assert failed["labels"] == {"owner": "kept", NEW_LABEL: DIGEST} and not failed["running"]
+    assert set(retained(fake).values()) == {"no"}
 
 
 def test_matrix_legacy_host_reverts_then_applies_neutral():
@@ -1252,6 +1336,10 @@ def test_matrix_mixed_backups_refuse_without_changes(operation, current):
     if not current:
         del fake.containers["api"]
     before = {n: dict(c) for n, c in fake.containers.items()}
+    if operation == "check" and not current:  # No API to check: the lookup error stands.
+        with pytest.raises(subprocess.CalledProcessError):
+            deploy(operation, fake)
+        return
     with pytest.raises(ValueError, match="reconcile manually") as error:
         deploy(operation, fake)
     assert LEGACY_BACKUP in str(error.value) and NEW_BACKUP in str(error.value)

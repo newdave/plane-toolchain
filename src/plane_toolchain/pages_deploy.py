@@ -331,11 +331,84 @@ def reconcile(current, name, backup, docker, probe, health, now):
     health(name, pages=False)
 
 
+def derive(base_container, payload, docker):
+    """Build the derived image from base_container's image; return the create body for `name`."""
+    base = json.loads(docker("image", "inspect", base_container["Image"]))[0]
+    if not base.get("RepoDigests"):
+        raise ValueError("Running image has no immutable registry digest")
+    digest = payload["digest"]
+    image = NEUTRAL_PAGES_IMAGE_PREFIX + digest[:16]
+    docker(
+        "build",
+        "-t",
+        image,
+        "-",
+        input=build_context(base["RepoDigests"][0], payload["source"].encode()),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    namespace = {
+        "PAGES_LABEL": PAGES_LABEL,
+        "NEUTRAL_PAGES_LABEL": NEUTRAL_PAGES_LABEL,
+    }  # the shipped replacement reads these
+    exec(payload["replacement"], namespace)  # noqa: S102 - source shipped by main()
+    return namespace["replacement"](base_container, image, payload["live_url"], digest)
+
+
+def legacy_only(container):
+    """True when the container carries the legacy source label and no neutral one."""
+    labels = container["Config"].get("Labels") or {}
+    return PAGES_LABEL in labels and NEUTRAL_PAGES_LABEL not in labels
+
+
+def migrate(current, payload, backup, docker, probe, create, health, now):
+    """Replace a healthy legacy-labelled derived with a neutral-labelled one.
+
+    The upstream original (the rollback container) is the build base and stays in place. The
+    old derived is retired like a revert does, so a kill leaves a layout that check, revert and
+    apply accept (a mid-revert layout). The backup moves to the neutral name only once healthy.
+    """
+    name = payload["container"]
+    held = json.loads(docker("inspect", backup))[0]
+    if source_label(held) is not None:
+        raise ValueError("Existing rollback container; reconcile before a new deployment")
+    body = derive(held, payload, docker)
+    policy = restart_arg(current)  # The live policy; the retained original holds `no`.
+    body["HostConfig"]["RestartPolicy"] = copy.deepcopy(current["HostConfig"]["RestartPolicy"])
+    reverted = name + "-pages-reverted-" + str(int(now()))
+    try:
+        docker("stop", name)
+        docker("rename", name, reverted)
+    except BaseException:
+        probe("start", name)  # Never leave the live API stopped; its policy is unchanged.
+        raise
+    probe("update", "--restart=no", reverted)
+    try:
+        create(name, body)
+        docker("start", name)
+        health(name)
+    except BaseException:
+        if probe("inspect", name):
+            probe("stop", name)
+            failed = failed_name(name, probe, now)
+            docker("rename", name, failed)
+            probe("update", "--restart=no", failed)
+        docker("rename", reverted, name)
+        probe("update", "--restart=" + policy, name)
+        docker("start", name)
+        raise
+    probe("rename", backup, backup_name(name))  # Best effort; either name is accepted.
+    return "Pages derived image applied; API healthy; original container retained for rollback"
+
+
 def apply(current, payload, backup, docker, probe, create, health, now):
     name, digest = payload["container"], payload["digest"]
     applied = current is not None and source_label(current) == digest
     if applied and current["State"].get("Running"):
         health(name)
+        if legacy_only(current) and probe("inspect", backup):
+            # Only the legacy label: rebuild with the neutral label and module.
+            return migrate(current, payload, backup, docker, probe, create, health, now)
         if backup != backup_name(name):
             # Healthy: move a legacy backup to the neutral name. Best effort; either name works.
             probe("rename", backup, backup_name(name))
@@ -347,26 +420,7 @@ def apply(current, payload, backup, docker, probe, create, health, now):
     elif applied:
         health(name)  # Stopped derived without a rollback container: refuse via health.
         return "Pages image already applied; API healthy"
-    source = payload["source"].encode()
-    base = json.loads(docker("image", "inspect", current["Image"]))[0]
-    if not base.get("RepoDigests"):
-        raise ValueError("Running image has no immutable registry digest")
-    image = NEUTRAL_PAGES_IMAGE_PREFIX + digest[:16]
-    docker(
-        "build",
-        "-t",
-        image,
-        "-",
-        input=build_context(base["RepoDigests"][0], source),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    namespace = {
-        "PAGES_LABEL": PAGES_LABEL,
-        "NEUTRAL_PAGES_LABEL": NEUTRAL_PAGES_LABEL,
-    }  # the shipped replacement reads these
-    exec(payload["replacement"], namespace)  # noqa: S102 - source shipped by main()
-    body = namespace["replacement"](current, image, payload["live_url"], digest)
+    body = derive(current, payload, docker)
     policy = restart_arg(current)  # Read before retiring; restored when promoted back.
     try:
         docker("stop", name)
@@ -434,8 +488,10 @@ def deploy(payload, docker, probe, create, health, now):
         current = json.loads(docker("inspect", payload["container"]))[0]
     except subprocess.CalledProcessError:
         # A missing API with a rollback container is a half-finished apply or revert.
+        if operation not in ("apply", "revert"):
+            raise
         backup = backup_for(payload["container"], probe)
-        if operation not in ("apply", "revert") or not probe("inspect", backup):
+        if not probe("inspect", backup):
             raise
         current = None
     else:
@@ -471,6 +527,9 @@ REMOTE = program(
         revert,
         failed_name,
         reconcile,
+        derive,
+        legacy_only,
+        migrate,
         apply,
         build,
         deploy,

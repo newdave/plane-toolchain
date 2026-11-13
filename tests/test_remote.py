@@ -163,7 +163,7 @@ def test_pages_replacement_namespace_seeds_its_legacy_constants():
         return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)} & legacy_names()
 
     used = names(ast.parse(textwrap.dedent(inspect.getsource(pages_deploy.replacement))))
-    apply_tree = ast.parse(textwrap.dedent(inspect.getsource(pages_deploy.apply)))
+    apply_tree = ast.parse(textwrap.dedent(inspect.getsource(pages_deploy.derive)))
     seeded = {
         key.value
         for node in ast.walk(apply_tree)
