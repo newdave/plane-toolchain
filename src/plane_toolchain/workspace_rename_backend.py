@@ -465,7 +465,169 @@ def step_rows(args, orm, emit, convert=None):
     return True
 
 
-OPERATIONS = {"check": check, "step_slug": step_slug, "step_rows": step_rows}  # T4: restore
+# Restore knows each journalled table's model key and the columns it may write back. Columns
+# with a kind are re-derived (the expected rewritten value) and guard the write; work items and
+# Pages guard on description_html only, because Live built their editor fields.
+RESTORE_COLUMNS = {
+    **{table: (key, dict(columns)) for table, key, columns in SLUG_STEP},
+    **{
+        table: (key, {c: "html" if c == "description_html" else None for c in ROW_FIELDS})
+        for table, key, _ in ROW_STEP
+    },
+}
+ROW_TABLES = tuple(table for table, _, _ in ROW_STEP)
+
+
+class _Refuse(Exception):
+    """A journal or state problem found before any write; carries the refusal reason."""
+
+
+def _restore_plan(args):
+    """Validate the request's journal; return (workspace_id, {(table, id): originals}).
+
+    Generations: a rolled-back step_slug leaves journal lines that a rerun repeats, so the
+    first original per (table, id, column) wins. Raises _Refuse before anything is written."""
+    records = args.get("journal")
+    if not isinstance(records, list):
+        raise _Refuse("journal_invalid")
+    if not records:
+        raise _Refuse("journal_empty")
+    workspace_id, rows = None, {}
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+            raise _Refuse("journal_invalid")
+        if record.get("kind") == "workspace":
+            if workspace_id not in (None, record["id"]):
+                raise _Refuse("journal_invalid")
+            if record.get("slug") != args["old"]:
+                raise _Refuse("journal_mismatch")
+            workspace_id = record["id"]
+            continue
+        table, fields = record.get("table"), record.get("fields")
+        if record.get("kind") != "row" or table not in RESTORE_COLUMNS:
+            raise _Refuse("journal_invalid")
+        columns = RESTORE_COLUMNS[table][1]
+        if not isinstance(fields, dict) or not fields or not set(fields) <= set(columns):
+            raise _Refuse("journal_invalid")
+        if not any(columns[c] for c in fields):  # nothing to re-derive, so no safe guard
+            raise _Refuse("journal_invalid")
+        if table in ROW_TABLES and set(fields) != set(ROW_FIELDS):  # step_rows journals all
+            raise _Refuse("journal_invalid")
+        try:
+            values = journal_values(record)
+        except (TypeError, ValueError):  # bad base64 or a non-text binary value
+            raise _Refuse("journal_invalid") from None
+        originals = rows.setdefault((table, record["id"]), {})
+        for column, value in values.items():
+            originals.setdefault(column, value)
+    if workspace_id is None:
+        raise _Refuse("workspace_record_missing")
+    given = args.get("workspace_id")
+    if given and str(given) != workspace_id:
+        raise _Refuse("workspace_mismatch")
+    return workspace_id, rows
+
+
+def _restore_target(orm, old, new, workspace_id):
+    """True if the slug must go back to OLD, False if it already has; refuse anything else."""
+    rows = list(orm.models["workspace"].all_objects.values("pk", "slug", "deleted_at"))
+    target = [r for r in rows if str(r["pk"]) == workspace_id and not r["deleted_at"]]
+    if not target or target[0]["slug"] not in (old, new):
+        raise _Refuse("workspace_mismatch")
+    if any(r["slug"] == old and str(r["pk"]) != workspace_id for r in rows):  # deleted too
+        raise _Refuse("old_slug_taken")
+    return target[0]["slug"] == new
+
+
+def _restore_row(orm, table, row_id, originals, workspace_id, old, new, hosts):
+    """Restore one row if it still holds the rewrite; return "restored", "already" or a skip.
+
+    The current values are compared with the originals (already restored) and with the
+    re-derived rewrite (restore). Anything else is a newer edit, and is never overwritten.
+    JSON null and SQL NULL both read as None, so None is never used to tell them apart."""
+    key, columns = RESTORE_COLUMNS[table]
+    manager = orm.models[key].all_objects
+    owner = () if key in UNOWNED else ("workspace_id",)
+    current = list(manager.filter(pk=row_id).values(*owner, *originals))
+    if not current:
+        return "missing"
+    current = current[0]
+    if owner and str(current["workspace_id"]) != workspace_id:
+        return "other_workspace"
+    if all(current[c] == v for c, v in originals.items()):
+        return "already"
+    expected = {
+        c: _rewrite(originals[c], columns[c], old, new, hosts)[0] for c in originals if columns[c]
+    }
+    if any(current[c] != v for c, v in expected.items()):
+        return "changed"
+    # Guarded on the expected values: a write between the read and here updates nothing.
+    if manager.filter(pk=row_id, **expected).update(**originals) != 1:
+        return "changed"
+    return "restored"
+
+
+def restore(args, orm, emit, convert=None):
+    """Write each journalled original back with queryset `.update()`, in one transaction.
+
+    The journal arrives in the request (`args["journal"]`, the T5 records), because stdin is
+    the program source under `manage.py shell`. The journal's workspace id must hold NEW (or
+    OLD, once restored), and no other workspace may hold OLD. Rows that no longer hold the
+    expected rewrite are skipped and reported. Never calls Live. Idempotent."""
+    old, new = args["old"], args["new"]
+    summary = {"event": "summary", "ok": False, "step": "restore"}
+    try:
+        workspace_id, rows = _restore_plan(args)
+        slug_back = _restore_target(orm, old, new, workspace_id)
+    except _Refuse as refusal:
+        emit({"event": "refuse", "reason": str(refusal)})
+        emit(summary)
+        return False
+    hosts = hosts_from_url(orm.settings.WEB_URL)
+    counts = {"restored": 0, "already": 0}
+    skips = []
+    try:
+        with orm.atomic():
+            if slug_back:
+                workspaces = orm.models["workspace"].all_objects
+                if workspaces.filter(pk=workspace_id, slug=new).update(slug=old) != 1:
+                    raise _Abort("slug_restore_failed")
+            for (table, row_id), originals in sorted(rows.items()):
+                outcome = _restore_row(orm, table, row_id, originals, workspace_id, old, new, hosts)
+                if outcome in counts:
+                    counts[outcome] += 1
+                else:
+                    skips.append({"event": "skip", "table": table, "id": row_id, "reason": outcome})
+    except _Abort as stop:
+        emit(stop.event)
+        emit(summary)
+        return False
+    except Exception as exc:  # rolled back by atomic(); report the type only, never content
+        emit({"event": "error", "reason": "write_failed", "detail": type(exc).__name__})
+        emit(summary)
+        return False
+    for skip in skips:
+        emit(skip)
+    emit(
+        {
+            **summary,
+            "ok": True,
+            "slug_restored": slug_back,
+            "restored": counts["restored"],
+            "already_restored": counts["already"],
+            "skipped": len(skips),
+            "workspace_id": workspace_id,
+        }
+    )
+    return True
+
+
+OPERATIONS = {
+    "check": check,
+    "step_slug": step_slug,
+    "step_rows": step_rows,
+    "restore": restore,
+}
 
 
 def run(op, args, orm, emit, convert):
