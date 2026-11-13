@@ -8,6 +8,8 @@ from typing import Any
 from uuid import UUID
 
 Call = Callable[[str, dict], Awaitable[Any]]
+PAGE_SIZE = 100
+MAX_PAGES = 50
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9]*-\d+")
 
 
@@ -51,14 +53,19 @@ def read_body(namespace: argparse.Namespace, option: str) -> str:
     if (html is None) == (path is None):
         raise UsageError(f"Cannot read {option}")
     if html is not None:
-        return html
-    try:
-        if path == "-":
-            return sys.stdin.buffer.read().decode("utf-8")
-        with open(path, "rb") as handle:
-            return handle.read().decode("utf-8")
-    except (OSError, UnicodeDecodeError, AttributeError):
-        raise UsageError(f"Cannot read {option}") from None
+        text = html
+    else:
+        try:
+            if path == "-":
+                text = sys.stdin.buffer.read().decode("utf-8")
+            else:
+                with open(path, "rb") as handle:
+                    text = handle.read().decode("utf-8")
+        except (OSError, UnicodeDecodeError, AttributeError):
+            raise UsageError(f"Cannot read {option}") from None
+    if not text.strip():
+        raise UsageError("--html or --file must not be empty")
+    return text
 
 
 def validate(namespace: argparse.Namespace) -> None:
@@ -116,6 +123,10 @@ async def task_update(call: Call, project: str, namespace: argparse.Namespace) -
             # Plane may normalise HTML (e.g. wrap in <p>), so only require non-empty.
             if not item.get(field):
                 raise ReadbackError
+        elif field == "priority" and value == "none":
+            # Plane stores "no priority" as null.
+            if item.get(field) not in (None, "none"):
+                raise ReadbackError
         elif item.get(field) != value:
             raise ReadbackError
     return item
@@ -123,10 +134,12 @@ async def task_update(call: Call, project: str, namespace: argparse.Namespace) -
 
 async def comment_list(call: Call, project: str, namespace: argparse.Namespace) -> Any:
     project_id, workitem_id = await resolve_task(call, project, namespace.ref)
-    return await call(
-        "workitem_comment",
-        {"action": "list", "project_id": project_id, "workitem_id": workitem_id},
-    )
+    arguments: dict = {"action": "list", "project_id": project_id, "workitem_id": workitem_id}
+    if namespace.per_page is not None:
+        arguments["per_page"] = namespace.per_page
+    if namespace.cursor is not None:
+        arguments["cursor"] = namespace.cursor
+    return await call("workitem_comment", arguments)
 
 
 async def comment_add(call: Call, project: str, namespace: argparse.Namespace) -> Any:
@@ -135,12 +148,24 @@ async def comment_add(call: Call, project: str, namespace: argparse.Namespace) -
     created = await call(
         "workitem_comment", {"action": "create", **ids, "comment_html": namespace.body}
     )
-    listing = await call("workitem_comment", {"action": "list", **ids})
-    rows = listing.get("results", []) if isinstance(listing, dict) else listing
     wanted = created.get("id") if isinstance(created, dict) else None
-    if not wanted or not any(isinstance(row, dict) and row.get("id") == wanted for row in rows):
+    if not wanted:
         raise ReadbackError
-    return created
+    cursor = None
+    for _ in range(MAX_PAGES):
+        arguments = {"action": "list", **ids, "per_page": PAGE_SIZE}
+        if cursor:
+            arguments["cursor"] = cursor
+        listing = await call("workitem_comment", arguments)
+        rows = listing.get("results", []) if isinstance(listing, dict) else listing
+        if any(isinstance(row, dict) and row.get("id") == wanted for row in rows):
+            return created
+        if not (isinstance(listing, dict) and listing.get("next_page_results")):
+            break
+        cursor = listing.get("next_cursor")
+        if not cursor:
+            break
+    raise ReadbackError
 
 
 HANDLERS: dict[tuple[str, str], Callable[[Call, str, argparse.Namespace], Awaitable[Any]]] = {

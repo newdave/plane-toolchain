@@ -287,7 +287,10 @@ def test_comment_add_reads_file_and_confirms_by_listing(tmp_path):
                 "comment_html": "<p>hi</p>",
             },
         ),
-        ("workitem_comment", {"action": "list", "project_id": PROJECT, "workitem_id": OTHER}),
+        (
+            "workitem_comment",
+            {"action": "list", "project_id": PROJECT, "workitem_id": OTHER, "per_page": 100},
+        ),
     ]
     assert json.loads(out) == created
 
@@ -339,3 +342,49 @@ def test_writes_are_not_retried(tmp_path):
     code, _, _ = run(["task", "update", OTHER, "--name", "x"], fake, tmp_path)
     assert code == 4
     assert [c[1]["action"] for c in fake.calls] == ["update"]
+
+
+def test_comment_add_follows_pages_to_find_the_comment(tmp_path):
+    page1 = {"results": [{"id": "c0"}], "next_page_results": True, "next_cursor": "n1"}
+    page2 = {"results": [{"id": "c1"}], "next_page_results": False}
+    fake = Fake([{"id": "c1"}, page1, page2])
+    code, _, _ = run(["comment", "add", OTHER, "--html", "x"], fake, tmp_path)
+    assert code == 0
+    listed = [c[1] for c in fake.calls[1:]]
+    assert listed[0]["per_page"] == 100
+    assert "cursor" not in listed[0]
+    assert listed[1]["cursor"] == "n1"
+
+
+def test_comment_add_page_cap_stops_the_loop(tmp_path):
+    page = {"results": [{"id": "c0"}], "next_page_results": True, "next_cursor": "n"}
+    fake = Fake([{"id": "c1"}] + [page] * 60)
+    code, _, _ = run(["comment", "add", OTHER, "--html", "x"], fake, tmp_path)
+    assert code == 5
+    assert len(fake.calls) == 1 + 50
+
+
+def test_comment_list_passes_paging(tmp_path):
+    fake = Fake([{}])
+    run(["comment", "list", OTHER, "--per-page", "5", "--cursor", "c"], fake, tmp_path)
+    assert fake.calls[0][1]["per_page"] == 5
+    assert fake.calls[0][1]["cursor"] == "c"
+
+
+def test_empty_bodies_are_usage_errors_without_connecting(tmp_path):
+    empty = tmp_path / "empty"
+    empty.write_text("  \n")
+    fake = Fake()
+    for argv in (
+        ["task", "update", OTHER, "--html", ""],
+        ["comment", "add", OTHER, "--file", str(empty)],
+    ):
+        code, _, err = run(argv, fake, tmp_path)
+        assert (code, err) == (2, "plane: --html or --file must not be empty\n")
+    assert fake.entered == 0
+
+
+def test_priority_none_accepts_null_readback(tmp_path):
+    fake = Fake([{}, {"priority": None}])
+    code, _, _ = run(["task", "update", OTHER, "--priority", "none"], fake, tmp_path)
+    assert code == 0

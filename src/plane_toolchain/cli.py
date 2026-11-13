@@ -56,6 +56,8 @@ def parser() -> argparse.ArgumentParser:
     )
     comments = comment.add_parser("list", parents=[common], help="list comments")
     comments.add_argument("ref", help="task UUID or identifier such as PTC-12")
+    comments.add_argument("--per-page", type=int, default=None)
+    comments.add_argument("--cursor", default=None)
     added = comment.add_parser("add", parents=[common], help="add a comment")
     added.add_argument("ref", help="task UUID or identifier such as PTC-12")
     body(added)
