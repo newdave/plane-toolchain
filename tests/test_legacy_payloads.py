@@ -13,11 +13,17 @@ def test_server_payloads_match_existing_deployment_receipts():
         # PTC-13: digest changed (canonical UUIDs, SDK guard, FASTMCP_HOST); see docs/extensions.md.
         # PTC-44: digest changed (ce_page update action); see docs/extensions.md.
         # PTC-29: digest changed (comment wording only; provenance line removed).
-        "ce_tools.py": "3251a424debf574af740455e95abc4861c8edc7d2b4953fc2f29aa33700dc855",
+        # PTC-70: digest changed (update tool description mentions late_store_check).
+        # PTC-71: digest changed (relation_result docstring: cross-project ids).
+        # PTC-70: digest changed again (async ce_page update confirms the late store itself).
+        "ce_tools.py": "03902b5cd9c390c9b9fb07c75e4cd16ae7055ad02b86106ed8d798f98efef08c",
         # PTC-19: digest changed (client messages from a fixed table; CodeQL stack-trace alerts).
         # PTC-44: digest changed (page update route, force_close via Redis); see docs/extensions.md.
         # PTC-29: digest changed (comment and docstring wording only).
-        "pages_backend.py": "03376b3dc996fa7300cefbb13cabe74750f4945c7f95f59d0544f2a128afa1d8",
+        # PTC-69: digest changed (non-object request bodies and Live replies are 400/502, not 500).
+        # PTC-70: digest changed (update returns at once with late_store_check; no post-commit polling).
+        # PTC-70: digest changed again (late_store_check carries html_sha256).
+        "pages_backend.py": "03ae665105e1fb74ec10e5b42ed27207ca016386b3495decbb406b8d020f71eb",
     }
     for name, digest in expected.items():
         assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
