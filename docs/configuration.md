@@ -44,6 +44,10 @@ Both clients have project SessionStart hooks calling the same offline status rep
 
 With mise activated in zsh, entering this project installs `[Plane:enabled]`, `[Plane:disabled]` or `[Plane:invalid]` in the prompt. The badge refreshes before each prompt. Leaving the project removes it and restores the previous prompt. Bash, fish and non-interactive shells can use `mise run plane:status`; they do not get a prompt badge.
 
+## Blocked tasks
+
+An agent blocked on a human decision posts a comment with the exact question and options, adds the project label `awaiting-decision` and moves the task out of In Progress unless other work on it continues. It rereads both writes to confirm them. The label means the agent is blocked until a human answers the question in the latest comment. The agent removes it once the answer arrives and then resumes the task.
+
 ## Local project data
 
 Keep real endpoints and resource identities in ignored local configuration or your secret manager. The public repository contains no deployment destinations, real task IDs or credentials. Plane holds planning and task scope; the public code is usable with any compatible CE instance.
