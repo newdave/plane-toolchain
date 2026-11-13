@@ -118,8 +118,26 @@ def hold_sigterm():
     return signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
 
 
-def release_sigterm(mask):
-    signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+def release_sigterm(mask, failure=None):
+    """Restore the mask from `hold_sigterm`; a deferred SIGTERM is delivered here (exit 143).
+
+    `failure` is the exception the caller re-raises next. That SystemExit would replace it, so
+    when SIGTERM is pending its report goes out first, ahead of the termination line. If the
+    signal lands only after the check, the report still goes out before the exit propagates.
+    A `failure` that is not an `Exception` (the SIGTERM itself) needs no report.
+    """
+    report = None
+    if isinstance(failure, Exception):
+        report = type(failure).__name__ + ": " + str(failure)
+        if signal.SIGTERM in signal.sigpending():
+            say(report, sys.stderr)
+            report = None
+    try:
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+    except SystemExit:
+        if report:
+            say(report, sys.stderr)
+        raise
 
 
 def guarded(entry):

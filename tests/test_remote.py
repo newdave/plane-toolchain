@@ -398,5 +398,29 @@ def test_mcp_sigterm_during_a_failure_triggered_rollback_does_not_abort_it(tmp_p
     assert (host / "server.py").read_bytes() == ORIGINAL
     assert not (host / "plane-toolchain-ce-receipt.json").exists()
     assert state["calls"].count(["restart", "plane-mcp"]) == 2
-    # ... and the deferred SIGTERM was delivered afterwards.
+    # ... and the deferred SIGTERM was delivered afterwards, after the failure report.
     assert code == 143 and "Terminated (SIGTERM)" in err
+    assert err.index("CalledProcessError") < err.index("Terminated (SIGTERM)")
+
+
+def test_pages_sigterm_during_a_failure_triggered_rollback_does_not_abort_it(tmp_path):
+    from support_pages_deploy import BACKUP, payload
+
+    # The derived container never turns healthy: apply fails and rolls back. SIGTERM lands in
+    # the rename that puts the original back.
+    config = {
+        "kind": "pages",
+        "payload": payload("apply"),
+        "block_call": ["rename", BACKUP, "api"],
+        "block": 3,
+    }
+    code, state, err = run_harness(tmp_path, config)
+    assert state is not None, err
+    assert "Traceback" not in err
+    # The rollback ran to its end: the original runs as api again ...
+    assert state["containers"]["api"] == {"running": True, "labelled": False}
+    assert state["calls"].count(["rename", BACKUP, "api"]) == 1
+    assert ["start", "api"] in state["calls"][state["calls"].index(["rename", BACKUP, "api"]) :]
+    # ... and the deferred SIGTERM was delivered afterwards, after the failure report.
+    assert code == 143 and "API health check failed" in err
+    assert err.index("API health check failed") < err.index("Terminated (SIGTERM)")

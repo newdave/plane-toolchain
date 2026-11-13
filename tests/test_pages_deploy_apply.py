@@ -166,6 +166,18 @@ def test_apply_retire_rename_failure_keeps_live_policy(host):
     assert host.calls[-3:] == [("stop", "api"), ("rename", "api", BACKUP), ("start", "api")]
 
 
+def test_apply_retire_failure_restarts_the_api_with_sigterm_held(host, monkeypatch):
+    events = []
+    monkeypatch.setattr(pages_deploy, "hold_sigterm", lambda: events.append("hold"))
+    monkeypatch.setattr(pages_deploy, "release_sigterm", lambda *a: events.append("release"))
+    real = host.probe
+    host.probe = lambda *args: (events.append(args[0]), real(*args))[1]
+    host.fail.append(("rename", "api", BACKUP))
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy("apply", host)
+    assert events[-3:] == ["hold", "start", "release"]
+
+
 def test_apply_reconciles_missing_api_with_default_policy_note(retired, monkeypatch, capsys):
     remote("apply", retired, monkeypatch)
     assert capsys.readouterr().out == NOTE + APPLIED

@@ -53,8 +53,14 @@ def test_prune_with_confirmation_removes_only_stopped_labelled_retired_container
     host.add(BACKUP, labels={LABEL: DIGEST}, running=False)
     host.add("api-other-pages-failed-9", labels={LABEL: DIGEST}, running=False)
     message = prune(host, confirm=True)
-    assert set(host.containers) == {"api", BACKUP, "api-pages-failed-3", "api-other-pages-failed-9"}
-    assert "Pruned: " in message and "api-pages-reverted-1" in message
+    assert set(host.containers) == {
+        "api",
+        BACKUP,
+        "api-pages-reverted-1",
+        "api-pages-failed-3",
+        "api-other-pages-failed-9",
+    }
+    assert "Pruned: api-pages-failed-2, api-pages-failed-2-1" in message
     assert "kept running: api-pages-failed-3" in message
 
 
@@ -81,7 +87,7 @@ def test_prune_never_removes_an_unlabelled_failed_container(host):
 def test_prune_leaves_the_live_api_and_rollback_container(applied):
     park_retired(applied)
     prune(applied, confirm=True)
-    assert set(applied.containers) == {"api", BACKUP}
+    assert set(applied.containers) == {"api", BACKUP, "api-pages-reverted-1"}
     assert applied.containers["api"]["running"]
     assert ("stop", "api") not in applied.calls and ("rm", "api") not in applied.calls
 
@@ -96,7 +102,43 @@ def test_prune_reports_a_container_that_would_not_go(host):
     host.fail.append(("rm", "api-pages-failed-2"))
     message = prune(host, confirm=True)
     assert "api-pages-failed-2" in message and "could not remove" in message
-    assert "api-pages-reverted-1" not in host.containers
+    assert "api-pages-failed-2-1" not in host.containers
+
+
+def test_prune_keeps_the_newest_reverted_container_as_revert_evidence(host):
+    park_retired(host)
+    host.add("api-pages-reverted-0", labels={LABEL: DIGEST}, running=False)
+    message = prune(host, confirm=True)
+    assert "api-pages-reverted-1" in host.containers
+    assert "api-pages-reverted-0" not in host.containers
+    assert message.endswith(
+        "; kept newest reverted container (revert recovery): api-pages-reverted-1"
+    )
+
+
+def test_prune_keeps_a_lone_reverted_container_even_when_the_api_is_stopped(host):
+    # A revert killed after `rename api -> reverted`: the evidence must survive a prune.
+    host.add("api-pages-reverted-1", labels={LABEL: DIGEST}, running=False)
+    host.containers["api"]["running"] = False
+    message = prune(host, confirm=True)
+    assert message.startswith("No retired containers to prune; kept newest reverted")
+    assert "api-pages-reverted-1" in host.containers
+    assert ("rm", "api-pages-reverted-1") not in host.calls
+
+
+def test_prune_dry_run_does_not_offer_the_newest_reverted_container(host):
+    park_retired(host)
+    message = prune(host)
+    assert "Would remove: api-pages-failed-2, api-pages-failed-2-1;" in message
+
+
+def test_prune_skips_a_container_removed_between_listing_and_inspect(host):
+    park_retired(host)
+    host.add("api-pages-failed-1", labels={LABEL: DIGEST}, running=False)
+    host.fail.append(("inspect", "api-pages-failed-1"))
+    message = prune(host, confirm=True)
+    assert "Pruned: api-pages-failed-2, api-pages-failed-2-1" in message
+    assert "api-pages-failed-1" in host.containers  # skipped, never removed
 
 
 def test_prune_refuses_legacy_named_state(host):
