@@ -403,15 +403,20 @@ class FakeLive:
         }
 
 
-def run_op(op, orm, convert=None, ns=None, old="old-slug", new="new-slug"):
+def run_op(op, orm, convert=None, ns=None, old="old-slug", new="new-slug", on_emit=None, **extra):
+    """Run one op; step_rows gets the renamed workspace id, as T7 passes it from the journal."""
     ns = ns or snippet_namespace()
     events = []
+    if op == "step_rows":
+        extra.setdefault("workspace_id", "w1")
 
     def emit(event):
         orm.log.append(("emit", event))
         events.append(event)
+        if on_emit is not None:
+            on_emit(event)
 
-    ok = ns["run"](op, {"old": old, "new": new}, orm, emit, convert)
+    ok = ns["run"](op, {"old": old, "new": new, **extra}, orm, emit, convert)
     return ok, events
 
 
@@ -491,11 +496,95 @@ def test_step_slug_refuses_like_check_before_writing():
 
 def test_step_slug_resume_after_commit_is_a_noop():
     orm = make_orm()
-    run_op("step_slug", orm)
+    _, first = run_op("step_slug", orm)
+    assert first[-1]["workspace_id"] == "w1"
     after = orm.snapshot()
-    ok, events = run_op("step_slug", orm)
+    ok, events = run_op("step_slug", orm, workspace_id="w1")
     assert ok and orm.snapshot() == after and not journal(events)
-    assert events[-1] == {"event": "summary", "ok": True, "step": "slug", "already": True}
+    assert events[-1] == {
+        "event": "summary",
+        "ok": True,
+        "step": "slug",
+        "already": True,
+        "workspace_id": "w1",
+    }
+    ok, events = run_op("step_slug", orm)  # resume without the journalled id
+    assert not ok and orm.snapshot() == after
+    assert events[0] == {"event": "refuse", "reason": "old_missing_or_deleted"}
+
+
+def other_workspace_holds_new():
+    """OLD never existed here, and NEW belongs to a workspace this rename never touched."""
+    orm = make_orm()
+    orm.models["workspace"].rows[:] = [
+        {"id": "w1", "slug": "unrelated", "deleted_at": None},
+        {"id": "w2", "slug": "new-slug", "deleted_at": None},
+    ]
+    for table in orm.models.values():
+        for r in table.rows:
+            if r.get("workspace_id") == "w1":
+                r["workspace_id"] = "w2"  # NEW's rows carry OLD links
+    return orm
+
+
+@pytest.mark.parametrize("op", ["step_slug", "step_rows"])
+@pytest.mark.parametrize("given", [None, "w1"])
+def test_apply_steps_refuse_when_new_slug_belongs_to_another_workspace(op, given):
+    orm = other_workspace_holds_new()
+    before = orm.snapshot()
+    live = FakeLive()
+    ok, events = run_op(op, orm, live, workspace_id=given)
+    assert not ok and orm.snapshot() == before and not journal(events) and not live.calls
+    # without an id, a first step_slug run validates OLD like check and finds it missing
+    missing = "old_missing_or_deleted" if op == "step_slug" else "workspace_id_missing"
+    expected = missing if given is None else "workspace_mismatch"
+    assert events[0] == {"event": "refuse", "reason": expected}
+    assert events[-1]["ok"] is False
+
+
+def test_step_slug_refuses_an_id_that_is_not_the_old_workspace():
+    orm = make_orm()
+    before = orm.snapshot()
+    ok, events = run_op("step_slug", orm, workspace_id="w2")
+    assert not ok and orm.snapshot() == before
+    assert events[0] == {"event": "refuse", "reason": "workspace_mismatch"}
+
+
+def test_step_slug_guard_rolls_back_on_concurrent_edit():
+    orm = make_orm()
+    before = orm.snapshot()
+
+    def edit_after_read(event):  # another writer changes c1 between read and update
+        record = event.get("record", {})
+        if record.get("table") == "issue_comments":
+            row(orm, "comment", "c1")["comment_html"] = "<p>edited elsewhere</p>"
+
+    ok, events = run_op("step_slug", orm, on_emit=edit_after_read)
+    assert not ok and ("rollback",) in orm.log
+    error = next(e for e in events if e["event"] == "error")
+    assert error == {
+        "event": "error",
+        "reason": "row_changed",
+        "table": "issue_comments",
+        "id": "c1",
+    }
+    assert row(orm, "workspace", "w1")["slug"] == "old-slug"
+    assert orm.snapshot() == before
+    assert events[-1] == {"event": "summary", "ok": False, "step": "slug"}
+
+
+def test_step_slug_guards_each_update_on_the_changed_originals():
+    orm = make_orm()
+    seen = []
+    original_filter = orm.models["comment"].all_objects.filter
+
+    def spy(**kw):
+        seen.append(sorted(kw))
+        return original_filter(**kw)
+
+    orm.models["comment"].all_objects.filter = spy
+    ok, _ = run_op("step_slug", orm)
+    assert ok and ["comment_html", "comment_json", "pk"] in seen
 
 
 def test_journal_line_precedes_each_row_write():
@@ -617,7 +706,7 @@ def test_step_rows_resume_rederives_remaining_after_partial():
 
     events = []
     ns = snippet_namespace()
-    args = {"old": "old-slug", "new": "new-slug"}
+    args = {"old": "old-slug", "new": "new-slug", "workspace_id": "w1"}
     with pytest.raises(KeyboardInterrupt):
         ns["run"]("step_rows", args, orm, events.append, FakeLive(kill_on_second))
     assert [(r["table"], r["id"]) for r in journal(events)] == [("issues", "i1")]
@@ -720,7 +809,7 @@ def test_apply_steps_emit_row_content_only_in_journal_events():
     blob = json.dumps(others)
     assert PRIVATE not in blob and "plane.example.com" not in blob and "old-slug" not in blob
     allowed = {"event", "ok", "step", "rewritten", "already", "reason", "table", "id", "detail"}
-    allowed |= {"not_rebuilt"}
+    allowed |= {"not_rebuilt", "workspace_id"}
     assert all(set(e) <= allowed for e in others)
 
 
@@ -757,13 +846,71 @@ def test_snippet_main_emits_sorted_json_lines_and_passes_convert():
         seen.append(args)
         return FakeLive()
 
-    for op in ("step_slug", "step_rows"):
-        request = {"op": op, "args": {"old": "old-slug", "new": "new-slug"}}
-        ns["_main"](request, lambda: orm, factory, lines.append)
+    slug_args = {"old": "old-slug", "new": "new-slug"}
+    rows_args = {**slug_args, "workspace_id": "w1"}
+    for op, args in (("step_slug", slug_args), ("step_rows", rows_args)):
+        ns["_main"]({"op": op, "args": args}, lambda: orm, factory, lines.append)
     assert all(line == json.dumps(json.loads(line), sort_keys=True) for line in lines)
     summaries = [json.loads(x) for x in lines if json.loads(x)["event"] == "summary"]
     assert [s["ok"] for s in summaries] == [True, True] and summaries[-1]["rewritten"] == 2
-    assert seen == [{"old": "old-slug", "new": "new-slug"}] * 2
+    assert seen == [slug_args, rows_args]
+
+
+def delete_on_reread(orm):
+    """Delete i1 when step_rows re-reads it by pk: a concurrent delete after the page read."""
+    manager = orm.models["issue"].all_objects
+    original_filter = manager.filter
+
+    def spy(**kw):
+        if kw == {"pk": "i1"}:
+            orm.models["issue"].rows[:] = [r for r in orm.models["issue"].rows if r["id"] != "i1"]
+        return original_filter(**kw)
+
+    manager.filter = spy
+
+
+def fail_db_update(orm):
+    orm.models["issue"].fail_update = True
+
+
+def str_binary(orm):
+    row(orm, "issue", "i1")["description_binary"] = "not bytes"
+
+
+@pytest.mark.parametrize(
+    "inject,detail",
+    [
+        (delete_on_reread, "IndexError"),
+        (fail_db_update, "RuntimeError"),
+        (str_binary, "JournalValueError"),
+    ],
+    ids=["concurrent_delete", "db_error", "str_binary"],
+)
+def test_step_rows_reports_unexpected_errors_with_summary(inject, detail):
+    orm = make_orm()
+    run_op("step_slug", orm)
+    inject(orm)
+    ok, events = run_op("step_rows", orm, FakeLive())
+    assert not ok
+    error = next(e for e in events if e["event"] == "error")
+    assert error == {
+        "event": "error",
+        "reason": "row_failed",
+        "table": "issues",
+        "id": "i1",
+        "detail": detail,
+    }
+    assert events[-1] == {"event": "summary", "ok": False, "step": "rows", "rewritten": 0}
+    assert PRIVATE not in json.dumps([e for e in events if e["event"] != "journal"])
+    assert "old-slug" in row(orm, "page", "p1")["description_html"]  # stopped at i1
+
+
+def test_journal_value_refuses_str_for_binary_columns():
+    ns = snippet_namespace()
+    with pytest.raises(ns["JournalValueError"]):
+        ns["_journal_value"]("description_binary", "text")
+    assert ns["_journal_value"]("description_binary", bytearray(b"\x00")) == "AA=="
+    assert ns["_journal_value"]("description_html", "text") == "text"
 
 
 def test_snippet_functions_reference_only_defined_globals():

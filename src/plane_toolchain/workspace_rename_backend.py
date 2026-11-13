@@ -222,9 +222,15 @@ class _Abort(Exception):
         self.event = {"event": "error", "reason": reason, **where}
 
 
+class JournalValueError(TypeError):
+    """A binary column read back as something other than bytes; it cannot be journalled."""
+
+
 def _journal_value(column, value):
     """JSON-safe original: binary columns as base64 text (memoryview and bytes alike)."""
     if column in BINARY_COLUMNS and value is not None:
+        if not isinstance(value, (bytes, bytearray, memoryview)):
+            raise JournalValueError(column)
         return base64.b64encode(bytes(value)).decode("ascii")
     return value
 
@@ -277,17 +283,46 @@ def _live_slugs(orm, slug):
     return [str(r["pk"]) for r in rows if r["slug"] == slug and not r["deleted_at"]]
 
 
+def _renamed_refusal(orm, old, new, workspace_id):
+    """Refusal reason unless OLD is gone and NEW is held by exactly `workspace_id`, else None.
+
+    `workspace_id` is the id step_slug renamed, from the journal's workspace record. Without
+    it, a NEW workspace that this rename never touched would look like a finished slug step.
+    """
+    if not workspace_id:
+        return "workspace_id_missing"
+    current = _live_slugs(orm, new)
+    if _live_slugs(orm, old) or not current:
+        return "slug_not_renamed"
+    if current != [str(workspace_id)]:
+        return "workspace_mismatch"
+    return None
+
+
 def step_slug(args, orm, emit, convert=None):
     """One transaction: the workspace slug, then comments, their Description mirrors and
-    notification data. Each original is journalled before its row is written; any error
-    rolls everything back. Never calls Live. Re-running after a commit is a no-op."""
+    notification data. Each original is journalled before its row is written, and each write
+    is guarded on those originals; any error rolls everything back. Never calls Live.
+
+    The summary carries the renamed `workspace_id`. Re-running after a commit is a no-op only
+    when args name that same id (`workspace_id`) and NEW is held by it."""
     old, new = args["old"], args["new"]
+    given = args.get("workspace_id")
     summary = {"event": "summary", "ok": False, "step": "slug"}
-    if not _live_slugs(orm, old) and len(_live_slugs(orm, new)) == 1:
-        emit({**summary, "ok": True, "already": True})  # the transaction already committed
+    if given and not _live_slugs(orm, old):
+        reason = _renamed_refusal(orm, old, new, given)
+        if reason:
+            emit({"event": "refuse", "reason": reason})
+            emit(summary)
+            return False
+        emit({**summary, "ok": True, "already": True, "workspace_id": str(given)})
         return True
     workspace_id = _workspace_id(orm, old, new, emit)
     if workspace_id is None:
+        emit(summary)
+        return False
+    if given and str(given) != workspace_id:
+        emit({"event": "refuse", "reason": "workspace_mismatch"})
         emit(summary)
         return False
     hosts = hosts_from_url(orm.settings.WEB_URL)
@@ -318,8 +353,10 @@ def step_slug(args, orm, emit, convert=None):
                     if not changes:
                         continue
                     row_id = str(row["pk"])
-                    _emit_row(emit, table, row_id, {c: row[c] for c in changes})
-                    if manager.filter(pk=row["pk"]).update(**changes) != 1:
+                    originals = {c: row[c] for c in changes}
+                    _emit_row(emit, table, row_id, originals)
+                    # Guarded on the journalled originals: a concurrent edit aborts the step.
+                    if manager.filter(pk=row["pk"], **originals).update(**changes) != 1:
                         raise _Abort("row_changed", table=table, id=row_id)
                     rewritten += 1
                     # ASSUMPTION: these binary mirrors are left as stored (no Live call here).
@@ -332,7 +369,15 @@ def step_slug(args, orm, emit, convert=None):
         emit({"event": "error", "reason": "write_failed", "detail": type(exc).__name__})
         emit(summary)
         return False
-    emit({**summary, "ok": True, "rewritten": rewritten, "not_rebuilt": not_rebuilt})
+    emit(
+        {
+            **summary,
+            "ok": True,
+            "rewritten": rewritten,
+            "not_rebuilt": not_rebuilt,
+            "workspace_id": workspace_id,
+        }
+    )
     return True
 
 
@@ -367,47 +412,55 @@ def step_rows(args, orm, emit, convert=None):
     written row no longer matches."""
     old, new = args["old"], args["new"]
     summary = {"event": "summary", "ok": False, "step": "rows"}
-    current = _live_slugs(orm, new)
-    if _live_slugs(orm, old) or len(current) != 1:
-        emit({"event": "refuse", "reason": "slug_not_renamed"})
+    workspace_id = args.get("workspace_id")
+    reason = _renamed_refusal(orm, old, new, workspace_id)
+    if reason is None and convert is None:
+        reason = "live_url_missing"
+    if reason:
+        emit({"event": "refuse", "reason": reason})
         emit(summary)
         return False
-    if convert is None:
-        emit({"event": "refuse", "reason": "live_url_missing"})
-        emit(summary)
+    workspace_id, hosts, rewritten = str(workspace_id), hosts_from_url(orm.settings.WEB_URL), 0
+    where = {}
+    try:
+        for table, key, variant in ROW_STEP:
+            manager = orm.models[key].all_objects
+            for row in _pages(manager, {"workspace_id": workspace_id}, ("description_html",)):
+                where = {}
+                html = row["description_html"]
+                if not isinstance(html, str):
+                    continue
+                new_html, n = rewrite_html(html, old, new, hosts)
+                if not n:
+                    continue
+                row_id = str(row["pk"])
+                where = {"table": table, "id": row_id}
+                original = manager.filter(pk=row["pk"]).values(*ROW_FIELDS)[0]
+                try:
+                    fields = _rebuilt(
+                        convert(new_html, variant),
+                        new_html,
+                        original["description_stripped"],
+                        old,
+                        new,
+                        hosts,
+                    )
+                except Exception:  # Live down, timeout or bad answer: write nothing here
+                    emit({"event": "error", "reason": "convert_failed", **where})
+                    emit({**summary, "rewritten": rewritten})
+                    return False
+                _emit_row(emit, table, row_id, original)
+                # The HTML guard makes the write a no-op if the row changed since it was read.
+                if manager.filter(pk=row["pk"], description_html=html).update(**fields) != 1:
+                    emit({"event": "error", "reason": "row_changed", **where})
+                    emit({**summary, "rewritten": rewritten})
+                    return False
+                rewritten += 1
+    except Exception as exc:  # report the type only, never content; earlier rows stay written
+        reason = "row_failed" if where else "read_failed"
+        emit({"event": "error", "reason": reason, **where, "detail": type(exc).__name__})
+        emit({**summary, "rewritten": rewritten})
         return False
-    workspace_id, hosts, rewritten = current[0], hosts_from_url(orm.settings.WEB_URL), 0
-    for table, key, variant in ROW_STEP:
-        manager = orm.models[key].all_objects
-        for row in _pages(manager, {"workspace_id": workspace_id}, ("description_html",)):
-            html = row["description_html"]
-            if not isinstance(html, str):
-                continue
-            new_html, n = rewrite_html(html, old, new, hosts)
-            if not n:
-                continue
-            row_id = str(row["pk"])
-            original = manager.filter(pk=row["pk"]).values(*ROW_FIELDS)[0]
-            try:
-                fields = _rebuilt(
-                    convert(new_html, variant),
-                    new_html,
-                    original["description_stripped"],
-                    old,
-                    new,
-                    hosts,
-                )
-            except Exception:  # Live down, timeout or bad answer: write nothing for this row
-                emit({"event": "error", "reason": "convert_failed", "table": table, "id": row_id})
-                emit({**summary, "rewritten": rewritten})
-                return False
-            _emit_row(emit, table, row_id, original)
-            # The HTML guard makes the write a no-op if the row changed since it was journalled.
-            if manager.filter(pk=row["pk"], description_html=html).update(**fields) != 1:
-                emit({"event": "error", "reason": "row_changed", "table": table, "id": row_id})
-                emit({**summary, "rewritten": rewritten})
-                return False
-            rewritten += 1
     emit({**summary, "ok": True, "rewritten": rewritten})
     return True
 
