@@ -35,6 +35,12 @@ class FakeDocker:
         self.on_manage_shell = None
         self.pg_dump = b"PGDMP-fake-dump"
         self.pg_dump_code = 0
+        self.pg_dump_stderr = b""
+        self.pg_restore_code = 0
+        self.pg_restore_out = b"; Archive created by pg_dump\n"
+        self.pg_restore_stderr = b""
+        self.restore_input = None  # the dump bytes `pg_restore -l` was fed on stdin
+        self.db_size = 1000  # pg_database_size answer; None: the size query fails
         self.queue_depths = [0]
         self.celery_listed = True
         self.queue_probes = []
@@ -167,6 +173,11 @@ class FakeDocker:
             assert self.on_manage_shell is not None, "no manage.py shell handler set"
             stdout, code = self.on_manage_shell((input or b"").decode())
             return code, stdout if isinstance(stdout, bytes) else stdout.encode()
+        if "pg_database_size" in rest[-1]:
+            return (1, b"") if self.db_size is None else (0, f"{self.db_size}\n".encode())
+        if "pg_restore" in rest:
+            self.restore_input = input
+            return self.pg_restore_code, self.pg_restore_out
         if rest[-1].startswith("pg_dump"):
             return self.pg_dump_code, self.pg_dump
         if "rabbitmqctl" in " ".join(rest) and "list_queues" in " ".join(rest):
@@ -219,7 +230,15 @@ class FakeDocker:
             def run(self):
                 if self.result is None:
                     piped = bytes(self.stdin.data) if self.stdin is not None else None
+                    if piped is None and hasattr(kw.get("stdin"), "read"):
+                        piped = kw["stdin"].read()  # a file handed over as stdin
                     code, stdout = fake.execute(*argv[1:], input=piped)
+                    errors = kw.get("stderr")
+                    if hasattr(errors, "write"):  # stderr captured to a file
+                        joined = " ".join(argv)
+                        errors.write(
+                            fake.pg_dump_stderr if "pg_dump" in joined else fake.pg_restore_stderr
+                        )
                     self.result = (code, io.BytesIO(stdout))
                 return self.result
 

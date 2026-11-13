@@ -260,7 +260,7 @@ def test_shipped_program_stops_backs_up_and_starts(fake, tmp_path, monkeypatch):
         "start_services(names, docker)\n"
     )
     source = program(
-        {"hashlib", "json", "os", "pathlib", "stat", "subprocess", "time"},
+        wr.IMPORTS,
         [real_docker, *wr.SHIPPED],
         entry,
         {"DIR": str(directory), **wr.SHIPPED_CONSTANTS},
@@ -304,7 +304,7 @@ def test_backup_read_error_kills_and_waits_for_child(tmp_path):
     directory = receipt_dir(tmp_path)
     with pytest.raises(OSError, match="pipe broke"):
         wr.backup_database("plane-db", directory, lambda argv, **kw: Process())
-    assert events == ["kill", "wait"]
+    assert events[-2:] == ["kill", "wait"]  # the dump child; the size probe failed the same way
     assert not list(directory.glob("backup.dump*"))
 
 

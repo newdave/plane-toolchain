@@ -17,9 +17,11 @@ import inspect
 import json
 import os
 import pathlib
+import re
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 from plane_toolchain import workspace_rename_backend, workspace_rename_match
@@ -34,6 +36,10 @@ from plane_toolchain.remote import docker, program, say  # docker and say are sh
 # FUNCTIONS (remote.docker plus SHIPPED) with SHIPPED_CONSTANTS and IMPORTS (hashlib, json, os,
 # pathlib, stat, subprocess and time). `crash(label)` is a test seam, a no-op on the host.
 PG_DUMP = 'pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB"'
+DB_SIZE = (
+    'psql -tA -U "$POSTGRES_USER" "$POSTGRES_DB" -c "select pg_database_size(current_database())"'
+)
+MIN_FREE_BYTES = 64 << 20
 SALTBOX_LABEL = "com.github.saltbox.saltbox_managed"
 DRAIN_SECONDS = 60
 DRAIN_INTERVAL = 2
@@ -344,10 +350,93 @@ def set_receipt_field(directory, name, value, uid=None):
     write_receipt(directory, receipt)
 
 
+def stderr_tail(handle, limit=300):
+    """The last few lines of a child's stderr, safe to show: quoted text (names, roles, hosts
+    and paths in quotes) is replaced, control characters are dropped and the result is capped.
+
+    Best effort: a child could still name a value unquoted, which is why only a short tail is
+    kept and nothing the tool read from the environment is ever added."""
+    handle.flush()
+    handle.seek(0, 2)
+    size = handle.tell()
+    handle.seek(max(0, size - 4096))
+    text = handle.read().decode("utf-8", "replace")
+    lines = [line.strip() for line in text.splitlines() if line.strip()][-3:]
+    text = re.sub(r"\"[^\"]*\"|'[^']*'", "<redacted>", " | ".join(lines))
+    return "".join(c for c in text if c.isprintable())[:limit]
+
+
+def database_size(db, popen):
+    """Size of the Plane database in bytes from the db container, or None if it is unknown."""
+    process = None
+    try:
+        process = popen(
+            ["docker", "exec", db, "sh", "-c", DB_SIZE],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        out = process.stdout.read(64)
+        if process.wait() != 0:
+            return None
+        return int(out.decode().strip())
+    except Exception:  # noqa: BLE001 - an unknown size falls back to the minimum
+        if process is not None:
+            process.kill()
+            process.wait()
+        return None
+
+
+def check_free_space(directory, db, popen):
+    """Refuse when the receipt directory cannot hold a dump of the database.
+
+    The dump is compressed, so the database size is a safe upper bound; with no size, the
+    minimum applies. Free space is what an unprivileged writer can use."""
+    needed = max(database_size(db, popen) or 0, MIN_FREE_BYTES)
+    info = os.statvfs(directory)
+    if info.f_bavail * info.f_frsize < needed:
+        raise RuntimeError(
+            "backup refused: not enough free space in the receipt directory for a database dump"
+        )
+
+
+def validate_dump(db, dump, popen):
+    """Run `pg_restore -l` on the finished dump inside the db container; raise if it fails.
+
+    Listing the table of contents proves the archive is readable by the tool that restores it.
+    The dump goes in on stdin; nothing is written to the database."""
+    with tempfile.TemporaryFile() as errors, open(dump, "rb") as source:
+        process = popen(
+            ["docker", "exec", "-i", db, "pg_restore", "-l"],
+            stdin=source,
+            stdout=subprocess.PIPE,
+            stderr=errors,
+        )
+        try:
+            listed = 0
+            while True:
+                chunk = process.stdout.read(1 << 20)
+                if not chunk:
+                    break
+                listed += len(chunk)
+            code = process.wait()
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+        if code != 0 or not listed:
+            reason = stderr_tail(errors)
+            raise RuntimeError(
+                "backup refused: the dump does not list with pg_restore -l"
+                + (" (" + reason + ")" if reason else "")
+            )
+
+
 def backup_database(db, directory, popen, crash=lambda label: None, uid=None):
     """Stream pg_dump to backup.dump (0600), hashing and fsyncing; record the SHA-256.
 
-    A failed or empty dump raises before any caller changes data, leaving no dump file.
+    Before the dump the receipt directory must have room for it. After it, `pg_restore -l` must
+    read the file. A failed, empty or unreadable dump raises before any caller changes data,
+    leaving no dump file; failures carry a short, redacted stderr tail.
     """
     uid = os.geteuid() if uid is None else uid
     secure_receipt_dir(directory, uid)
@@ -359,27 +448,32 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None):
         raise RuntimeError("backup.dump already exists in the receipt directory; refusing")
     if os.path.lexists(temporary):
         os.unlink(temporary)
+    check_free_space(directory, db, popen)
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     digest, size, failure, process = hashlib.sha256(), 0, None, None
     try:
-        process = popen(
-            ["docker", "exec", db, "sh", "-c", PG_DUMP],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-        while True:
-            chunk = process.stdout.read(1 << 20)
-            if not chunk:
-                break
-            digest.update(chunk)
-            size += len(chunk)
-            os.write(descriptor, chunk)
-        if process.wait() != 0:
-            failure = "backup failed: pg_dump exited with an error"
-        elif not size:
-            failure = "backup refused: pg_dump produced empty output"
-        else:
-            os.fsync(descriptor)
+        with tempfile.TemporaryFile() as errors:
+            process = popen(
+                ["docker", "exec", db, "sh", "-c", PG_DUMP],
+                stdout=subprocess.PIPE,
+                stderr=errors,
+            )
+            while True:
+                chunk = process.stdout.read(1 << 20)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                size += len(chunk)
+                os.write(descriptor, chunk)
+            if process.wait() != 0:
+                reason = stderr_tail(errors)
+                failure = "backup failed: pg_dump exited with an error" + (
+                    " (" + reason + ")" if reason else ""
+                )
+            elif not size:
+                failure = "backup refused: pg_dump produced empty output"
+            else:
+                os.fsync(descriptor)
     except Exception:
         if process is not None:
             process.kill()
@@ -388,9 +482,13 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None):
         os.unlink(temporary)
         raise
     os.close(descriptor)
-    if failure:
+    try:
+        if failure:
+            raise RuntimeError(failure)
+        validate_dump(db, temporary, popen)
+    except BaseException:
         os.unlink(temporary)
-        raise RuntimeError(failure)
+        raise
     try:
         os.link(temporary, final)  # fails atomically if a dump appeared meanwhile
     finally:
@@ -1210,6 +1308,10 @@ SHIPPED = (
     start_services,
     detect_saltbox,
     set_receipt_field,
+    stderr_tail,
+    database_size,
+    check_free_space,
+    validate_dump,
     backup_database,
     receipt_dir,
     repair_journal_tail,
@@ -1237,6 +1339,8 @@ SHIPPED = (
 )
 SHIPPED_CONSTANTS = {
     "PG_DUMP": PG_DUMP,
+    "DB_SIZE": DB_SIZE,
+    "MIN_FREE_BYTES": MIN_FREE_BYTES,
     "SALTBOX_LABEL": SALTBOX_LABEL,
     "DRAIN_SECONDS": DRAIN_SECONDS,
     "DRAIN_INTERVAL": DRAIN_INTERVAL,
@@ -1245,7 +1349,18 @@ SHIPPED_CONSTANTS = {
     "INTERRUPTED": INTERRUPTED,
     "LOCK_FILE": LOCK_FILE,
 }
-IMPORTS = {"fcntl", "hashlib", "json", "os", "pathlib", "stat", "subprocess", "time"}
+IMPORTS = {
+    "fcntl",
+    "hashlib",
+    "json",
+    "os",
+    "pathlib",
+    "re",
+    "stat",
+    "subprocess",
+    "tempfile",
+    "time",
+}
 FUNCTIONS = (docker, *SHIPPED)
 
 

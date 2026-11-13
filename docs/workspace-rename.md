@@ -133,7 +133,7 @@ Every refusal runs before the first stop, so a refused apply changes nothing. Th
 | --- | --- |
 | `pending` | Receipt written. |
 | `stopped` | Outage window starts. Beat stops, the queue drains for up to 60 seconds (leftover jobs are reported and never purged), then worker, web, space and admin stop. Live restarts to drop editor sessions. API, database, Redis and RabbitMQ stay up. |
-| `backed_up` | `pg_dump` to `backup.dump`, SHA-256 recorded. An empty dump is refused. |
+| `backed_up` | Free space in the receipt directory is checked first (at least the database size, and 64 MiB). Then `pg_dump` to `backup.dump`, which must list with `pg_restore -l` inside the database container before it is kept; SHA-256 recorded. An empty, failed or unreadable dump is refused, and the failure carries a short stderr tail with quoted text redacted. |
 | `slug_done` | One transaction: the slug, comment HTML, linked descriptions and notification data. Originals are journalled first. |
 | `rows_done` | Work item and Page descriptions rewritten one row at a time, editor documents rebuilt through Live, originals journalled first. |
 | `cache_done` | The cache is cleared (`FLUSHDB`). |

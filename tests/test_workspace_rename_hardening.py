@@ -107,3 +107,104 @@ def test_lock_through_the_assembled_program(host, monkeypatch):
     assert not mutating(host.fake)
     assert run_remote(wr.REMOTE, host.payload(), host, monkeypatch) == 0
     assert os.path.lexists(host.directory / "run.lock")
+
+
+# --- PTC-61: validate the pg_dump backup before changing data ----------------------------------
+
+
+@pytest.fixture
+def fake():
+    from fake_docker import FakeDocker
+    from test_workspace_rename_deploy import ALL
+
+    fake = FakeDocker()
+    for name in [*ALL, "plane-api"]:
+        fake.add(name)
+    return fake
+
+
+def backup_dir(tmp_path):
+    directory = wr.secure_receipt_dir(tmp_path / "r")
+    wr.new_receipt(directory, "a", "b")
+    return directory
+
+
+def test_backup_lists_the_dump_with_pg_restore_before_keeping_it(fake, tmp_path):
+    directory = backup_dir(tmp_path)
+    wr.backup_database("plane-db", directory, fake.popen)
+    assert ("exec", "-i", "plane-db", "pg_restore", "-l") in fake.calls
+    assert fake.restore_input == fake.pg_dump  # the whole dump went in on stdin
+    assert (directory / "backup.dump").read_bytes() == fake.pg_dump
+    assert not list(directory.glob("*.tmp"))
+
+
+def test_dump_that_fails_pg_restore_list_is_refused_and_removed(fake, tmp_path):
+    directory = backup_dir(tmp_path)
+    fake.pg_restore_code = 1
+    fake.pg_restore_stderr = b"pg_restore: error: unsupported version (1.99) in file header\n"
+    with pytest.raises(RuntimeError, match=r"does not list with pg_restore -l") as caught:
+        wr.backup_database("plane-db", directory, fake.popen)
+    assert "unsupported version" in str(caught.value)
+    assert not (directory / "backup.dump").exists()
+    assert not list(directory.glob("*.tmp"))
+    assert "backup_sha256" not in wr.load_receipt(directory, "a", "b")
+
+
+def test_empty_pg_restore_listing_is_refused(fake, tmp_path):
+    directory = backup_dir(tmp_path)
+    fake.pg_restore_out = b""
+    with pytest.raises(RuntimeError, match="does not list"):
+        wr.backup_database("plane-db", directory, fake.popen)
+    assert not (directory / "backup.dump").exists()
+
+
+def test_failed_pg_dump_message_has_a_redacted_stderr_tail(fake, tmp_path):
+    directory = backup_dir(tmp_path)
+    fake.pg_dump_code = 1
+    fake.pg_dump_stderr = (
+        b"line one\n" * 50
+        + b'pg_dump: error: connection to server at "db.internal" failed: '
+        + b'FATAL: role "plane_secret_user" does not exist\n'
+    )
+    with pytest.raises(RuntimeError, match="pg_dump exited with an error") as caught:
+        wr.backup_database("plane-db", directory, fake.popen)
+    text = str(caught.value)
+    assert "does not exist" in text and "<redacted>" in text
+    assert "plane_secret_user" not in text and "db.internal" not in text
+    assert len(text) < 500
+
+
+def test_low_free_space_refuses_before_pg_dump(fake, tmp_path, monkeypatch):
+    directory = backup_dir(tmp_path)
+    fake.db_size = 5 << 30
+    real = os.statvfs(directory)
+
+    class Low:
+        f_bavail, f_frsize = 1000, real.f_frsize
+
+    monkeypatch.setattr(os, "statvfs", lambda path: Low)
+    with pytest.raises(RuntimeError, match="not enough free space"):
+        wr.backup_database("plane-db", directory, fake.popen)
+    assert not any("pg_dump" in " ".join(call) for call in fake.calls)
+    assert not list(directory.glob("backup*"))
+
+
+def test_unknown_database_size_falls_back_to_the_minimum(fake, tmp_path, monkeypatch):
+    directory = backup_dir(tmp_path)
+    fake.db_size = None
+
+    class Low:
+        f_bavail, f_frsize = 1, 4096
+
+    monkeypatch.setattr(os, "statvfs", lambda path: Low)
+    with pytest.raises(RuntimeError, match="not enough free space"):
+        wr.backup_database("plane-db", directory, fake.popen)
+
+
+def test_invalid_dump_stops_apply_before_the_slug_change(host):
+    host.fake.pg_restore_code = 1
+    with pytest.raises(RuntimeError, match="Rename failed before the slug change"):
+        host.deploy()
+    assert "step_slug" not in host.ops()
+    assert host.receipt()["step"] == "pending"
+    assert all(host.running().values())  # services restarted

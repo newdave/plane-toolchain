@@ -10,6 +10,7 @@ All notable changes to this project are documented here. The format follows
 
 - Workspace rename: appending to `records.jsonl` after a kill that left a torn final line first repairs the tail (adds the missing newline to a whole record, or truncates a partial one back to the last newline, fsynced), so the new record is no longer glued onto it and lost or refused as a corrupt line (PTC-58).
 - Workspace rename: apply and revert take an exclusive `flock` on `run.lock` (0600, private-file checked) in the receipt directory for the whole run and refuse before any stop when another run holds it; `check` takes none (PTC-59).
+- Workspace rename: the backup step checks free space in the receipt directory first, then runs `pg_restore -l` on the finished dump inside the database container and refuses (before any data change, leaving no dump file) if it does not list; `pg_dump` and `pg_restore` failures now carry a bounded stderr tail with quoted values redacted (PTC-61).
 
 ## [0.2.1] - 2026-11-14
 
