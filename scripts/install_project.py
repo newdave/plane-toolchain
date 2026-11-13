@@ -11,6 +11,7 @@ Plane configuration; revert removes only what is still exactly as installed.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -49,9 +50,20 @@ SHIM = (TEMPLATES / "plane.sh").read_text()
 # Shim as installed by PTC-48, before the worktree fallback. Installs made then still carry it:
 # revert accepts it, and apply reports it as outdated without rewriting it.
 LEGACY_SHIM = (TEMPLATES / "plane.sh.legacy").read_text()
-# Shim as installed before it was made shfmt-stable (PTC-54). Revert accepts it; target
-# repos whose shfmt hook reformatted it carry the current shim instead.
-PRE_SHFMT_SHIM = (TEMPLATES / "plane.sh.pre-shfmt").read_text()
+# SHA-256 of every shim version revert accepts besides the current template (exact bytes, no
+# normalisation, so an edited shim is still refused). TO ADD A VERSION: when plane.sh changes,
+# keep the outgoing template in the set (digest of its bytes plus the digest of its shfmt form)
+# and add fixtures under tests/fixtures. Forms made with `mise x shfmt@latest -- shfmt <file>`
+# (shfmt v3.14.1, defaults); test_project_install.py checks each digest against its fixture.
+KNOWN_SHIM_SHA256 = {
+    # templates/project/plane.sh.legacy: PTC-48 shim (also matched as LEGACY_SHIM text).
+    "553f99744e23a956517c92da48625430921c7fda30f4b46ab8ec86c47cca9308",
+    # templates/project/plane.sh.legacy shfmt-formatted (PTC-48 shim reformatted by a target hook).
+    "915912c27ab6315ac4963a6da4737671b79330ec24da8eb1a5840e2cf57de867",
+    # templates/project/plane.sh.pre-shfmt: shim before PTC-54 (PTC-47 worktree fallback).
+    "35124f25fcdf23a3c5b300915cf752161e4721201d2cdc19f1fae30be2c73710",
+    # Its shfmt form equals the PTC-54 template (digest ba068b6d...), accepted as current.
+}
 GITIGNORE = (
     "# Local Plane values, secrets and switch state; never commit them.\n"
     "local.env\n*.enc.env\nenable-backup.json\n.plane-*\n.backup-*\n"
@@ -88,7 +100,7 @@ class Changed(ValueError):
     """An installed artefact no longer matches what the installer wrote."""
 
 
-def insert_file(content, *, reuse=False, also=()):
+def insert_file(content, *, reuse=False, also=(), digests=()):
     def insert(old):
         # Revert keeps an identical .gitignore while ignored local files remain.
         if old is not None and not (reuse and old == content):
@@ -96,7 +108,8 @@ def insert_file(content, *, reuse=False, also=()):
         return content
 
     def remove(text, created):
-        if text != content and text not in also:
+        known = hashlib.sha256(text.encode()).hexdigest() in digests
+        if text != content and text not in also and not known:
             raise Changed("changed since installation")
         return None
 
@@ -200,7 +213,7 @@ def remove_codex(text, created):
 
 
 KINDS = {
-    "shim": insert_file(SHIM, also=(LEGACY_SHIM, PRE_SHFMT_SHIM)),
+    "shim": insert_file(SHIM, also=(LEGACY_SHIM,), digests=KNOWN_SHIM_SHA256),
     "gitignore": insert_file(GITIGNORE, reuse=True),
     "include": insert_file("@AGENTS.md\n"),
     "block": (insert_block, remove_block),

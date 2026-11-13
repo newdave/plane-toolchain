@@ -1,5 +1,6 @@
 """Project installer adds Plane integration without overwriting another project's work."""
 
+import hashlib
 import json
 import os
 import runpy
@@ -458,12 +459,39 @@ def test_revert_survives_prettier_style_json_and_shfmt_stable_shell(tmp_path, st
     assert not (tmp_path / ".plane/install.json").exists()
 
 
-def test_revert_accepts_shfmt_formatted_pre_ptc54_shim(tmp_path):
+SHIM_FORMS = [
+    "templates/project/plane.sh",
+    "templates/project/plane.sh.pre-shfmt",
+    "tests/fixtures/plane.sh.pre-shfmt.shfmt",
+    "templates/project/plane.sh.legacy",
+    "tests/fixtures/plane.sh.legacy.shfmt",
+]
+
+
+@pytest.mark.parametrize("form", SHIM_FORMS)
+def test_revert_accepts_every_known_shim_form(tmp_path, form):
     apply(tmp_path)
-    old = (ROOT / "templates/project/plane.sh.pre-shfmt").read_text()
-    (tmp_path / ".plane/plane.sh").write_text(old)
+    (tmp_path / ".plane/plane.sh").write_text((ROOT / form).read_text())
     revert(tmp_path)
     assert not (tmp_path / ".plane/plane.sh").exists()
+
+
+@pytest.mark.parametrize("form", SHIM_FORMS)
+def test_revert_refuses_one_character_edit_of_any_shim_form(tmp_path, form):
+    apply(tmp_path)
+    shim = tmp_path / ".plane/plane.sh"
+    shim.write_text((ROOT / form).read_text().replace("exit 2", "exit 3", 1))
+    before = snapshot(tmp_path)
+    with pytest.raises(ValueError, match="plane.sh"):
+        revert(tmp_path)
+    assert snapshot(tmp_path) == before
+
+
+def test_known_shim_digests_match_fixtures():
+    digests = installer["KNOWN_SHIM_SHA256"]
+    for form in SHIM_FORMS:
+        data = (ROOT / form).read_bytes()
+        assert data == installer["SHIM"].encode() or hashlib.sha256(data).hexdigest() in digests
 
 
 def test_revert_refuses_semantically_changed_json(tmp_path):
