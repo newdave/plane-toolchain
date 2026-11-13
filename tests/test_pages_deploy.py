@@ -1588,3 +1588,61 @@ def test_shipped_pages_and_mcp_programs_define_every_global_they_use():
                 if s.is_global() and s.is_referenced() and table is not top
             }
         assert not used - defined - set(dir(builtins)), sorted(used - defined - set(dir(builtins)))
+
+
+# PTC-67: Compose labels. Decision (verified on Docker Compose v5.5.0, see docs/extensions.md):
+# Docker labels are immutable, so the retained original keeps its com.docker.compose.* labels
+# whatever we do. The derived container keeps the same ones, so a `compose up` converges on one
+# container per service (it removes the derived and starts the retained original) instead of
+# leaving two running. These tests pin the label sets so a change here is deliberate.
+
+COMPOSE = {
+    "com.docker.compose.project": "plane",
+    "com.docker.compose.service": "api",
+    "com.docker.compose.container-number": "1",
+    "com.docker.compose.config-hash": "abc123",
+    "com.docker.compose.version": "2.0",
+    "owner": "kept",
+}
+
+
+@pytest.fixture
+def composed():
+    fake = FakeDocker()
+    fake.add("api", labels=dict(COMPOSE))
+    return fake
+
+
+def test_apply_keeps_the_retained_original_labels_untouched(composed):
+    deploy("apply", composed)
+    assert composed.containers[BACKUP]["labels"] == COMPOSE
+
+
+def test_derived_carries_the_compose_labels_plus_exactly_the_source_label(composed):
+    deploy("apply", composed)
+    assert composed.containers["api"]["labels"] == {**COMPOSE, LABEL: DIGEST}
+
+
+def test_revert_keeps_every_label_set_unchanged(composed):
+    deploy("apply", composed)
+    deploy("revert", composed, later=5)
+    assert composed.containers["api"]["labels"] == COMPOSE
+    [parked] = [n for n in composed.containers if "-pages-reverted-" in n]
+    assert composed.containers[parked]["labels"] == {**COMPOSE, LABEL: DIGEST}
+
+
+def test_failed_apply_retires_a_failed_container_with_the_same_label_set(composed):
+    composed.created_healthy = False
+    with pytest.raises(ValueError):
+        deploy("apply", composed)
+    assert composed.containers["api"]["labels"] == COMPOSE
+    [failed] = [n for n in composed.containers if "-pages-failed-" in n]
+    assert composed.containers[failed]["labels"] == {**COMPOSE, LABEL: DIGEST}
+
+
+def test_replacement_adds_no_label_other_than_the_source_label():
+    original = FakeDocker()
+    original.add("api", labels=dict(COMPOSE))
+    body = pages_deploy.replacement(original.document("api"), IMAGE, "http://live:3000", DIGEST)
+    assert set(body["Labels"]) - set(COMPOSE) == {LABEL}
+    assert all(body["Labels"][key] == value for key, value in COMPOSE.items())

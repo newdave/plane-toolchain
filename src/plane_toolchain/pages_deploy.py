@@ -50,6 +50,8 @@ def replacement(original, image, live_url, digest):
         value for value in body.get("Env", []) if not value.startswith("CE_PLANE_LIVE_URL=")
     ]
     body["Env"].append("CE_PLANE_LIVE_URL=" + live_url)
+    # Compose labels stay on purpose (PTC-67): the retained original keeps them anyway, and with
+    # them a `compose up` converges on one container per service. See docs/extensions.md.
     labels = dict(body.get("Labels") or {})
     body["Labels"] = dict(labels, **{NEUTRAL_PAGES_LABEL: digest})
     # The copied hostname is the old container id; keep only an explicit custom one.
