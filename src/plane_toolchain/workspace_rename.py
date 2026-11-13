@@ -379,7 +379,8 @@ SHELL = ("python", "manage.py", "shell")
 APPLY_OPS = ("step_slug", "step_rows")  # the only operations that emit journal events
 INTERRUPTED = (
     "Rename interrupted ({}). Services may be stopped. The receipt keeps the last completed "
-    "step: rerun apply to resume (it stops services first), or run revert."
+    "step: rerun apply to resume, or run revert (rerun revert if a revert was interrupted). "
+    "Both stop services first."
 )
 
 
@@ -643,7 +644,9 @@ def slug_state(api, snippet, old, new, workspace_id, directory, popen, uid=None)
 
 
 def deploy(data, seams):
-    """Run `check` (read-only) or `apply` (resumable) for one workspace rename on the host.
+    """Run `check` (read-only), `apply` or `revert` (both resumable) for one workspace rename.
+
+    `revert` is handed to revert(); the rest of this docstring describes check and apply.
 
     data: operation, from, to, api (container), snippet (source), optional receipt_dir,
     services (PLANE_*_CONTAINER overrides), live_url and api_url. seams: docker, popen, clock,
@@ -669,8 +672,10 @@ def deploy(data, seams):
     crash = seams.get("crash") or (lambda label: None)
     uid = os.geteuid() if seams.get("uid") is None else seams["uid"]
     operation = data.get("operation")
+    if operation == "revert":
+        return revert(data, seams)
     if operation not in ("check", "apply"):
-        raise RuntimeError("expected check or apply")
+        raise RuntimeError("expected check, apply or revert")
     old, new, api, snippet = data["from"], data["to"], data["api"], data["snippet"]
     directory = pathlib.Path(data.get("receipt_dir") or receipt_dir(os.environ))
     names = service_names(data.get("services") or {})
@@ -868,6 +873,182 @@ def deploy(data, seams):
     return f"Rename complete: {old} is now {new}"
 
 
+# --- T8: revert from the receipt -------------------------------------------------------------
+
+
+def revert(data, seams):
+    """Revert one workspace rename from its receipt and journal; resumable like apply.
+
+    Same payload and seams as deploy. Steps (effect, then advance): reverting (the receipt
+    marker, with `reverted_from` naming the apply step), restored (stop services, restore from
+    the current records.jsonl only, flush the cache), started, reverted (health with the slugs
+    swapped and the journalled `workspace_id`). Every refusal comes before the first stop, and
+    the restore runs only with services stopped. The restore is skipped when nothing was
+    journalled, or when slug_state shows the slug change never committed and no restore was
+    started. A partial restore restarts services but leaves the receipt at reverting, so a
+    rerun stops services and restores again; it is never reported as complete. The backup and
+    the journal are never deleted, and the pg_dump backup is never restored here: that is a
+    manual last resort.
+    """
+    docker, popen, clock = seams["docker"], seams["popen"], seams["clock"]
+    crash = seams.get("crash") or (lambda label: None)
+    uid = os.geteuid() if seams.get("uid") is None else seams["uid"]
+    old, new, api, snippet = data["from"], data["to"], data["api"], data["snippet"]
+    directory = pathlib.Path(data.get("receipt_dir") or receipt_dir(os.environ))
+    names = service_names(data.get("services") or {})
+    options = {key: data[key] for key in ("live_url", "api_url") if data.get(key)}
+    applied, order = step_order("apply"), step_order("revert")
+    partial = None
+
+    def call(op, args):
+        return snippet_ok(api, snippet, op, args, directory, popen, uid)
+
+    def reason_of(failure):
+        return str(failure) if isinstance(failure, RuntimeError) else type(failure).__name__
+
+    # Preflight: read-only. It never creates the receipt directory.
+    try:
+        inspect_services(names, api, docker)
+        if not os.path.lexists(directory / "receipt.json"):
+            raise RuntimeError("no receipt for this rename; nothing to revert")
+        receipt = load_receipt(directory, old, new, uid)
+        phase, step = receipt.get("phase"), receipt.get("step")
+        if phase not in ("apply", "revert") or step not in step_order(phase):
+            raise RuntimeError("receipt state is unknown")
+        if step == "reverted":
+            return "Revert already complete"
+        records = load_journal(directory, uid)  # the current journal only, never a rotated one
+        workspace_id = journal_workspace(records)
+        if records and workspace_id is None:
+            raise RuntimeError("journal has no workspace record")
+        origin = step if phase == "apply" else receipt.get("reverted_from")
+        committed = origin in applied and applied.index(origin) >= applied.index("slug_done")
+        restore_needed = False
+        if phase == "apply" or step == "reverting":
+            if not records and committed:
+                raise RuntimeError(
+                    "journal is empty but the receipt is past the slug change; restore "
+                    "backup.dump by hand as the last resort"
+                )
+            if records:
+                state = slug_state(api, snippet, old, new, workspace_id, directory, popen, uid)
+                if state == "unknown":
+                    raise RuntimeError(
+                        "slug state unknown: the journalled workspace holds neither slug as "
+                        "expected; check which workspace holds each slug"
+                    )
+                restore_needed = (
+                    state == "renamed" or committed or bool(receipt.get("restore_started"))
+                )
+                if not restore_needed:
+                    say("The slug change never committed; no restore needed")
+            else:
+                say("Nothing was journalled; no restore needed")
+    except RuntimeError as failure:
+        text = str(failure)
+        raise RuntimeError(text if text.startswith("Refused") else "Refused: " + text) from None
+
+    if phase == "revert":
+        say("Resuming the revert from step " + step)
+
+    def stop():
+        remaining = stop_services(names, docker, clock, seams["sleep"], crash)
+        if remaining is None:
+            raise RuntimeError("celery queue not found; drain not verified")
+
+    def restore():
+        nonlocal partial
+        set_receipt_field(directory, "restore_started", True, uid)
+        crash("before_restore")
+        args = {"old": old, "new": new, "journal": records, "workspace_id": workspace_id}
+        summary, events = run_snippet(api, snippet, "restore", args, directory, popen, uid)
+        report("restore", summary, events)
+        crash("after_restore")
+        if summary is None:
+            raise RuntimeError("restore gave no summary")
+        if summary.get("partial"):
+            partial = summary.get("skipped", 0)
+        elif summary.get("ok") is not True:
+            raise RuntimeError("restore failed")
+        set_receipt_field(directory, "restore_partial", partial or 0, uid)
+
+    def verify():
+        if workspace_id:
+            call("health", {"old": new, "new": old, "workspace_id": workspace_id, **options})
+        else:  # nothing journalled: OLD must be live and NEW free
+            call("check", {"old": old, "new": new})
+
+    def effect(target):
+        if target == "reverting":
+            set_receipt_field(directory, "reverted_from", origin, uid)
+        elif target == "restored":
+            say("Stopping services for the restore")
+            stop()
+            if restore_needed:
+                restore()
+            call("flush_cache", {})
+        elif target == "started":
+            start_services(names, docker, crash)
+        elif target == "reverted":
+            verify()
+
+    def finish_partial():
+        """Restart services and recheck after a partial restore; never returns."""
+        notes = []
+        try:
+            start_services(names, docker, crash)
+        except Exception as problem:  # noqa: BLE001 - report it with the partial restore
+            notes.append(reason_of(problem) + "; start the remaining services by hand")
+        try:
+            verify()
+        except Exception as problem:  # noqa: BLE001
+            notes.append("health check failed: " + reason_of(problem))
+        raise RuntimeError(
+            f"Revert incomplete: the restore was partial ({partial} rows skipped, listed above "
+            "by id); this is not a full revert. The slug and every other journalled row are "
+            "restored and services were started. The skipped rows changed after the rename and "
+            "were not overwritten. Review them, then rerun revert to recheck (it stops services "
+            "first). Restoring backup.dump by hand is the last resort and loses later edits."
+            + "".join(" Warning: " + note + "." for note in notes)
+        )
+
+    def failed(target, reason):
+        if target == "reverting":
+            state = "Nothing was changed by the revert; services were left as they are"
+        elif target == "restored":
+            state = (
+                "Services stay stopped (some may still run if stopping failed). The restore is "
+                "all-or-nothing and safe to repeat"
+            )
+        elif target == "started":
+            state = "The data is restored, but some services did not start"
+        else:
+            state = "Services are running; the receipt is left at started"
+        raise RuntimeError(
+            f"Revert stopped at {target}: {reason}. {state}. Fix the cause and rerun revert. "
+            "The journal and backup.dump are kept; restoring backup.dump by hand is the last "
+            "resort."
+        )
+
+    if phase == "apply":
+        step = None
+    while step != "reverted":
+        target = order[0] if step is None else order[order.index(step) + 1]
+        crash("before_" + target)
+        try:
+            effect(target)
+            crash("after_" + target)
+            if partial:
+                finish_partial()
+            advance(directory, target, uid)
+        except Exception as failure:  # Killed and other BaseExceptions propagate untouched
+            if partial:
+                raise
+            failed(target, reason_of(failure))
+        step = target
+    return f"Revert complete: {new} is back to {old}"
+
+
 def host_seams():
     return {"docker": docker, "popen": subprocess.Popen, "clock": time.time, "sleep": time.sleep}
 
@@ -913,6 +1094,7 @@ SHIPPED = (
     reset_receipt,
     verify_backup,
     slug_state,
+    revert,
     deploy,
     host_seams,
 )
