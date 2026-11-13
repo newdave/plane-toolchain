@@ -9,7 +9,7 @@ import sys
 import types
 
 import pytest
-from fake_orm import FakeOrm
+from fake_orm import FakeOrm, clone
 
 from plane_toolchain import workspace_rename_backend as backend
 from plane_toolchain import workspace_rename_match as match
@@ -813,6 +813,31 @@ def test_apply_steps_emit_row_content_only_in_journal_events():
     assert all(set(e) <= allowed for e in others)
 
 
+def test_snippet_uses_requests_only_for_live_post_and_api_get():
+    """`requests` appears only in _live_convert (post) and _api_probe (get), nowhere else."""
+    tree = ast.parse(snippet_source())
+    owners = {}
+    for top in tree.body:
+        for node in ast.walk(top):
+            owners.setdefault(id(node), getattr(top, "name", "<module>"))
+    uses = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            assert node.module != "requests", "from requests import ..."
+        if isinstance(node, ast.Import) and "requests" in [a.name for a in node.names]:
+            uses.add((owners[id(node)], "import"))
+            assert [a.asname for a in node.names] == [None], "aliased import of requests"
+        if isinstance(node, ast.Attribute) and getattr(node.value, "id", None) == "requests":
+            uses.add((owners[id(node)], node.attr))
+    allowed = {("_live_convert", "import"), ("_live_convert", "post")}
+    allowed |= {("_api_probe", "import"), ("_api_probe", "get")}
+    assert uses == allowed
+    names = {
+        owners[id(n)] for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "requests"
+    }
+    assert names == {"_live_convert", "_api_probe"}
+
+
 def test_snippet_live_convert_uses_payload_or_container_url(monkeypatch):
     posts = []
 
@@ -930,3 +955,490 @@ def test_snippet_functions_reference_only_defined_globals():
 
     walk(table)
     assert not missing, f"snippet functions use undefined globals: {missing}"
+
+
+# --- restore (T4): the journal arrives inside the request, never on stdin ---
+
+
+def normal_snapshot(snapshot):
+    """Snapshot as JSON, binary as base64, so memoryview and bytes originals compare equal."""
+    encode = lambda v: {"bytes": base64.b64encode(bytes(v)).decode()}  # noqa: E731
+    return json.loads(json.dumps(snapshot, sort_keys=True, default=encode))
+
+
+def apply_all(orm, ns=None):
+    """Run step_slug and step_rows; return the journal as the host persisted it (JSON lines)."""
+    ns = ns or snippet_namespace()
+    records = []
+    for op, live in (("step_slug", None), ("step_rows", FakeLive())):
+        ok, events = run_op(op, orm, live, ns=ns)
+        assert ok
+        records += [json.loads(json.dumps(r, sort_keys=True)) for r in journal(events)]
+    return records
+
+
+def restore(orm, records, convert=None, **extra):
+    return run_op("restore", orm, convert, journal=records, **extra)
+
+
+def clone_row(orm, key, row_id):
+    return clone(row(orm, key, row_id))
+
+
+def test_restore_writes_every_journalled_field_back_exactly():
+    orm = make_orm()
+    original = orm.snapshot()
+    records = apply_all(orm)
+    ok, events = restore(orm, records)
+    assert ok, events
+    assert normal_snapshot(orm.snapshot()) == normal_snapshot(original)
+    assert row(orm, "issue", "i1")["description_binary"] == b"\x00old-binary\xff"
+    assert bytes(row(orm, "page", "p1")["description_binary"]) == b"\x01page-binary"
+    assert row(orm, "page", "p1")["description_stripped"] is None
+    assert events[-1] == {
+        "event": "summary",
+        "ok": True,
+        "step": "restore",
+        "slug_restored": True,
+        "restored": 7,  # c1, d1, d2, n1, e1, i1, p1
+        "already_restored": 0,
+        "skipped": 0,
+        "workspace_id": "w1",
+    }
+    # queryset updates only: never save(), so updated_at stays as stored
+    assert row(orm, "issue", "i1")["updated_at"] == "2026-01-02"
+
+
+def test_restore_does_not_call_convert():
+    orm = make_orm()
+    records = apply_all(orm)
+    live = FakeLive()
+    ok, _ = restore(orm, records, live)
+    assert ok and live.calls == []
+
+
+def test_restore_partial_journal_leaves_other_rows_untouched():
+    orm = make_orm()
+    original = orm.snapshot()
+    records = apply_all(orm)
+    rewritten_page = clone_row(orm, "page", "p1")
+    rewritten_note = clone_row(orm, "notification", "n1")
+    partial = [r for r in records if r.get("table") not in ("pages", "notifications")]
+    ok, events = restore(orm, partial)
+    assert ok and events[-1]["restored"] == 5
+    assert row(orm, "page", "p1") == rewritten_page  # no journal line: left as it is
+    assert row(orm, "notification", "n1") == rewritten_note
+    assert row(orm, "workspace", "w1")["slug"] == "old-slug"
+    assert row(orm, "issue", "i1")["description_html"] == original["issue"][0]["description_html"]
+
+
+@pytest.mark.parametrize("deleted_at", [None, "2026-02-01"])
+def test_restore_refuses_when_old_slug_now_taken_by_other_workspace(deleted_at):
+    orm = make_orm()
+    records = apply_all(orm)
+    # the unique index covers soft-deleted rows, so a deleted holder blocks too
+    orm.models["workspace"].rows.append({"id": "w9", "slug": "old-slug", "deleted_at": deleted_at})
+    before = orm.snapshot()
+    start = len(orm.log)
+    ok, events = restore(orm, records)
+    assert not ok and orm.snapshot() == before
+    assert not [e for e in orm.log[start:] if e[0] in ("begin", "update")]
+    assert events[0] == {"event": "refuse", "reason": "old_slug_taken"}
+    assert events[-1] == {"event": "summary", "ok": False, "step": "restore"}
+
+
+def test_restore_is_idempotent():
+    orm = make_orm()
+    original = orm.snapshot()
+    records = apply_all(orm)
+    assert restore(orm, records)[0]
+    restored = orm.snapshot()
+    updates = sum(len(t.updates) for t in orm.models.values())
+    ok, events = restore(orm, records)
+    assert ok and orm.snapshot() == restored
+    assert normal_snapshot(restored) == normal_snapshot(original)
+    assert sum(len(t.updates) for t in orm.models.values()) == updates  # no write at all
+    summary = events[-1]
+    assert summary["slug_restored"] is False and summary["restored"] == 0
+    assert summary["already_restored"] == 7 and summary["skipped"] == 0
+
+
+def test_restore_after_kill_mid_apply_restores_journalled_rows_only():
+    orm = make_orm()
+    original = orm.snapshot()
+    ns = snippet_namespace()
+    _, slug_events = run_op("step_slug", orm, ns=ns)
+    records = journal(slug_events)
+    # step_rows journals i1 and dies before writing it: its record equals the stored row
+    i1 = {"kind": "row", "table": "issues", "id": "i1"}
+    i1["fields"] = {
+        c: ns["_journal_value"](c, row(orm, "issue", "i1")[c]) for c in ns["ROW_FIELDS"]
+    }
+    ok, events = restore(orm, [*records, json.loads(json.dumps(i1))])
+    assert ok and normal_snapshot(orm.snapshot()) == normal_snapshot(original)
+    assert events[-1]["already_restored"] == 1 and events[-1]["restored"] == 5
+
+
+def test_restore_skips_and_reports_rows_edited_after_rewrite():
+    orm = make_orm()
+    records = apply_all(orm)
+    row(orm, "page", "p1")["description_html"] = f"<p>{PRIVATE} newer user edit</p>"
+    row(orm, "notification", "n1")["data"] = {"workspace_slug": "new-slug", "read": True}
+    edited_page = clone_row(orm, "page", "p1")
+    ok, events = restore(orm, records)
+    assert not ok  # partial: not a full revert
+    assert row(orm, "page", "p1") == edited_page  # never overwrite a newer edit
+    assert row(orm, "notification", "n1")["data"] == {"workspace_slug": "new-slug", "read": True}
+    skips = [e for e in events if e["event"] == "skip"]
+    assert skips == [
+        {"event": "skip", "table": "notifications", "id": "n1", "reason": "changed"},
+        {"event": "skip", "table": "pages", "id": "p1", "reason": "changed"},
+    ]
+    assert events[-1]["skipped"] == 2 and events[-1]["restored"] == 5
+    assert PRIVATE not in json.dumps(events)
+
+
+def test_restore_skips_stale_record_left_by_step_rows_guard():
+    orm = make_orm()
+    _, slug_events = run_op("step_slug", orm)
+
+    def edit_after_journal(event):  # step_rows journals i1, then its guard sees a changed row
+        if event.get("record", {}).get("id") == "i1":
+            row(orm, "issue", "i1")["description_html"] = "<p>edited meanwhile</p>"
+
+    ok, events = run_op("step_rows", orm, FakeLive(), on_emit=edit_after_journal)
+    assert not ok and events[-2]["reason"] == "row_changed"
+    records = [json.loads(json.dumps(r)) for r in journal(slug_events) + journal(events)]
+    ok, events = restore(orm, records)
+    assert not ok and row(orm, "issue", "i1")["description_html"] == "<p>edited meanwhile</p>"
+    assert [e for e in events if e["event"] == "skip"] == [
+        {"event": "skip", "table": "issues", "id": "i1", "reason": "changed"}
+    ]
+
+
+def test_restore_skips_missing_rows():
+    orm = make_orm()
+    records = apply_all(orm)
+    orm.models["comment"].rows.clear()  # hard-deleted since the rewrite
+    ok, events = restore(orm, records)
+    skip = {"event": "skip", "table": "issue_comments", "id": "c1", "reason": "missing"}
+    assert not ok and skip in events and events[-1]["partial"] is True
+
+
+def test_restore_with_skips_is_partial_and_keeps_restored_rows():
+    orm = make_orm()
+    original = orm.snapshot()
+    records = apply_all(orm)
+    row(orm, "page", "p1")["description_html"] = "<p>newer user edit</p>"
+    ok, events = restore(orm, records)
+    assert not ok
+    assert events[-1] == {
+        "event": "summary",
+        "ok": False,
+        "partial": True,
+        "step": "restore",
+        "slug_restored": True,
+        "restored": 6,
+        "already_restored": 0,
+        "skipped": 1,
+        "workspace_id": "w1",
+    }
+    assert ("commit",) in orm.log  # the restored rows stay written
+    assert row(orm, "workspace", "w1")["slug"] == "old-slug"
+    assert row(orm, "issue", "i1")["description_html"] == original["issue"][0]["description_html"]
+    ok, again = restore(orm, records)  # a rerun stays partial and writes nothing more
+    assert not ok and again[-1]["partial"] is True and again[-1]["already_restored"] == 6
+
+
+def test_restore_uses_first_original_of_rolled_back_generation():
+    orm = make_orm()
+    original = orm.snapshot()
+    ns = snippet_namespace()
+    orm.models["notification"].fail_update = True
+    ok, failed = run_op("step_slug", orm, ns=ns)  # journals lines, then rolls back
+    assert not ok and journal(failed)
+    orm.models["notification"].fail_update = False
+    records = [json.loads(json.dumps(r)) for r in journal(failed)]
+    records += apply_all(orm, ns)
+    keys = [(r.get("table"), r["id"]) for r in records]
+    assert keys.count(("issue_comments", "c1")) == 2  # a duplicate generation
+    # a later duplicate with a different original never wins over the first
+    first = next(r for r in records if r.get("table") == "issue_comments")
+    records.append({**first, "fields": {**first["fields"], "comment_html": "<p>later</p>"}})
+    ok, events = restore(orm, records)
+    assert ok and normal_snapshot(orm.snapshot()) == normal_snapshot(original)
+    assert events[-1]["restored"] == 7 and events[-1]["skipped"] == 0
+
+
+def _row_record(table, row_id, fields):
+    return {"kind": "row", "table": table, "id": row_id, "fields": fields}
+
+
+@pytest.mark.parametrize(
+    "mutate,reason",
+    [
+        (lambda rs: [], "journal_empty"),
+        (lambda rs: [r for r in rs if r["kind"] != "workspace"], "workspace_record_missing"),
+        (lambda rs: [*rs, {"kind": "workspace", "id": "w2", "slug": "old-slug"}], "journal_invalid"),
+        (lambda rs: [{**r, "slug": "other"} if r["kind"] == "workspace" else r for r in rs], "journal_mismatch"),
+        (lambda rs: [*rs, _row_record("webhook_logs", "l1", {"response_body": "x"})], "journal_invalid"),
+        (lambda rs: [*rs, _row_record("issues", "i2", {"name": "x"})], "journal_invalid"),
+        (lambda rs: [*rs, _row_record("issues", "i2", {})], "journal_invalid"),
+        (lambda rs: [*rs, _row_record("pages", "p1", {"description_binary": "!"})], "journal_invalid"),
+        (lambda rs: [*rs, "not a record"], "journal_invalid"),
+    ],
+    ids=["empty", "no_workspace", "two_workspaces", "other_old", "table", "column", "no_fields",
+         "base64", "type"],
+)  # fmt: skip
+def test_restore_refuses_bad_journal_before_any_write(mutate, reason):
+    orm = make_orm()
+    records = apply_all(orm)
+    before = orm.snapshot()
+    start = len(orm.log)
+    ok, events = restore(orm, mutate(records))
+    assert not ok and orm.snapshot() == before
+    assert not [e for e in orm.log[start:] if e[0] in ("begin", "update")]
+    assert events[0] == {"event": "refuse", "reason": reason}
+    assert events[-1] == {"event": "summary", "ok": False, "step": "restore"}
+
+
+def test_restore_refuses_without_a_journal_in_the_request():
+    ok, events = run_op("restore", make_orm())
+    assert not ok and events[0] == {"event": "refuse", "reason": "journal_invalid"}
+    assert events[-1] == {"event": "summary", "ok": False, "step": "restore"}
+
+
+@pytest.mark.parametrize("case", ["given_other_id", "journal_id_not_holder", "journal_id_gone"])
+def test_restore_binds_to_the_journalled_workspace_id(case):
+    orm = make_orm()
+    records = apply_all(orm)
+    extra = {}
+    if case == "given_other_id":
+        extra["workspace_id"] = "w2"
+    elif case == "journal_id_not_holder":  # the journal names w2, which holds neither slug
+        records = [{**r, "id": "w2"} if r["kind"] == "workspace" else r for r in records]
+    else:
+        orm.models["workspace"].rows[:] = [orm.models["workspace"].rows[1]]
+    before = orm.snapshot()
+    ok, events = restore(orm, records, **extra)
+    assert not ok and orm.snapshot() == before
+    assert events[0] == {"event": "refuse", "reason": "workspace_mismatch"}
+    assert events[-1] == {"event": "summary", "ok": False, "step": "restore"}
+
+
+def test_restore_rolls_back_every_write_on_error():
+    orm = make_orm()
+    records = apply_all(orm)
+    before = orm.snapshot()
+    orm.models["page"].fail_update = True
+    ok, events = restore(orm, records)
+    assert not ok and orm.snapshot() == before and ("rollback",) in orm.log
+    assert events[-2] == {"event": "error", "reason": "write_failed", "detail": "RuntimeError"}
+    assert events[-1] == {"event": "summary", "ok": False, "step": "restore"}
+
+
+def test_restore_emits_only_ids_tables_and_counts():
+    orm = make_orm()
+    records = apply_all(orm)
+    row(orm, "page", "p1")["description_html"] = f"<p>{PRIVATE}</p>"
+    _, events = restore(orm, records)
+    blob = json.dumps(events)
+    assert PRIVATE not in blob and "plane.example.com" not in blob and "old-slug" not in blob
+    allowed = {"event", "ok", "step", "reason", "table", "id", "detail", "workspace_id"}
+    allowed |= {"slug_restored", "restored", "already_restored", "skipped", "partial"}
+    assert all(set(e) <= allowed for e in events)
+
+
+def test_snippet_main_carries_the_journal_inside_the_request():
+    ns, orm, lines = snippet_namespace(), make_orm(), []
+    original = orm.snapshot()
+    records = apply_all(orm, ns)
+    request = {"op": "restore", "args": {"old": "old-slug", "new": "new-slug", "journal": records}}
+    ns["_main"](json.loads(json.dumps(request)), lambda: orm, lambda args: None, lines.append)
+    assert json.loads(lines[-1])["ok"] is True
+    assert normal_snapshot(orm.snapshot()) == normal_snapshot(original)
+
+
+# --- health and flush_cache (T4) ---
+
+
+def run_health(orm, probe, old="old-slug", new="new-slug", **extra):
+    events = []
+    extra.setdefault("workspace_id", "w1")  # the journalled id, as T7 passes it
+    args = {"old": old, "new": new, **{k: v for k, v in extra.items() if v is not None}}
+    ok = snippet_namespace()["run"]("health", args, orm, events.append, None, probe)
+    return ok, events
+
+
+def checks(events):
+    return {e["check"]: e["ok"] for e in events if e["event"] == "health"}
+
+
+def renamed_orm():
+    orm = make_orm()
+    assert run_op("step_slug", orm)[0]
+    return orm
+
+
+def raise_oserror():
+    raise OSError("connection refused")
+
+
+@pytest.mark.parametrize(
+    "setup,probe,failed",
+    [
+        (renamed_orm, lambda: 200, set()),
+        (make_orm, lambda: 200, {"new_present", "old_absent"}),  # not renamed yet
+        (renamed_orm, lambda: 503, {"api"}),
+        (renamed_orm, lambda: 302, {"api"}),  # a redirect is not an answer
+        (renamed_orm, raise_oserror, {"api"}),
+        (renamed_orm, None, {"api"}),
+    ],
+    ids=["healthy", "not_renamed", "api_503", "api_redirect", "api_down", "no_probe"],
+)
+def test_health_requires_new_present_and_old_absent(setup, probe, failed):
+    orm = setup()
+    before, writes = orm.snapshot(), len(orm.log)
+    ok, events = run_health(orm, probe)
+    assert ok is (not failed)
+    assert checks(events) == {
+        name: name not in failed for name in ("api", "new_present", "old_absent")
+    }
+    assert events[-1] == {"event": "summary", "ok": not failed, "step": "health"}
+    assert orm.snapshot() == before and len(orm.log) == writes  # read-only: no update logged
+
+
+def test_health_fails_when_another_workspace_holds_old():
+    orm = renamed_orm()
+    orm.models["workspace"].rows.append({"id": "w9", "slug": "old-slug", "deleted_at": None})
+    ok, events = run_health(orm, lambda: 200)
+    assert not ok and checks(events)["old_absent"] is False
+
+
+def test_health_refuses_without_workspace_id():
+    ok, events = run_health(renamed_orm(), lambda: 200, workspace_id=None)
+    assert not ok and not checks(events)
+    assert events == [
+        {"event": "refuse", "reason": "workspace_id_missing"},
+        {"event": "summary", "ok": False, "step": "health"},
+    ]
+
+
+def test_health_fails_when_new_is_held_by_another_workspace():
+    orm = other_workspace_holds_new()  # NEW exists, OLD is absent, but w2 holds NEW
+    ok, events = run_health(orm, lambda: 200, workspace_id="w1")
+    assert not ok
+    assert checks(events) == {"api": True, "new_present": False, "old_absent": True}
+    assert run_health(orm, lambda: 200, workspace_id="w2")[0]
+
+
+def test_health_checks_a_revert_with_the_slugs_swapped():
+    orm = renamed_orm()
+    records = [json.loads(json.dumps(r)) for r in journal(run_op("step_slug", make_orm())[1])]
+    assert restore(orm, records)[0]
+    ok, _ = run_health(orm, lambda: 200, old="new-slug", new="old-slug", workspace_id="w1")
+    assert ok
+
+
+def test_snippet_api_probe_gets_instances_endpoint(monkeypatch):
+    gets = []
+
+    def get(url, timeout, allow_redirects):
+        gets.append((url, timeout, allow_redirects))
+        return types.SimpleNamespace(status_code=200)
+
+    monkeypatch.setitem(sys.modules, "requests", types.SimpleNamespace(get=get))
+    ns = snippet_namespace()
+    assert ns["_api_probe"]({})() == 200
+    assert gets == [("http://127.0.0.1:8000/api/instances/", 10, False)]  # never follow
+    ns["_api_probe"]({"api_url": "http://api:8000/"})()
+    assert gets[-1][0] == "http://api:8000/api/instances/"
+
+
+def test_snippet_main_passes_the_api_probe_to_health():
+    ns, orm, lines, seen = snippet_namespace(), renamed_orm(), [], []
+
+    def probe_factory(args):
+        seen.append(args)
+        return lambda: 200
+
+    request = {"op": "health", "args": {"old": "old-slug", "new": "new-slug", "workspace_id": "w1"}}
+    ns["_main"](request, lambda: orm, lambda args: None, lines.append, probe_factory)
+    assert json.loads(lines[-1]) == {"event": "summary", "ok": True, "step": "health"}
+    assert seen == [request["args"]]
+
+
+def run_flush(orm, **extra):
+    return run_op("flush_cache", orm, **extra)
+
+
+def test_flush_cache_clears_cache():
+    orm = make_orm()
+    orm.settings.SESSION_ENGINE = "django.contrib.sessions.backends.db"
+    orm.cache.update({"/api/workspaces/": "old-slug", "/api/users/me/workspaces/": "x"})
+    ok, events = run_flush(orm)
+    assert ok and orm.cache == {}
+    assert events == [
+        {
+            "event": "summary",
+            "ok": True,
+            "step": "cache",
+            "cleared": True,
+            "sessions_in_cache": False,
+        }
+    ]
+
+
+def test_flush_cache_dry_run_reports_session_cache_without_clearing():
+    orm = make_orm()
+    orm.cache["k"] = "v"
+    orm.settings.SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+    ok, events = run_flush(orm, dry_run=True)
+    assert ok and orm.cache == {"k": "v"}
+    assert events[-1]["cleared"] is False and events[-1]["sessions_in_cache"] is True
+
+
+@pytest.mark.parametrize(
+    "engine,expected",
+    [
+        ("django.contrib.sessions.backends.cache", True),
+        ("django.contrib.sessions.backends.db", False),
+        ("django.contrib.sessions.backends.cached_db", False),  # the db copy survives
+        ("django.contrib.sessions.backends.file", False),
+        ("django.contrib.sessions.backends.signed_cookies", False),
+        ("plane.custom.backends.cache", "unknown"),  # never guessed from the name
+        (None, "unknown"),
+    ],
+)
+def test_flush_cache_maps_known_session_engines_only(engine, expected):
+    orm = make_orm()
+    if engine is not None:
+        orm.settings.SESSION_ENGINE = engine
+    summary = run_flush(orm, dry_run=True)[1][-1]
+    assert summary["sessions_in_cache"] == expected
+    assert "session_cache_alias" not in summary
+    assert "backends" not in json.dumps(summary)  # the engine name is never emitted
+
+
+@pytest.mark.parametrize("alias,reported", [("default", False), ("sessions", True)])
+def test_flush_cache_reports_a_non_default_session_cache_alias(alias, reported):
+    orm = make_orm()
+    orm.settings.SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+    orm.settings.SESSION_CACHE_ALIAS = alias
+    summary = run_flush(orm, dry_run=True)[1][-1]
+    assert summary.get("session_cache_alias") == (alias if reported else None)
+
+
+def test_flush_cache_failure_ends_with_summary_false():
+    class Broken:
+        def clear(self):
+            raise ConnectionError("redis down")
+
+    orm = make_orm()
+    orm.cache = Broken()
+    ok, events = run_flush(orm)
+    assert not ok
+    assert events == [
+        {"event": "error", "reason": "cache_clear_failed", "detail": "ConnectionError"},
+        {"event": "summary", "ok": False, "step": "cache"},
+    ]

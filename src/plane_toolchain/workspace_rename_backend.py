@@ -8,7 +8,8 @@ the original values of a row about to be written, because the host must persist 
 
 `check` is read-only. The apply steps are `step_slug` (one transaction) and `step_rows` (one
 row at a time); each emits the journal line for a row before it writes that row, with queryset
-`.update()` only.
+`.update()` only. `restore` writes the journal (sent inside the request) back in one
+transaction and never calls Live. `health` is read-only; `flush_cache` clears the cache.
 """
 
 # Dependencies below exist in the Plane backend image, not in this project's environment.
@@ -465,15 +466,266 @@ def step_rows(args, orm, emit, convert=None):
     return True
 
 
-OPERATIONS = {"check": check, "step_slug": step_slug, "step_rows": step_rows}  # T4: restore
+# Restore knows each journalled table's model key and the columns it may write back. Columns
+# with a kind are re-derived (the expected rewritten value) and guard the write; work items and
+# Pages guard on description_html only, because Live built their editor fields.
+RESTORE_COLUMNS = {
+    **{table: (key, dict(columns)) for table, key, columns in SLUG_STEP},
+    **{
+        table: (key, {c: "html" if c == "description_html" else None for c in ROW_FIELDS})
+        for table, key, _ in ROW_STEP
+    },
+}
+ROW_TABLES = tuple(table for table, _, _ in ROW_STEP)
 
 
-def run(op, args, orm, emit, convert):
-    """Run one operation and return its success. `convert(html, variant)` serves step_rows."""
+class _Refuse(Exception):
+    """A journal or state problem found before any write; carries the refusal reason."""
+
+
+def _restore_plan(args):
+    """Validate the request's journal; return (workspace_id, {(table, id): originals}).
+
+    Generations: a rolled-back step_slug leaves journal lines that a rerun repeats, so the
+    first original per (table, id, column) wins. Raises _Refuse before anything is written."""
+    records = args.get("journal")
+    if not isinstance(records, list):
+        raise _Refuse("journal_invalid")
+    if not records:
+        raise _Refuse("journal_empty")
+    workspace_id, rows = None, {}
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+            raise _Refuse("journal_invalid")
+        if record.get("kind") == "workspace":
+            if workspace_id not in (None, record["id"]):
+                raise _Refuse("journal_invalid")
+            if record.get("slug") != args["old"]:
+                raise _Refuse("journal_mismatch")
+            workspace_id = record["id"]
+            continue
+        table, fields = record.get("table"), record.get("fields")
+        if record.get("kind") != "row" or table not in RESTORE_COLUMNS:
+            raise _Refuse("journal_invalid")
+        columns = RESTORE_COLUMNS[table][1]
+        if not isinstance(fields, dict) or not fields or not set(fields) <= set(columns):
+            raise _Refuse("journal_invalid")
+        if not any(columns[c] for c in fields):  # nothing to re-derive, so no safe guard
+            raise _Refuse("journal_invalid")
+        if table in ROW_TABLES and set(fields) != set(ROW_FIELDS):  # step_rows journals all
+            raise _Refuse("journal_invalid")
+        try:
+            values = journal_values(record)
+        except (TypeError, ValueError):  # bad base64 or a non-text binary value
+            raise _Refuse("journal_invalid") from None
+        originals = rows.setdefault((table, record["id"]), {})
+        for column, value in values.items():
+            originals.setdefault(column, value)
+    if workspace_id is None:
+        raise _Refuse("workspace_record_missing")
+    given = args.get("workspace_id")
+    if given and str(given) != workspace_id:
+        raise _Refuse("workspace_mismatch")
+    return workspace_id, rows
+
+
+def _restore_target(orm, old, new, workspace_id):
+    """True if the slug must go back to OLD, False if it already has; refuse anything else."""
+    rows = list(orm.models["workspace"].all_objects.values("pk", "slug", "deleted_at"))
+    target = [r for r in rows if str(r["pk"]) == workspace_id and not r["deleted_at"]]
+    if not target or target[0]["slug"] not in (old, new):
+        raise _Refuse("workspace_mismatch")
+    if any(r["slug"] == old and str(r["pk"]) != workspace_id for r in rows):  # deleted too
+        raise _Refuse("old_slug_taken")
+    return target[0]["slug"] == new
+
+
+def _restore_row(orm, table, row_id, originals, workspace_id, old, new, hosts):
+    """Restore one row if it still holds the rewrite; return "restored", "already" or a skip.
+
+    The current values are compared with the originals (already restored) and with the
+    re-derived rewrite (restore). Anything else is a newer edit, and is never overwritten.
+    JSON null and SQL NULL both read as None, so None is never used to tell them apart."""
+    key, columns = RESTORE_COLUMNS[table]
+    manager = orm.models[key].all_objects
+    owner = () if key in UNOWNED else ("workspace_id",)
+    current = list(manager.filter(pk=row_id).values(*owner, *originals))
+    if not current:
+        return "missing"
+    current = current[0]
+    if owner and str(current["workspace_id"]) != workspace_id:
+        return "other_workspace"
+    if all(current[c] == v for c, v in originals.items()):
+        return "already"
+    expected = {
+        c: _rewrite(originals[c], columns[c], old, new, hosts)[0] for c in originals if columns[c]
+    }
+    if any(current[c] != v for c, v in expected.items()):
+        return "changed"
+    # Guarded on the expected values: a write between the read and here updates nothing.
+    if manager.filter(pk=row_id, **expected).update(**originals) != 1:
+        return "changed"
+    return "restored"
+
+
+def restore(args, orm, emit, convert=None):
+    """Write each journalled original back with queryset `.update()`, in one transaction.
+
+    The journal arrives in the request (`args["journal"]`, the T5 records), because stdin is
+    the program source under `manage.py shell`. The journal's workspace id must hold NEW (or
+    OLD, once restored), and no other workspace may hold OLD. Rows that no longer hold the
+    expected rewrite are skipped and reported, and the summary is then `ok:false, partial:true`.
+    Never calls Live. Idempotent."""
+    old, new = args["old"], args["new"]
+    summary = {"event": "summary", "ok": False, "step": "restore"}
+    try:
+        workspace_id, rows = _restore_plan(args)
+        slug_back = _restore_target(orm, old, new, workspace_id)
+    except _Refuse as refusal:
+        emit({"event": "refuse", "reason": str(refusal)})
+        emit(summary)
+        return False
+    hosts = hosts_from_url(orm.settings.WEB_URL)
+    counts = {"restored": 0, "already": 0}
+    skips = []
+    try:
+        with orm.atomic():
+            if slug_back:
+                workspaces = orm.models["workspace"].all_objects
+                if workspaces.filter(pk=workspace_id, slug=new).update(slug=old) != 1:
+                    raise _Abort("slug_restore_failed")
+            for (table, row_id), originals in sorted(rows.items()):
+                outcome = _restore_row(orm, table, row_id, originals, workspace_id, old, new, hosts)
+                if outcome in counts:
+                    counts[outcome] += 1
+                else:
+                    skips.append({"event": "skip", "table": table, "id": row_id, "reason": outcome})
+    except _Abort as stop:
+        emit(stop.event)
+        emit(summary)
+        return False
+    except Exception as exc:  # rolled back by atomic(); report the type only, never content
+        emit({"event": "error", "reason": "write_failed", "detail": type(exc).__name__})
+        emit(summary)
+        return False
+    for skip in skips:
+        emit(skip)
+    # A skipped row means the revert is not complete: ok:false with partial:true. The rows
+    # restored above stay committed, so a rerun counts them as already restored.
+    done = {**summary, "ok": not skips, **({"partial": True} if skips else {})}
+    emit(
+        {
+            **done,
+            "slug_restored": slug_back,
+            "restored": counts["restored"],
+            "already_restored": counts["already"],
+            "skipped": len(skips),
+            "workspace_id": workspace_id,
+        }
+    )
+    return not skips
+
+
+def health(args, orm, emit, convert=None, probe=None):
+    """Read-only: the API answers 200, NEW is held by exactly `workspace_id` and OLD by none.
+
+    `workspace_id` (the journalled id) is required: without it, a NEW held by a workspace this
+    rename never touched would pass. `probe()` returns the HTTP status of the API's
+    /api/instances/; anything but 200, redirects included, fails. For a revert, the host passes
+    the slugs swapped. Every check runs and is reported; any failure gives `summary ok:false`."""
+    old, new, workspace_id = args["old"], args["new"], args.get("workspace_id")
+    if not workspace_id:
+        emit({"event": "refuse", "reason": "workspace_id_missing"})
+        emit({"event": "summary", "ok": False, "step": "health"})
+        return False
+    try:
+        api = probe is not None and probe() == 200
+    except Exception:  # unreachable or timed out: a failed check, never a crash
+        api = False
+    results = [
+        ("api", api),
+        ("new_present", _live_slugs(orm, new) == [str(workspace_id)]),
+        ("old_absent", not _live_slugs(orm, old)),
+    ]
+    for name, ok in results:
+        emit({"event": "health", "check": name, "ok": ok})
+    ok = all(ok for _, ok in results)
+    emit({"event": "summary", "ok": ok, "step": "health"})
+    return ok
+
+
+# Whether each built-in Django session engine keeps sessions only in the cache.
+SESSION_ENGINES = {
+    "django.contrib.sessions.backends.cache": True,
+    "django.contrib.sessions.backends.db": False,
+    "django.contrib.sessions.backends.cached_db": False,  # the db copy survives a clear
+    "django.contrib.sessions.backends.file": False,
+    "django.contrib.sessions.backends.signed_cookies": False,
+}
+
+
+def flush_cache(args, orm, emit, convert=None):
+    """Clear the whole Django cache (`cache.clear()`), not pattern deletes, during the outage.
+
+    `sessions_in_cache` tells the operator whether sign-ins are lost with it, from the known
+    Django engines only (SESSION_ENGINES); any other engine is "unknown", never guessed. A
+    non-default SESSION_CACHE_ALIAS is reported too. `dry_run` reports without clearing. The
+    engine name itself is never emitted."""
+    engine = getattr(orm.settings, "SESSION_ENGINE", None)
+    alias = getattr(orm.settings, "SESSION_CACHE_ALIAS", "default")
+    summary = {"event": "summary", "ok": False, "step": "cache"}
+    cleared = not args.get("dry_run")
+    if cleared:
+        try:
+            orm.cache.clear()
+        except Exception as exc:  # report the type only
+            emit({"event": "error", "reason": "cache_clear_failed", "detail": type(exc).__name__})
+            emit(summary)
+            return False
+    done = {**summary, "ok": True, "cleared": cleared}
+    done["sessions_in_cache"] = SESSION_ENGINES.get(engine, "unknown")
+    if alias != "default":
+        done["session_cache_alias"] = str(alias)
+    emit(done)
+    return True
+
+
+OPERATIONS = {
+    "check": check,
+    "step_slug": step_slug,
+    "step_rows": step_rows,
+    "restore": restore,
+    "health": health,
+    "flush_cache": flush_cache,
+}
+
+
+def run(op, args, orm, emit, convert, probe=None):
+    """Run one operation and return its success. `convert(html, variant)` serves step_rows;
+    `probe()` (the API status) serves health. No other operation receives the probe."""
     if op not in OPERATIONS:
         emit({"event": "error", "reason": "unknown_op"})
         return False
+    if op == "health":
+        return health(args, orm, emit, probe=probe)
     return OPERATIONS[op](args, orm, emit, convert)
+
+
+API_URL = "http://127.0.0.1:8000"  # ASSUMPTION: the API serves on port 8000 in its container
+
+
+def _api_probe(args):
+    """Return a probe for the API's /api/instances/ status. The payload `api_url` wins over
+    API_URL; the URL is never emitted. Raises on connection errors and after a 10 s timeout.
+    Redirects are not followed, so a redirect's 3xx status fails the health check."""
+    endpoint = (args.get("api_url") or API_URL).rstrip("/") + "/api/instances/"
+
+    def probe():
+        import requests
+
+        return requests.get(endpoint, timeout=10, allow_redirects=False).status_code
+
+    return probe
 
 
 def _live_convert(args):
@@ -554,17 +806,27 @@ def _django_orm():
     return orm
 
 
-def _main(request, orm_factory, convert_factory, out):
-    """Run one request, writing each event as one sorted-key JSON line through `out`."""
+def _main(request, orm_factory, convert_factory, out, probe_factory=None):
+    """Run one request, writing each event as one sorted-key JSON line through `out`.
+
+    The request carries everything an operation needs, including restore's journal, because
+    stdin is the program source under `manage.py shell`."""
     run(
         request["op"],
         request["args"],
         orm_factory(),
         lambda event: out(json.dumps(event, sort_keys=True)),
         convert_factory(request["args"]),
+        probe_factory(request["args"]) if probe_factory else None,
     )
 
 
 # The tail's exit status is always 0: the host must read the final `summary` event's `ok`.
 if "RENAME_REQUEST" in globals():  # the host prepends this only when piping to manage.py shell
-    _main(RENAME_REQUEST, _django_orm, _live_convert, lambda line: print(line, flush=True))
+    _main(
+        RENAME_REQUEST,
+        _django_orm,
+        _live_convert,
+        lambda line: print(line, flush=True),
+        _api_probe,
+    )
