@@ -1,0 +1,24 @@
+src/plane_toolchain/workspace_rename.py
+  s_066dd3ba2255bd::t_417d693eeba883 3-6,210-215,217,220,223-224,227,231-234,249-252,360
+tests/test_workspace_rename_deploy.py
+  s_066dd3ba2255bd::t_c0b1b7576ff162 85
+  s_066dd3ba2255bd::t_417d693eeba883 1,6,142-160,257,302-326
+tests/fake_docker.py
+  s_066dd3ba2255bd::t_417d693eeba883 39-40,172-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "f2dd87b258006789868599513599c8b2409e7777",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
