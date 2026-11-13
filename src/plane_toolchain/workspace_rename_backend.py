@@ -574,7 +574,8 @@ def restore(args, orm, emit, convert=None):
     The journal arrives in the request (`args["journal"]`, the T5 records), because stdin is
     the program source under `manage.py shell`. The journal's workspace id must hold NEW (or
     OLD, once restored), and no other workspace may hold OLD. Rows that no longer hold the
-    expected rewrite are skipped and reported. Never calls Live. Idempotent."""
+    expected rewrite are skipped and reported, and the summary is then `ok:false, partial:true`.
+    Never calls Live. Idempotent."""
     old, new = args["old"], args["new"]
     summary = {"event": "summary", "ok": False, "step": "restore"}
     try:
@@ -609,10 +610,12 @@ def restore(args, orm, emit, convert=None):
         return False
     for skip in skips:
         emit(skip)
+    # A skipped row means the revert is not complete: ok:false with partial:true. The rows
+    # restored above stay committed, so a rerun counts them as already restored.
+    done = {**summary, "ok": not skips, **({"partial": True} if skips else {})}
     emit(
         {
-            **summary,
-            "ok": True,
+            **done,
             "slug_restored": slug_back,
             "restored": counts["restored"],
             "already_restored": counts["already"],
@@ -620,7 +623,7 @@ def restore(args, orm, emit, convert=None):
             "workspace_id": workspace_id,
         }
     )
-    return True
+    return not skips
 
 
 def health(args, orm, emit, convert=None, probe=None):

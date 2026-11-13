@@ -1061,7 +1061,7 @@ def test_restore_skips_and_reports_rows_edited_after_rewrite():
     row(orm, "notification", "n1")["data"] = {"workspace_slug": "new-slug", "read": True}
     edited_page = clone_row(orm, "page", "p1")
     ok, events = restore(orm, records)
-    assert ok
+    assert not ok  # partial: not a full revert
     assert row(orm, "page", "p1") == edited_page  # never overwrite a newer edit
     assert row(orm, "notification", "n1")["data"] == {"workspace_slug": "new-slug", "read": True}
     skips = [e for e in events if e["event"] == "skip"]
@@ -1085,7 +1085,7 @@ def test_restore_skips_stale_record_left_by_step_rows_guard():
     assert not ok and events[-2]["reason"] == "row_changed"
     records = [json.loads(json.dumps(r)) for r in journal(slug_events) + journal(events)]
     ok, events = restore(orm, records)
-    assert ok and row(orm, "issue", "i1")["description_html"] == "<p>edited meanwhile</p>"
+    assert not ok and row(orm, "issue", "i1")["description_html"] == "<p>edited meanwhile</p>"
     assert [e for e in events if e["event"] == "skip"] == [
         {"event": "skip", "table": "issues", "id": "i1", "reason": "changed"}
     ]
@@ -1097,7 +1097,32 @@ def test_restore_skips_missing_rows():
     orm.models["comment"].rows.clear()  # hard-deleted since the rewrite
     ok, events = restore(orm, records)
     skip = {"event": "skip", "table": "issue_comments", "id": "c1", "reason": "missing"}
-    assert ok and skip in events
+    assert not ok and skip in events and events[-1]["partial"] is True
+
+
+def test_restore_with_skips_is_partial_and_keeps_restored_rows():
+    orm = make_orm()
+    original = orm.snapshot()
+    records = apply_all(orm)
+    row(orm, "page", "p1")["description_html"] = "<p>newer user edit</p>"
+    ok, events = restore(orm, records)
+    assert not ok
+    assert events[-1] == {
+        "event": "summary",
+        "ok": False,
+        "partial": True,
+        "step": "restore",
+        "slug_restored": True,
+        "restored": 6,
+        "already_restored": 0,
+        "skipped": 1,
+        "workspace_id": "w1",
+    }
+    assert ("commit",) in orm.log  # the restored rows stay written
+    assert row(orm, "workspace", "w1")["slug"] == "old-slug"
+    assert row(orm, "issue", "i1")["description_html"] == original["issue"][0]["description_html"]
+    ok, again = restore(orm, records)  # a rerun stays partial and writes nothing more
+    assert not ok and again[-1]["partial"] is True and again[-1]["already_restored"] == 6
 
 
 def test_restore_uses_first_original_of_rolled_back_generation():
@@ -1195,7 +1220,7 @@ def test_restore_emits_only_ids_tables_and_counts():
     blob = json.dumps(events)
     assert PRIVATE not in blob and "plane.example.com" not in blob and "old-slug" not in blob
     allowed = {"event", "ok", "step", "reason", "table", "id", "detail", "workspace_id"}
-    allowed |= {"slug_restored", "restored", "already_restored", "skipped"}
+    allowed |= {"slug_restored", "restored", "already_restored", "skipped", "partial"}
     assert all(set(e) <= allowed for e in events)
 
 
