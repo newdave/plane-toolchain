@@ -1,0 +1,32 @@
+tests/test_project_install.py
+  s_066dd3ba2255bd::t_28548d615ea904 437-483
+scripts/install_project.py
+  s_066dd3ba2255bd::t_e0a39ec450bad4 134-135
+  s_066dd3ba2255bd::t_e2a0f8b6dabcc3 52-54,203
+tests/fixtures/plane.sh.shfmt
+  s_066dd3ba2255bd::t_e5780f07490926 1-70
+docs/project-install.md
+  s_066dd3ba2255bd::t_fd06465ccf11cc 29
+templates/project/plane.sh
+  s_066dd3ba2255bd::t_e5780f07490926 35-69
+CHANGELOG.md
+  s_066dd3ba2255bd::t_e16a9284c4dbe7 38
+templates/project/plane.sh.pre-shfmt
+  s_066dd3ba2255bd::t_e5780f07490926 1-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "4fd1e47b43d86e55933cd7c7809d9c9aa4c0f250",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
