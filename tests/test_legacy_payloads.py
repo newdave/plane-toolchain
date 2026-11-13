@@ -12,10 +12,12 @@ def test_server_payloads_match_existing_deployment_receipts():
     expected = {
         # PTC-13: digest changed (canonical UUIDs, SDK guard, FASTMCP_HOST); see docs/extensions.md.
         # PTC-44: digest changed (ce_page update action); see docs/extensions.md.
-        "ce_tools.py": "5b48127fbe67780e6d43761cb4b2e57050fd6bdd23044759274f1b4bf624a68f",
+        # PTC-29: digest changed (comment wording only; TerrainLink provenance removed).
+        "ce_tools.py": "3251a424debf574af740455e95abc4861c8edc7d2b4953fc2f29aa33700dc855",
         # PTC-19: digest changed (client messages from a fixed table; CodeQL stack-trace alerts).
         # PTC-44: digest changed (page update route, force_close via Redis); see docs/extensions.md.
-        "pages_backend.py": "52167b99f187ad31743f94b5ecc9c52bebbe435e17cd4805bedba682ec882631",
+        # PTC-29: digest changed (comment and docstring wording only).
+        "pages_backend.py": "03376b3dc996fa7300cefbb13cabe74750f4945c7f95f59d0544f2a128afa1d8",
     }
     for name, digest in expected.items():
         assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest

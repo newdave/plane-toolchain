@@ -22,7 +22,7 @@ run = ["uv run --locked ruff check .", "uv run --locked ruff format --check ."]
 run = [
   "actionlint .github/workflows/*.yml examples/github/*.yml",
   "zizmor --offline .github/workflows examples/github/*.yml",
-  "shellcheck scripts/*.sh",
+  "shellcheck scripts/*.sh templates/project/*.sh",
   "zsh -n scripts/plane-prompt.zsh",
 ]
 [tasks.test]
@@ -59,3 +59,9 @@ run = "uv run --locked python examples/github/plane_event.py"
 run = "uv run --locked python scripts/github_examples.py apply"
 [tasks."owner:github-examples:revert"]
 run = "uv run --locked python scripts/github_examples.py revert"
+[tasks."owner:project:apply"]
+run = "uv run --locked python scripts/install_project.py apply"
+[tasks."owner:project:label"]
+run = "uv run --locked python scripts/install_project.py label"
+[tasks."owner:project:revert"]
+run = "uv run --locked python scripts/install_project.py revert"
