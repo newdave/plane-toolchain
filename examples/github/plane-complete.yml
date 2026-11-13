@@ -56,7 +56,7 @@ jobs:
         working-directory: .plane-toolchain
         run: |
           python3 -m venv .bootstrap
-          .bootstrap/bin/pip install 'uv==0.9.3'
+          .bootstrap/bin/pip install --require-hashes --only-binary :all: -r examples/github/uv-requirements.txt
           .bootstrap/bin/uv sync --locked --no-dev
       - name: Call Plane through MCP
         working-directory: .plane-toolchain

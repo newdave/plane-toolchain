@@ -9,9 +9,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      checks: read
     env:
       TAG: ${{ github.ref_name }}
-      GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -28,7 +28,21 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -n1)
           [ "$TAG" = "v$version" ] \
             || { echo "::error::tag $TAG does not match pyproject version $version"; exit 1; }
+      - name: Require a successful CI check on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          passed=$(gh api --paginate "repos/$REPO/commits/$sha/check-runs?per_page=100" \
+            --jq '[.check_runs[] | select(.name == "check" and .conclusion == "success")] | length' \
+            | awk '{ n += $1 } END { print n + 0 }')
+          [ "$passed" -ge 1 ] \
+            || { echo "::error::no successful 'check' run on $sha; wait for CI on the default branch"; exit 1; }
       - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version=${TAG#v}
