@@ -445,7 +445,7 @@ def stderr_tail(handle, limit=300, hide=()):
     lines = [line.strip() for line in text.splitlines() if line.strip()][-3:]
     text = " | ".join(lines)
     for name in sorted({h for h in hide if h}, key=len, reverse=True):
-        text = text.replace(name, "<container>")
+        text = re.sub(r"(?<![\w-])" + re.escape(name) + r"(?![\w-])", "<container>", text)
     text = re.sub(r"\"[^\"]*\"|'[^']*'", "<redacted>", text)
     return "".join(c for c in text if c.isprintable())[:limit]
 
@@ -1178,8 +1178,10 @@ def run_apply(data, seams):
             )
         if target == "started":
             state = "Some services did not start"
-        elif "jobs still queued" in reason:  # the drain gate refused; nothing more was stopped
+        elif "and the workers are stopped" in reason:  # fast-fail drain gate
             state = "Services were left as they are (workers stopped, jobs kept)"
+        elif "jobs still queued after" in reason:  # 60 s drain timeout, worker was running
+            state = "Beat is stopped and the other services were left as they are (jobs kept)"
         elif target == step:  # stopping services again on resume failed
             state = "Some services may still be running; stop them by hand"
         else:
@@ -1422,8 +1424,10 @@ def run_revert(data, seams):
                 "receipt was not changed. Stop the snippet process in the API container by hand "
                 "(its environment has PLANE_RENAME_RUN), then rerun revert."
             )
-        if "jobs still queued" in reason:
+        if "and the workers are stopped" in reason:
             state = "Services were left as they are (workers stopped, jobs kept)"
+        elif "jobs still queued after" in reason:
+            state = "Beat is stopped and the other services were left as they are (jobs kept)"
         elif target == "reverting":
             state = "Nothing was changed by the revert; services were left as they are"
         elif target == "restored":

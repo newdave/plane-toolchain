@@ -907,3 +907,28 @@ def test_interrupt_with_an_unconfirmed_stop_warns_on_stderr(host, monkeypatch, c
     with pytest.raises(KeyboardInterrupt):
         snippet_call(host, "step_slug")
     assert "snippet may still be running" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("operation", ["revert", "apply"])
+def test_sixty_second_timeout_wording_when_the_worker_is_running(host, operation):
+    drained_failure(host)
+    host.shell.live.fail = False
+    for name in ("plane-worker", "plane", "plane-space", "plane-admin"):
+        host.fake.docker("start", name)  # the operator restarted them
+    with pytest.raises(RuntimeError) as caught:
+        host.deploy(operation)
+    text = str(caught.value)
+    assert "3 jobs still queued after 60 s" in text
+    assert "PLANE_RENAME_ALLOW_UNDRAINED=1" in text
+    assert "Beat is stopped and the other services were left as they are" in text
+    assert "workers stopped" not in text and "stop them by hand" not in text
+
+
+def test_hidden_container_names_match_whole_names_only(host):
+    host.fake.pg_dump_code = 1
+    host.fake.pg_dump_stderr = b"role plane_db missing on plane\n"
+    with pytest.raises(RuntimeError) as caught:
+        host.deploy()
+    text = str(caught.value)
+    assert "plane_db" in text and "<container>" in text
+    assert "on plane" not in text
