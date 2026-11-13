@@ -1,8 +1,14 @@
 import ast
+import base64
+import builtins
 import inspect
 import json
 import pathlib
+import symtable
+import sys
+import types
 
+import pytest
 from fake_orm import FakeOrm
 
 from plane_toolchain import workspace_rename_backend as backend
@@ -36,6 +42,9 @@ def make_orm(**extra):
                     "workspace_id": "w1",
                     "description_html": html,
                     "description_json": {"type": "link", "href": URL},
+                    "description_binary": b"\x00old-binary\xff",
+                    "description_stripped": f"{PRIVATE} {URL}",
+                    "updated_at": "2026-01-02",
                     "deleted_at": None,
                 },
                 {
@@ -62,6 +71,10 @@ def make_orm(**extra):
                     "id": "p1",
                     "workspace_id": "w1",
                     "description_html": html,
+                    "description_json": {"type": "doc"},
+                    "description_binary": memoryview(b"\x01page-binary"),
+                    "description_stripped": None,
+                    "updated_at": "2026-01-03",
                     "deleted_at": None,
                     "archived_at": "2026-01-01",
                 }
@@ -75,6 +88,8 @@ def make_orm(**extra):
                     "id": "c1",
                     "workspace_id": "w1",
                     "comment_html": '<a href="/old-slug/x">a</a>',
+                    "comment_stripped": "a",
+                    "comment_json": {"type": "link", "attrs": {"href": "/old-slug/x"}},
                     "deleted_at": None,
                 }
             ],
@@ -100,6 +115,7 @@ def make_orm(**extra):
                     "workspace_id": "w1",
                     "description_html": f'<a href="{URL}">x</a>',
                     "description_json": {"type": "link", "href": URL},
+                    "description_stripped": f"see {URL}",
                     "deleted_at": None,
                 },
                 {  # row of a deleted comment
@@ -107,8 +123,17 @@ def make_orm(**extra):
                     "workspace_id": "w1",
                     "description_html": f'<a href="{URL}">x</a>',
                     "description_json": {},
+                    "description_stripped": None,
                     "deleted_at": "2026-01-01",
                 },
+            ],
+        ),
+        "email_log": (
+            "email_notification_logs",
+            {"data": "json"},
+            [
+                {"id": "e1", "data": {"issue": {"workspace_slug": "old-slug"}}, "deleted_at": None},
+                {"id": "e2", "data": {"workspace_slug": "other"}, "deleted_at": None},
             ],
         ),
         "webhook_log": (
@@ -152,12 +177,13 @@ def test_check_reports_planned_rewrites_per_record_and_field():
         ("notifications", "n1", "data"),
         ("descriptions", "d1", "description_html"),
         ("descriptions", "d2", "description_html"),
+        ("email_notification_logs", "e1", "data"),
     }
     assert plans[("issues", "i1", "description_html")]["count"] == 1
     assert "description_binary" in plans[("issues", "i1", "description_html")]["rebuild"]
     assert "rebuild" not in plans[("notifications", "n1", "data")]
     summary = events[-1]
-    assert summary["event"] == "summary" and summary["ok"] and summary["planned"] == 6
+    assert summary["event"] == "summary" and summary["ok"] and summary["planned"] == 7
     assert summary["rebuild"] == 4
 
 
@@ -303,6 +329,15 @@ def test_check_never_emits_row_content():
 
 def test_snippet_source_has_no_disk_writes_or_prints_of_config():
     tree = ast.parse(snippet_source())
+    live = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_live_convert"
+    )
+    live_imports = {
+        id(n)
+        for n in ast.walk(live)
+        if isinstance(n, ast.Import) and [a.name for a in n.names] == ["os"]
+    }
+    assert len(live_imports) == 1
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             f = node.func
@@ -319,10 +354,432 @@ def test_snippet_source_has_no_disk_writes_or_prints_of_config():
                     "getenv",
                     "environ",
                 }, f.attr
-        if isinstance(node, ast.Import | ast.ImportFrom):
+        if isinstance(node, ast.Import | ast.ImportFrom) and id(node) not in live_imports:
             names = [a.name for a in node.names] + [getattr(node, "module", "") or ""]
             assert not any(n in {"os", "pathlib", "shutil", "tempfile"} for n in names)
+    # One exception: _live_convert imports os only to read CE_PLANE_LIVE_URL, never writes
+    # files and never emits the URL.
+    assert len([n for n in ast.walk(live) if isinstance(n, ast.Name) and n.id == "os"]) == 1
+    reads = [
+        ast.unparse(n)
+        for n in ast.walk(live)
+        if isinstance(n, ast.Call) and "os." in ast.unparse(n.func)
+    ]
+    assert reads == ["os.environ.get('CE_PLANE_LIVE_URL')"]
     # configuration is read only for WEB_URL, never emitted
     uses = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "settings"]
     assert all(isinstance(n.value, ast.Name) and n.value.id == "orm" for n in uses)
     assert pathlib.Path(backend.__file__).read_text().count("print(") == 1
+
+
+# --- apply steps (step_slug, step_rows) and the journal, run through the assembled snippet ---
+
+NEW_URL = "https://plane.example.com/new-slug/browse/X-1/"
+
+
+def snippet_namespace():
+    ns = {}
+    exec(compile(snippet_source(), "snippet", "exec"), ns)  # noqa: S102
+    return ns
+
+
+class FakeLive:
+    """Stand-in for Live /live/convert-document/: records (html, variant), never touches rows."""
+
+    def __init__(self, fail_on=None, result=None):
+        self.calls, self.fail_on, self.result = [], fail_on, result
+
+    def __call__(self, html, variant):
+        self.calls.append((html, variant))
+        if self.fail_on is not None and self.fail_on(html, variant, len(self.calls)):
+            raise RuntimeError("Live unavailable")
+        if self.result is not None:
+            return self.result
+        n = len(self.calls)
+        return {
+            "description_json": {"type": "doc", "variant": variant, "n": n},
+            "description_binary": base64.b64encode(f"bin-{variant}-{n}".encode()).decode(),
+            "description_stripped": f"stripped-{n}",
+        }
+
+
+def run_op(op, orm, convert=None, ns=None, old="old-slug", new="new-slug"):
+    ns = ns or snippet_namespace()
+    events = []
+
+    def emit(event):
+        orm.log.append(("emit", event))
+        events.append(event)
+
+    ok = ns["run"](op, {"old": old, "new": new}, orm, emit, convert)
+    return ok, events
+
+
+def journal(events):
+    return [e["record"] for e in events if e["event"] == "journal"]
+
+
+def row(orm, key, row_id):
+    return next(r for r in orm.models[key].rows if r["id"] == row_id)
+
+
+def log_index(orm, predicate):
+    return [i for i, entry in enumerate(orm.log) if predicate(entry)]
+
+
+def is_journal(entry):
+    return entry[0] == "emit" and entry[1]["event"] == "journal"
+
+
+def test_step_slug_journals_old_slug_then_updates_in_one_transaction():
+    orm = make_orm()
+    ok, events = run_op("step_slug", orm)
+    assert ok and events[-1]["event"] == "summary" and events[-1]["ok"]
+    assert row(orm, "workspace", "w1")["slug"] == "new-slug"
+    assert journal(events)[0] == {"kind": "workspace", "id": "w1", "slug": "old-slug"}
+    kinds = [entry[0] for entry in orm.log]
+    assert kinds.count("begin") == 1 and kinds.count("commit") == 1
+    begin, commit = kinds.index("begin"), kinds.index("commit")
+    writes = log_index(orm, lambda e: e[0] == "update")
+    lines = log_index(orm, is_journal)
+    assert writes and all(begin < i < commit for i in writes + lines)
+    assert lines[0] < log_index(orm, lambda e: e[:2] == ("update", "workspaces"))[0]
+    # comments, their Description mirrors and notifications are rewritten in the same step
+    assert row(orm, "comment", "c1")["comment_html"] == '<a href="/new-slug/x">a</a>'
+    assert row(orm, "comment", "c1")["comment_json"]["attrs"]["href"] == "/new-slug/x"
+    assert row(orm, "comment", "c1")["comment_stripped"] == "a"
+    assert row(orm, "description", "d1")["description_html"] == f'<a href="{NEW_URL}">x</a>'
+    assert row(orm, "description", "d1")["description_json"]["href"] == NEW_URL
+    assert row(orm, "description", "d1")["description_stripped"] == f"see {NEW_URL}"
+    assert row(orm, "notification", "n1")["data"] == {"workspace_slug": "new-slug"}
+    assert row(orm, "email_log", "e1")["data"] == {"issue": {"workspace_slug": "new-slug"}}
+    assert row(orm, "email_log", "e2")["data"] == {"workspace_slug": "other"}
+    # only changed columns are journalled and written
+    comment = next(r for r in journal(events) if r.get("table") == "issue_comments")
+    assert set(comment["fields"]) == {"comment_html", "comment_json"}
+    # work items and Pages belong to step_rows
+    assert row(orm, "issue", "i1")["description_html"].count("old-slug") == 1
+
+
+def test_step_slug_never_calls_live():
+    live = FakeLive()
+    ok, _ = run_op("step_slug", make_orm(), live)
+    assert ok and live.calls == []
+
+
+def test_step_slug_transaction_rolls_back_comments_and_notifications_on_error():
+    orm = make_orm()
+    before = orm.snapshot()
+    orm.models["notification"].fail_update = True
+    ok, events = run_op("step_slug", orm)
+    assert not ok
+    assert orm.snapshot() == before  # slug, comments and descriptions rolled back too
+    assert ("rollback",) in orm.log
+    error = next(e for e in events if e["event"] == "error")
+    assert error == {"event": "error", "reason": "write_failed", "detail": "RuntimeError"}
+    assert events[-1] == {"event": "summary", "ok": False, "step": "slug"}
+
+
+def test_step_slug_refuses_like_check_before_writing():
+    orm = make_orm()
+    orm.models["workspace"].rows.append({"id": "w3", "slug": "new-slug", "deleted_at": "x"})
+    before = orm.snapshot()
+    ok, events = run_op("step_slug", orm)
+    assert not ok and orm.snapshot() == before and not journal(events)
+    assert any(e["event"] == "refuse" for e in events)
+
+
+def test_step_slug_resume_after_commit_is_a_noop():
+    orm = make_orm()
+    run_op("step_slug", orm)
+    after = orm.snapshot()
+    ok, events = run_op("step_slug", orm)
+    assert ok and orm.snapshot() == after and not journal(events)
+    assert events[-1] == {"event": "summary", "ok": True, "step": "slug", "already": True}
+
+
+def test_journal_line_precedes_each_row_write():
+    orm = make_orm()
+    run_op("step_slug", orm)
+    run_op("step_rows", orm, FakeLive())
+    journalled, writes = set(), 0
+    for entry in orm.log:
+        if is_journal(entry):
+            record = entry[1]["record"]
+            table = "workspaces" if record["kind"] == "workspace" else record["table"]
+            journalled.add((table, record["id"]))
+        if entry[0] == "update":
+            for row_id in entry[2]:
+                writes += 1
+                assert (entry[1], row_id) in journalled, (entry[1], row_id)
+    assert writes == 8  # step_slug: workspace, c1, d1, d2, n1, e1; step_rows: i1, p1
+
+
+def test_step_rows_uses_queryset_update_not_save():
+    tree = ast.parse(inspect.getsource(backend))
+    calls = {
+        n.func.attr
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    }
+    assert "save" not in calls and "update" in calls
+    orm = make_orm()
+    run_op("step_slug", orm)
+    ok, _ = run_op("step_rows", orm, FakeLive())
+    assert ok
+    fields = ["description_binary", "description_html", "description_json", "description_stripped"]
+    assert orm.models["issue"].updates == [(fields, 1)]
+    assert orm.models["page"].updates == [(fields, 1)]
+    assert row(orm, "issue", "i1")["updated_at"] == "2026-01-02"
+    assert row(orm, "page", "p1")["updated_at"] == "2026-01-03"
+
+
+def test_step_rows_rebuilds_issue_with_variant_rich():
+    orm = make_orm()
+    run_op("step_slug", orm)
+    live = FakeLive()
+    ok, events = run_op("step_rows", orm, live)
+    assert ok
+    html, variant = live.calls[0]
+    assert variant == "rich" and NEW_URL in html and "old-slug" not in html
+    issue = row(orm, "issue", "i1")
+    assert issue["description_html"] == html
+    assert issue["description_json"] == {"type": "doc", "variant": "rich", "n": 1}
+    assert issue["description_binary"] == b"bin-rich-1"  # base64 from Live, stored as bytes
+    assert issue["description_stripped"] == "stripped-1"
+    assert events[-1] == {"event": "summary", "ok": True, "step": "rows", "rewritten": 2}
+
+
+def test_step_rows_rebuilds_page_with_variant_document():
+    orm = make_orm()
+    run_op("step_slug", orm)
+    live = FakeLive()
+    ok, _ = run_op("step_rows", orm, live)
+    assert ok and [v for _, v in live.calls] == ["rich", "document"]
+    page = row(orm, "page", "p1")
+    assert page["description_json"]["variant"] == "document"
+    assert page["description_binary"] == b"bin-document-2"
+
+
+def test_step_rows_rewrites_original_stripped_when_live_omits_it():
+    orm = make_orm()
+    run_op("step_slug", orm)
+    live = FakeLive(result={"description_json": {"type": "doc"}, "description_binary": "AAE="})
+    ok, _ = run_op("step_rows", orm, live)
+    assert ok
+    assert row(orm, "issue", "i1")["description_stripped"] == f"{PRIVATE} {NEW_URL}"
+    assert row(orm, "page", "p1")["description_stripped"] is None
+
+
+def test_step_rows_skips_rows_without_match():
+    orm = make_orm()
+    run_op("step_slug", orm)
+    before = {r["id"]: r for r in orm.snapshot()["issue"]}
+    live = FakeLive()
+    ok, events = run_op("step_rows", orm, live)
+    assert ok and len(live.calls) == 2
+    assert row(orm, "issue", "i2") == before["i2"]
+    assert row(orm, "issue", "i3") == before["i3"]  # other workspace: never rewritten
+    assert {(r["table"], r["id"]) for r in journal(events)} == {("issues", "i1"), ("pages", "p1")}
+
+
+def test_step_rows_iterates_in_pages():
+    rows = [
+        {
+            "id": f"i{n:03}",
+            "workspace_id": "w1",
+            "description_html": f'<a href="{URL}">x</a>' if n % 2 else "<p>none</p>",
+            "description_json": {},
+            "description_binary": b"",
+            "description_stripped": "",
+            "deleted_at": None,
+        }
+        for n in range(25)
+    ]
+    orm = make_orm(issue=("issues", {"description_html": "text"}, rows))
+    ns = snippet_namespace()
+    ns["PAGE_SIZE"] = 4
+    run_op("step_slug", orm, ns=ns)
+    ok, events = run_op("step_rows", orm, FakeLive(), ns=ns)
+    assert ok and events[-1]["rewritten"] == 12 + 1  # 12 odd issues and the page
+    pages = orm.models["issue"].pages
+    assert len(pages) >= 7 and max(pages) <= 4
+
+
+def test_step_rows_resume_rederives_remaining_after_partial():
+    orm = make_orm()
+    run_op("step_slug", orm)
+
+    def kill_on_second(html, variant, n):
+        if n == 2:
+            raise KeyboardInterrupt  # the process dies mid-step: nothing catches it
+        return False
+
+    events = []
+    ns = snippet_namespace()
+    args = {"old": "old-slug", "new": "new-slug"}
+    with pytest.raises(KeyboardInterrupt):
+        ns["run"]("step_rows", args, orm, events.append, FakeLive(kill_on_second))
+    assert [(r["table"], r["id"]) for r in journal(events)] == [("issues", "i1")]
+    assert "old-slug" in row(orm, "page", "p1")["description_html"]
+    live = FakeLive()
+    ok, resumed = run_op("step_rows", orm, live)
+    assert ok and [v for _, v in live.calls] == ["document"]  # i1 is not converted again
+    assert [(r["table"], r["id"]) for r in journal(resumed)] == [("pages", "p1")]
+    assert "old-slug" not in row(orm, "page", "p1")["description_html"]
+    ok, again = run_op("step_rows", orm, FakeLive())
+    assert ok and not journal(again) and again[-1]["rewritten"] == 0
+
+
+@pytest.mark.parametrize(
+    "result,fail",
+    [
+        (None, True),
+        ({"description_json": {"type": "doc"}}, False),  # no binary
+        ({"description_json": {}, "description_binary": "not base64!"}, False),
+        ({"description_json": "x", "description_binary": "AAE="}, False),
+    ],
+    ids=["raises", "missing_binary", "bad_base64", "bad_json"],
+)
+def test_step_rows_convert_failure_aborts_without_writing_that_row(result, fail):
+    orm = make_orm()
+    run_op("step_slug", orm)
+    before = orm.snapshot()["page"]
+    if result is not None:  # the issue converts fine; the page gets the bad answer
+        good = FakeLive()
+
+        def live(html, variant):
+            return good(html, variant) if variant == "rich" else result
+    else:
+        live = FakeLive(fail_on=lambda html, variant, n: variant == "document")
+    ok, events = run_op("step_rows", orm, live)
+    assert not ok
+    assert orm.snapshot()["page"] == before
+    assert ("pages", "p1") not in {(r.get("table"), r["id"]) for r in journal(events)}
+    error = next(e for e in events if e["event"] == "error")
+    assert error == {"event": "error", "reason": "convert_failed", "table": "pages", "id": "p1"}
+    assert events[-1] == {"event": "summary", "ok": False, "step": "rows", "rewritten": 1}
+
+
+def test_step_rows_refuses_without_live_or_before_slug_step():
+    orm = make_orm()
+    before = orm.snapshot()
+    ok, events = run_op("step_rows", orm, FakeLive())
+    assert not ok and events[0] == {"event": "refuse", "reason": "slug_not_renamed"}
+    run_op("step_slug", orm)
+    ok, events = run_op("step_rows", orm, None)
+    assert not ok and events[0] == {"event": "refuse", "reason": "live_url_missing"}
+    assert orm.snapshot()["issue"] == before["issue"]
+
+
+def test_journal_roundtrip_bytes_and_json_equal_originals(tmp_path):
+    """Lines persisted by the T5 store decode to the exact originals, and writing them back by
+    queryset update restores the original database byte for byte."""
+    from plane_toolchain import workspace_rename as wr
+
+    orm = make_orm()
+    original = orm.snapshot()
+    ns = snippet_namespace()
+    directory = wr.secure_receipt_dir(tmp_path / "receipt")
+    for op, live in (("step_slug", None), ("step_rows", FakeLive())):
+        ok, events = run_op(op, orm, live, ns=ns)
+        assert ok
+        for line in [json.dumps(e, sort_keys=True) for e in events]:  # the snippet's stdout
+            event = json.loads(line)
+            if event["event"] == "journal":
+                wr.append_journal(directory, event["record"])
+    raw = (directory / "records.jsonl").read_text().splitlines()
+    canonical = [json.dumps(json.loads(x), sort_keys=True, separators=(",", ":")) for x in raw]
+    assert raw == canonical
+    records = wr.load_journal(directory)
+    page = next(r for r in records if r.get("table") == "pages")
+    assert page["fields"]["description_binary"] == base64.b64encode(b"\x01page-binary").decode()
+    assert ns["journal_values"](page)["description_binary"] == b"\x01page-binary"
+    tables = {t.db_table: k for k, t in orm.models.items()}
+    for record in records:  # what T4's restore does, by queryset update
+        if record["kind"] == "workspace":
+            manager = orm.models["workspace"].all_objects
+            manager.filter(pk=record["id"]).update(slug=record["slug"])
+            continue
+        values = ns["journal_values"](record)
+        orm.models[tables[record["table"]]].all_objects.filter(pk=record["id"]).update(**values)
+
+    def normal(snapshot):
+        encode = lambda v: {"bytes": base64.b64encode(bytes(v)).decode()}  # noqa: E731
+        return json.loads(json.dumps(snapshot, sort_keys=True, default=encode))
+
+    assert normal(orm.snapshot()) == normal(original)
+    assert row(orm, "issue", "i1")["description_binary"] == b"\x00old-binary\xff"
+
+
+def test_apply_steps_emit_row_content_only_in_journal_events():
+    orm = make_orm()
+    _, slug_events = run_op("step_slug", orm)
+    _, row_events = run_op("step_rows", orm, FakeLive())
+    others = [e for e in slug_events + row_events if e["event"] != "journal"]
+    blob = json.dumps(others)
+    assert PRIVATE not in blob and "plane.example.com" not in blob and "old-slug" not in blob
+    allowed = {"event", "ok", "step", "rewritten", "already", "reason", "table", "id", "detail"}
+    allowed |= {"not_rebuilt"}
+    assert all(set(e) <= allowed for e in others)
+
+
+def test_snippet_live_convert_uses_payload_or_container_url(monkeypatch):
+    posts = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"description_json": {}, "description_binary": "AAE="}
+
+    def post(url, json, timeout):
+        posts.append((url, json, timeout))
+        return Response()
+
+    monkeypatch.setitem(sys.modules, "requests", types.SimpleNamespace(post=post))
+    monkeypatch.setenv("CE_PLANE_LIVE_URL", "http://live.internal:3000/")
+    ns = snippet_namespace()
+    assert ns["_live_convert"]({})("<p>x</p>", "rich")["description_binary"] == "AAE="
+    body = {"description_html": "<p>x</p>", "variant": "rich"}
+    assert posts == [("http://live.internal:3000/live/convert-document/", body, 20)]
+    ns["_live_convert"]({"live_url": "http://other:3000"})("<p/>", "document")
+    assert posts[-1][0] == "http://other:3000/live/convert-document/"
+    monkeypatch.delenv("CE_PLANE_LIVE_URL")
+    assert ns["_live_convert"]({}) is None
+
+
+def test_snippet_main_emits_sorted_json_lines_and_passes_convert():
+    ns, orm, lines, seen = snippet_namespace(), make_orm(), [], []
+
+    def factory(args):
+        seen.append(args)
+        return FakeLive()
+
+    for op in ("step_slug", "step_rows"):
+        request = {"op": op, "args": {"old": "old-slug", "new": "new-slug"}}
+        ns["_main"](request, lambda: orm, factory, lines.append)
+    assert all(line == json.dumps(json.loads(line), sort_keys=True) for line in lines)
+    summaries = [json.loads(x) for x in lines if json.loads(x)["event"] == "summary"]
+    assert [s["ok"] for s in summaries] == [True, True] and summaries[-1]["rewritten"] == 2
+    assert seen == [{"old": "old-slug", "new": "new-slug"}] * 2
+
+
+def test_snippet_functions_reference_only_defined_globals():
+    """The assembled snippet must define every global its functions use (no missing import)."""
+    table = symtable.symtable(snippet_source(), "<snippet>", "exec")
+    defined = {s.get_name() for s in table.get_symbols() if s.is_assigned() or s.is_imported()}
+    defined |= {s.get_name() for s in table.get_symbols() if s.is_namespace()}
+    defined |= set(dir(builtins))
+    missing = {}
+
+    def walk(scope):
+        for child in scope.get_children():
+            for symbol in child.get_symbols():
+                if symbol.is_global() and symbol.get_name() not in defined:
+                    missing.setdefault(child.get_name(), set()).add(symbol.get_name())
+            walk(child)
+
+    walk(table)
+    assert not missing, f"snippet functions use undefined globals: {missing}"
