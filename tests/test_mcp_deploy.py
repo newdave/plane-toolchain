@@ -807,6 +807,7 @@ def test_remote_entry_reports_unexpected_failure_without_traceback():
 def test_module_entry_prints_one_line_for_invalid_destination(monkeypatch, capsys):
     import runpy
 
+    monkeypatch.delitem(sys.modules, "plane_toolchain.mcp_deploy")
     monkeypatch.setattr(sys, "argv", ["mcp_deploy", "check"])
     monkeypatch.setenv("PLANE_MCP_SSH", "-oProxyCommand=x")
     monkeypatch.setenv("PLANE_MCP_DIRECTORY", "/srv/mcp")

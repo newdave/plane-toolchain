@@ -28,7 +28,7 @@ run = [
   "zsh -n scripts/plane-prompt.zsh",
 ]
 [tasks.test]
-run = "uv run --locked pytest -q"
+run = "uv run --locked pytest -q --cov --cov-report=term:skip-covered"
 env = { VIRTUAL_ENV = false }
 [tasks.check]
 depends = ["lint", "lint:ci", "test"]

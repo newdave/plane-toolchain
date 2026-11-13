@@ -1,0 +1,341 @@
+"""Pages deploy: apply, reconcile and replacement container."""
+
+import json
+import subprocess
+import pytest
+from fake_docker import NOW, FakeDocker
+from plane_toolchain import pages_deploy
+from support_pages_deploy import (
+    APPLIED,
+    APPLIED_WITH_FAILED,
+    BACKUP,
+    DIGEST,
+    HEALTH,
+    HELD,
+    IMAGE,
+    LABEL,
+    LOOKUP,
+    NOTE,
+    PAGES,
+    PS,
+    REMIND,
+    RETAINED,
+    SOURCE,
+    assert_freshly_applied,
+    assert_original_restored,
+    deploy,
+    remote,
+    restart,
+    retained,
+    running,
+)
+from support_pages_deploy import applied  # noqa: F401
+from support_pages_deploy import host  # noqa: F401
+from support_pages_deploy import retired  # noqa: F401
+
+
+def test_apply_builds_derived_image_and_retains_original_stopped(host, monkeypatch, capsys):
+    remote("apply", host, monkeypatch)
+    assert capsys.readouterr().out == (
+        "Pages derived image applied; API healthy; original container retained for rollback"
+        "; retained containers: " + BACKUP + REMIND + "\n"
+    )
+    assert host.calls == [
+        *LOOKUP,
+        ("inspect", BACKUP),
+        ("image", "inspect", "sha256:base"),
+        ("build", "-t", IMAGE, "-"),
+        ("stop", "api"),
+        ("rename", "api", BACKUP),
+        ("update", "--restart=no", BACKUP),
+        ("create", "api"),
+        ("start", "api"),
+        HEALTH,
+        PAGES,
+        RETAINED,
+    ]
+    derived, original = host.containers["api"], host.containers[BACKUP]
+    assert derived["image"] == IMAGE and derived["running"]
+    assert derived["labels"] == {"owner": "kept", LABEL: DIGEST}
+    assert derived["env"] == ["OPAQUE_SECRET=do-not-print", "CE_PLANE_LIVE_URL=http://live:3000"]
+    assert derived["host_config"] == {"RestartPolicy": {"Name": "unless-stopped"}}
+    assert original["labels"] == {"owner": "kept"} and not original["running"]
+    # Build stdout and health output never reach the SSH terminal; build stderr is captured
+    # so a failure can show a bounded tail.
+    quiet = (subprocess.DEVNULL, subprocess.DEVNULL)
+    assert host.streams[("build", "-t", IMAGE, "-")] == (subprocess.DEVNULL, subprocess.PIPE)
+    assert host.streams[HEALTH] == quiet
+    assert host.streams[PAGES] == quiet
+    [(tag, files)] = host.builds
+    assert tag == IMAGE
+    assert files["plane_pages.py"] == SOURCE.encode()
+    dockerfile = files["Dockerfile"].decode()
+    assert dockerfile.startswith("FROM registry.example/plane-backend@sha256:abc\n")
+    assert "COPY plane_pages.py /code/plane/api/plane_toolchain_pages.py\n" in dockerfile
+    assert "from plane.api.plane_toolchain_pages import routes" in dockerfile
+    assert dockerfile.endswith(
+        "RUN python -m py_compile /code/plane/api/plane_toolchain_pages.py\n"
+    )
+
+
+def test_apply_is_idempotent_when_label_matches(applied, monkeypatch, capsys):
+    remote("apply", applied, monkeypatch)
+    assert capsys.readouterr().out == "Pages image already applied; API healthy\n"
+    assert applied.calls == [*LOOKUP, HELD, HEALTH, PAGES]
+
+
+def test_apply_refuses_when_rollback_container_exists(host, monkeypatch):
+    host.add(BACKUP, running=False)
+    with pytest.raises(ValueError, match="Existing rollback container"):
+        remote("apply", host, monkeypatch)
+    # The second inspect reads the backup's labels for reconciliation; nothing changes.
+    assert host.calls == [*LOOKUP, HELD, ("inspect", BACKUP), ("inspect", BACKUP)]
+
+
+def test_apply_refuses_image_without_registry_digest(host, monkeypatch):
+    host.images["sha256:base"] = []
+    with pytest.raises(ValueError, match="no immutable registry digest"):
+        remote("apply", host, monkeypatch)
+    assert ("stop", "api") not in host.calls
+
+
+def test_apply_refuses_auto_remove_before_stopping_original(host, monkeypatch):
+    host.add("api", labels={"owner": "kept"}, AutoRemove=True)
+    with pytest.raises(ValueError, match="AutoRemove"):
+        remote("apply", host, monkeypatch)
+    assert ("stop", "api") not in host.calls
+    assert host.containers["api"]["running"]
+
+
+def test_apply_create_failure_restores_original(host, monkeypatch):
+    host.fail.append("create")
+    with pytest.raises(ValueError, match="creation"):
+        remote("apply", host, monkeypatch)
+    assert host.calls[-5:] == [
+        ("create", "api"),
+        ("inspect", "api"),
+        ("rename", BACKUP, "api"),
+        ("update", "--restart=unless-stopped", "api"),
+        ("start", "api"),
+    ]
+    assert_original_restored(host)
+    assert set(host.containers) == {"api"}
+
+
+def test_apply_start_failure_retains_failed_derived_and_restores_original(host, monkeypatch):
+    host.fail.append("start")
+    with pytest.raises(subprocess.CalledProcessError):
+        remote("apply", host, monkeypatch)
+    failed = f"api-pages-failed-{NOW}"
+    assert host.calls[-9:] == [
+        ("start", "api"),
+        ("inspect", "api"),
+        ("stop", "api"),
+        ("inspect", failed),
+        ("rename", "api", failed),
+        ("update", "--restart=no", failed),
+        ("rename", BACKUP, "api"),
+        ("update", "--restart=unless-stopped", "api"),
+        ("start", "api"),
+    ]
+    assert_original_restored(host)
+    assert host.containers[failed]["image"] == IMAGE
+    assert not host.containers[failed]["running"]
+    assert retained(host) == {failed: "no"}
+    assert restart(host, "api") == "unless-stopped"
+
+
+def test_apply_health_failure_retains_failed_derived_and_restores_original(host, monkeypatch):
+    host.created_healthy = False
+    with pytest.raises(ValueError, match="API health check failed"):
+        remote("apply", host, monkeypatch)
+    assert host.calls.count(HEALTH) == 45
+    assert host.calls.count(("sleep", 1)) == 45
+    assert_original_restored(host)
+    assert not host.containers[f"api-pages-failed-{NOW}"]["running"]
+
+
+def test_apply_retire_rename_failure_keeps_live_policy(host):
+    host.fail.append(("rename", "api", BACKUP))
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy("apply", host)
+    assert restart(host, "api") == "unless-stopped"
+    assert BACKUP not in host.containers
+    # The stopped original is started again: a failed retire rename never leaves the API down.
+    assert running(host) == ["api"]
+    assert host.calls[-3:] == [("stop", "api"), ("rename", "api", BACKUP), ("start", "api")]
+
+
+def test_apply_reconciles_missing_api_with_default_policy_note(retired, monkeypatch, capsys):
+    remote("apply", retired, monkeypatch)
+    assert capsys.readouterr().out == NOTE + APPLIED
+    assert retired.calls[:8] == [
+        PS,
+        HELD,
+        ("inspect", BACKUP),
+        ("inspect", BACKUP),
+        ("rename", BACKUP, "api"),
+        ("update", "--restart=unless-stopped", "api"),
+        ("start", "api"),
+        HEALTH,
+    ]
+    assert_freshly_applied(retired, "unless-stopped")
+    assert set(retired.containers) == {"api", BACKUP}
+
+
+def test_apply_reconciles_missing_api_keeping_unretired_policy(retired, monkeypatch, capsys):
+    # Died between the rename and `update --restart=no`: the backup still holds the live policy.
+    retired.containers[BACKUP]["host_config"]["RestartPolicy"] = {
+        "Name": "on-failure",
+        "MaximumRetryCount": 3,
+    }
+    remote("apply", retired, monkeypatch)
+    assert capsys.readouterr().out == APPLIED
+    assert ("update", "--restart=on-failure:3", "api") in retired.calls
+    assert_freshly_applied(retired, "on-failure")
+
+
+def test_apply_reconcile_health_failure_leaves_original_running(retired):
+    retired.containers[BACKUP]["healthy"] = False
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", retired)
+    assert running(retired) == ["api"]
+    assert retired.containers["api"]["labels"] == {"owner": "kept"}
+    assert not retired.builds
+
+
+@pytest.mark.parametrize("label", [DIGEST, "older-digest"])
+def test_apply_reconciles_stopped_derived_as_failed_apply(retired, monkeypatch, capsys, label):
+    # Died after create, before start or health: the derived copy of the live policy is kept.
+    retired.add(
+        "api",
+        labels={"owner": "kept", LABEL: label},
+        running=False,
+        RestartPolicy={"Name": "always"},
+    )
+    stale = retired.containers["api"]["id"]
+    remote("apply", retired, monkeypatch)
+    assert capsys.readouterr().out == APPLIED_WITH_FAILED
+    failed = f"api-pages-failed-{NOW}"
+    assert retired.calls[:12] == [
+        *LOOKUP,
+        HELD,
+        ("inspect", BACKUP),
+        ("inspect", BACKUP),
+        ("inspect", failed),
+        ("rename", "api", failed),
+        ("update", "--restart=no", failed),
+        ("rename", BACKUP, "api"),
+        ("update", "--restart=always", "api"),
+        ("start", "api"),
+        HEALTH,
+    ]
+    assert retired.containers[failed]["id"] == stale
+    assert_freshly_applied(retired, "always")
+    assert set(retired.containers) == {"api", BACKUP, failed}
+
+
+def test_apply_reconcile_promote_failure_stays_reconcilable(retired, capsys):
+    retired.add("api", labels={LABEL: "old"}, running=False)
+    retired.fail.append(("rename", BACKUP, "api"))
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy("apply", retired)
+    # Now the missing-`api` layout: the next apply promotes the original.
+    assert "api" not in retired.containers and BACKUP in retired.containers
+    assert set(retained(retired).values()) == {"no"}
+    assert deploy("apply", retired) == APPLIED_WITH_FAILED.rstrip("\n")
+    assert capsys.readouterr().out == NOTE
+    assert_freshly_applied(retired, "unless-stopped")
+
+
+def test_reconcile_and_failing_apply_in_same_second_keep_both_failed(retired):
+    # now() is constant: reconcile (b) and the failed apply would pick the same name.
+    retired.add("api", labels={LABEL: "old"}, running=False)
+    stale = retired.containers["api"]["id"]
+    retired.created_healthy = False
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", retired)
+    failed = f"api-pages-failed-{NOW}"
+    assert retired.containers[failed]["id"] == stale
+    assert retired.containers[failed + "-1"]["image"] == IMAGE
+    assert_original_restored(retired)
+    assert running(retired) == ["api"] and restart(retired, "api") == "unless-stopped"
+    assert set(retained(retired).values()) == {"no"}
+
+
+def test_reconcile_note_survives_a_later_apply_failure(retired, capsys):
+    retired.fail.append("create")
+    with pytest.raises(ValueError, match="creation"):
+        deploy("apply", retired)
+    assert capsys.readouterr().out == NOTE
+    # The create rollback restores the promoted original with the policy it was given.
+    assert running(retired) == ["api"] and restart(retired, "api") == "unless-stopped"
+    assert set(retired.containers) == {"api"}
+
+
+def test_apply_with_backup_and_running_current_derived_stays_idempotent(applied):
+    assert deploy("apply", applied) == "Pages image already applied; API healthy"
+    assert running(applied) == ["api"]
+
+
+@pytest.mark.parametrize(
+    "layout",
+    ["running-original", "running-older-derived", "labelled-backup", "unhealthy-derived"],
+)
+def test_apply_refuses_other_layouts_with_backup(retired, layout):
+    if layout == "running-original":
+        retired.add("api", labels={"owner": "kept"})
+    elif layout == "running-older-derived":
+        retired.add("api", labels={LABEL: "older-digest"})
+    elif layout == "labelled-backup":
+        retired.containers[BACKUP]["labels"][LABEL] = "older-digest"
+    else:
+        retired.add("api", labels={LABEL: DIGEST}, healthy=False)
+    before = json.dumps(retired.containers, sort_keys=True)
+    with pytest.raises(ValueError, match="Existing rollback container|API health check failed"):
+        deploy("apply", retired)
+    assert json.dumps(retired.containers, sort_keys=True) == before
+    assert not retired.builds
+
+
+def test_apply_stopped_current_derived_without_backup_still_refuses(host):
+    host.add("api", labels={LABEL: DIGEST}, running=False)
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", host)
+    assert not host.builds
+
+
+def test_replacement_drops_old_id_alias():
+    fake = FakeDocker()
+    fake.add("api")
+    original = fake.document("api")
+    original["NetworkSettings"]["Networks"]["shared"]["Aliases"] = ["api", original["Id"][:12]]
+    body = pages_deploy.replacement(original, IMAGE, "http://live:3000", DIGEST)
+    assert body["NetworkingConfig"]["EndpointsConfig"]["shared"]["Aliases"] == ["api"]
+
+
+def test_update_failure_does_not_break_apply_or_revert(host):
+    host.fail += [("update",)] * 4
+    assert deploy("apply", host).startswith("Pages derived image applied")
+    assert deploy("revert", host).startswith("Original API container restored")
+    assert host.containers["api"]["running"]
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_replacement_clears_default_hostname_keeps_explicit(explicit):
+    fake = FakeDocker()
+    fake.add("api", hostname="custom-host" if explicit else None)
+    original = fake.document("api")
+    body = pages_deploy.replacement(original, IMAGE, "http://live:3000", DIGEST)
+    if explicit:
+        assert body["Hostname"] == "custom-host"
+    else:
+        assert original["Config"]["Hostname"] == original["Id"][:12]
+        assert "Hostname" not in body
+
+
+def test_applied_container_gets_fresh_hostname(host):
+    old = host.containers["api"]["hostname"]
+    deploy("apply", host)
+    derived = host.containers["api"]
+    assert derived["hostname"] != old and derived["hostname"] == derived["id"][:12]

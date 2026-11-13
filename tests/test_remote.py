@@ -358,7 +358,7 @@ def run_harness(tmp_path, config):
 
 
 def test_pages_apply_sigterm_rolls_back_to_the_original(tmp_path):
-    from test_pages_deploy import BACKUP, payload
+    from support_pages_deploy import BACKUP, payload
 
     code, state, err = run_harness(tmp_path, {"kind": "pages", "payload": payload("apply")})
     assert code == 143 and state is not None, err

@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Pages revert: a revert killed after the original was renamed back to `api` but before it started left `api` stopped, and a repeat revert reported "already restored" without starting it. A repeat revert now starts the stopped original, restoring the live restart policy, when a `<api>-pages-reverted-<digits>` container shows the revert was interrupted; a stopped `api` without one is still left alone as stopped on purpose (found by the new kill-injection harness; PTC-80).
+
+### Tests
+
+- Pytest warnings are errors (`filterwarnings = ["error"]`); a coverage floor of 81% is enforced in `mise run check` and CI; a kill-injection harness runs Pages apply and revert killed before and after every docker call (and failed at every call) and proves the next run converges (PTC-80).
+
 ### Changed
 
 - Workspace rename: apply and revert share one state machine (`run_context` plus `run_*` helpers and `run_steps`, which runs each step as effect, then advance, and hands failures to the operation's own recovery), so the snippet call, service stop and start, preflight, refusal wrapping, failure reason, drain-gate and warning messages exist once. No behaviour or message change. The `check` plan scan streams rows with `iterator()` like the unfixed scan (PTC-64).
