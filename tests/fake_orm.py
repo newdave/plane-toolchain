@@ -1,8 +1,10 @@
 """In-memory stand-in for the Django pieces the rename snippet touches.
 
 Mimics only what the snippet uses: per-model `objects` (soft-delete filtered) and `all_objects`
-(unfiltered) managers, `values`, `filter(...).update(...)` and its row count, `atomic()` with
-rollback, a cache, `settings.WEB_URL` and the list of text and JSON columns.
+(unfiltered) managers, `values`, `filter(...)` (exact, `pk`, `__gt`), `order_by`, sliced pages,
+`filter(...).update(...)` and its row count, `atomic()` with rollback, a cache, `settings.WEB_URL`
+and the list of text and JSON columns. `FakeOrm.log` records begin, commit, rollback and each
+update with its ids, so tests can order writes against emitted events.
 """
 
 import contextlib
@@ -10,13 +12,38 @@ import copy
 from types import SimpleNamespace
 
 
+def _matches(row, lookup, value):
+    name, _, op = lookup.partition("__")
+    actual = row.get("id" if name == "pk" else name)
+    if op == "gt":
+        return actual is not None and actual > value
+    if op:
+        raise NotImplementedError(lookup)
+    return actual == value
+
+
+def clone(value):
+    """Deep copy that also copies memoryview, as Django returns for BinaryField reads."""
+    if isinstance(value, memoryview):
+        return memoryview(bytes(value))
+    if isinstance(value, dict):
+        return {k: clone(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [clone(v) for v in value]
+    return copy.deepcopy(value)
+
+
 class QuerySet:
     def __init__(self, table, rows):
         self.table, self.rows = table, rows
 
     def filter(self, **kw):
-        keep = [r for r in self.rows if all(r.get(k) == v for k, v in kw.items())]
+        keep = [r for r in self.rows if all(_matches(r, k, v) for k, v in kw.items())]
         return QuerySet(self.table, keep)
+
+    def order_by(self, field):
+        key = "id" if field == "pk" else field
+        return QuerySet(self.table, sorted(self.rows, key=lambda r: r[key]))
 
     def values(self, *cols):
         # Like Django, `values()` takes field names (attnames); a DB column name that differs raises.
@@ -24,9 +51,12 @@ class QuerySet:
         return ValuesSet(self.table, rows)
 
     def update(self, **kw):
+        if self.table.fail_update:
+            raise RuntimeError("injected update failure")
         for r in self.rows:
             r.update(copy.deepcopy(kw))
         self.table.updates.append((sorted(kw), len(self.rows)))
+        self.table.log.append(("update", self.table.db_table, [r["id"] for r in self.rows]))
         return len(self.rows)
 
     def __iter__(self):
@@ -43,6 +73,12 @@ class ValuesSet(list):
     def iterator(self):
         self.table.streamed += 1
         return iter(list(self))
+
+    def __getitem__(self, index):
+        result = super().__getitem__(index)
+        if isinstance(index, slice):
+            self.table.pages.append(len(result))  # one paged query
+        return result
 
 
 class Manager:
@@ -63,11 +99,14 @@ class Manager:
 
 
 class Table:
-    def __init__(self, db_table, rows, columns, attnames=None):
+    def __init__(self, db_table, rows, columns, attnames=None, log=None):
         self.db_table, self.rows, self.columns = db_table, rows, columns
         self.attnames = attnames or {}  # DB column -> field name, when they differ
         self.updates = []
         self.streamed = 0
+        self.pages = []
+        self.fail_update = False
+        self.log = [] if log is None else log
         self.objects = Manager(self, False)
         self.all_objects = Manager(self, True)
 
@@ -79,8 +118,10 @@ class FakeOrm:
     """
 
     def __init__(self, tables, web_url="https://plane.example.com", restricted=("api", "spaces")):
+        self.log = []
         self.models = {
-            key: Table(db, rows, cols, *rest) for key, (db, cols, rows, *rest) in tables.items()
+            key: Table(db, rows, cols, *rest[:1], log=self.log)
+            for key, (db, cols, rows, *rest) in tables.items()
         }
         self.settings = SimpleNamespace(WEB_URL=web_url)
         self.restricted_slugs = set(restricted)
@@ -96,12 +137,15 @@ class FakeOrm:
     @contextlib.contextmanager
     def atomic(self):
         saved = self.snapshot()
+        self.log.append(("begin",))
         try:
             yield
         except BaseException:
             for k, rows in saved.items():
                 self.models[k].rows[:] = rows
+            self.log.append(("rollback",))
             raise
+        self.log.append(("commit",))
 
     def snapshot(self):
-        return {k: copy.deepcopy(t.rows) for k, t in self.models.items()}
+        return {k: clone(t.rows) for k, t in self.models.items()}
