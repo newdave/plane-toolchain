@@ -176,8 +176,28 @@ SSH_SECONDS = 6 * 3600  # a whole remote operation, pg_dump included; dead links
 SSH_TIMED_OUT = "SSH session timed out locally after {:g} s."
 
 
-def run_remote(host, source, payload, check=True, interrupted=INTERRUPTED, timeout=SSH_SECONDS):
+def ssh_timeout():
+    """Seconds the local SSH session may run: `PLANE_SSH_TIMEOUT`, else SSH_SECONDS.
+
+    A long rename can outlast the default and lose its local output (the host program keeps
+    running). The value must be a positive number of seconds; anything else exits naming only
+    the variable."""
+    value = os.environ.get("PLANE_SSH_TIMEOUT", "").strip()
+    if not value:
+        return SSH_SECONDS
+    try:
+        seconds = float(value)
+    except ValueError:
+        seconds = 0.0
+    if not 0 < seconds < float("inf"):  # also rejects nan
+        sys.exit("PLANE_SSH_TIMEOUT must be a positive number of seconds")
+    return seconds
+
+
+def run_remote(host, source, payload, check=True, interrupted=INTERRUPTED, timeout=None):
     """Run the remote program over SSH with the payload on stdin; return its exit code.
+
+    `timeout` defaults to ssh_timeout(): 6 hours, or `PLANE_SSH_TIMEOUT` seconds.
 
     The remote's own stderr streams straight to ours. A failure exits with the remote's code
     (1 when unknown) after one fixed line: never the argv (host, program source) or a traceback.
@@ -186,6 +206,7 @@ def run_remote(host, source, payload, check=True, interrupted=INTERRUPTED, timeo
     this exits 124 with the `interrupted` guidance: the host program ignores the hang-up and may
     still be running, so its own timeouts and rollbacks decide what it leaves behind.
     """
+    timeout = ssh_timeout() if timeout is None else timeout
     try:
         result = subprocess.run(  # noqa: S603 - validated owner host; fixed remote program
             ssh_argv(host, source),
