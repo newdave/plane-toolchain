@@ -201,12 +201,17 @@ async def confirm_late_store(result, retrieve, sleep):
     return {**result, "late_store": "unchanged"}
 
 
+async def sdk_call(function, *args):
+    """Run a blocking SDK call in a thread; the one place SDK calls leave the event loop."""
+    return await asyncio.to_thread(function, *args)
+
+
 async def run_page_action(client, workspace, path, action, project_id, fields):
     """Run a ce_page action; every blocking SDK call runs in a thread, off the event loop."""
-    await asyncio.to_thread(client.projects.retrieve, workspace, project_id)
+    await sdk_call(client.projects.retrieve, workspace, project_id)
     endpoint = f"{workspace}/projects/{path}"
     if action == "create":
-        return await asyncio.to_thread(
+        return await sdk_call(
             sdk_private(client.pages, "_post"),
             endpoint,
             {
@@ -216,7 +221,7 @@ async def run_page_action(client, workspace, path, action, project_id, fields):
             },
         )
     if action == "update":
-        result = await asyncio.to_thread(
+        result = await sdk_call(
             sdk_private(client.pages, "_patch"),
             endpoint,
             page_update_body(
@@ -225,10 +230,104 @@ async def run_page_action(client, workspace, path, action, project_id, fields):
         )
         return await confirm_late_store(
             result,
-            lambda: asyncio.to_thread(sdk_private(client.pages, "_get"), endpoint),
+            lambda: sdk_call(sdk_private(client.pages, "_get"), endpoint),
             asyncio.sleep,
         )
-    return await asyncio.to_thread(sdk_private(client.pages, "_get"), endpoint)
+    return await sdk_call(sdk_private(client.pages, "_get"), endpoint)
+
+
+def _relations(client, workspace, relation_model, action, project_id, workitem_id, targets, kind):
+    """Blocking body of ce_workitem_relation (after list_definitions); runs in one thread."""
+    project_id = canonical_uuid(project_id)
+    workitem_id = canonical_uuid(workitem_id)
+    # Verify project-scoped access before using CE's workspace-wide relation
+    # query. Never use a supplied issue ID to bypass project membership.
+    client.work_items.retrieve(workspace, project_id, workitem_id)
+    if action == "create":
+        targets = list(dict.fromkeys(canonical_uuid(t) for t in targets or []))
+        if not targets or len(targets) > 100 or workitem_id in targets:
+            raise ValueError("Expected one to 100 distinct non-self dependencies")
+        for target in targets:
+            client.work_items.retrieve(workspace, project_id, target)
+        client.work_items.relations.create(
+            workspace,
+            project_id,
+            workitem_id,
+            relation_model(relation_type=kind, issues=targets),
+        )
+    return relation_result(
+        sdk_private(client.work_items.relations, "_get")(
+            f"{workspace}/projects/{project_id}/work-items/{workitem_id}/relations"
+        )
+    )
+
+
+async def run_relation_action(
+    client, workspace, relation_model, action, project_id, workitem_id, workitem_ids, relation_type
+):
+    """Run a ce_workitem_relation action; relation_model is the SDK's CreateWorkItemRelation."""
+    if action == "list_definitions":
+        return {"built_in_dependencies": list(DEPENDENCIES), "custom_definitions": []}
+    return await sdk_call(
+        _relations,
+        client,
+        workspace,
+        relation_model,
+        action,
+        project_id,
+        workitem_id,
+        workitem_ids,
+        relation_type,
+    )
+
+
+async def run_intake_action(
+    client, workspace, action, project_id, workitem_id, status, snoozed_till, duplicate_to
+):
+    """Run a ce_intake action against client.intake."""
+    if action != "decide":
+        raise ValueError("ce_intake supports decide only")
+    return await sdk_call(
+        decide_intake,
+        client.intake,
+        workspace,
+        project_id,
+        workitem_id,
+        status,
+        snoozed_till,
+        duplicate_to,
+    )
+
+
+async def run_ce_page(
+    client,
+    workspace,
+    action,
+    project_id,
+    page_id,
+    name,
+    description_html,
+    access,
+    expected_updated_at,
+    force,
+):
+    """Validate a ce_page request, then run it."""
+    path = page_request(action, project_id, page_id)
+    project_id = canonical_uuid(project_id)
+    return await run_page_action(
+        client,
+        workspace,
+        path,
+        action,
+        project_id,
+        dict(
+            name=name,
+            description_html=description_html,
+            access=access,
+            expected_updated_at=expected_updated_at,
+            force=force,
+        ),
+    )
 
 
 def main():
@@ -239,7 +338,7 @@ def main():
     server = get_header_mcp()
 
     @server.tool(name="ce_workitem_relation")
-    def ce_workitem_relation(
+    async def ce_workitem_relation(
         action: Literal["list_definitions", "list", "create"],
         project_id: str = "",
         workitem_id: str = "",
@@ -257,33 +356,19 @@ def main():
         All operations retain official MCP API-key authentication and backend permissions.
         """
         client, workspace = get_plane_client_context()
-        if action == "list_definitions":
-            return {"built_in_dependencies": list(DEPENDENCIES), "custom_definitions": []}
-        project_id = canonical_uuid(project_id)
-        workitem_id = canonical_uuid(workitem_id)
-        # Verify project-scoped access before using CE's workspace-wide relation
-        # query. Never use a supplied issue ID to bypass project membership.
-        client.work_items.retrieve(workspace, project_id, workitem_id)
-        if action == "create":
-            targets = list(dict.fromkeys(canonical_uuid(t) for t in workitem_ids or []))
-            if not targets or len(targets) > 100 or workitem_id in targets:
-                raise ValueError("Expected one to 100 distinct non-self dependencies")
-            for target in targets:
-                client.work_items.retrieve(workspace, project_id, target)
-            client.work_items.relations.create(
-                workspace,
-                project_id,
-                workitem_id,
-                CreateWorkItemRelation(relation_type=relation_type, issues=targets),
-            )
-        return relation_result(
-            sdk_private(client.work_items.relations, "_get")(
-                f"{workspace}/projects/{project_id}/work-items/{workitem_id}/relations"
-            )
+        return await run_relation_action(
+            client,
+            workspace,
+            CreateWorkItemRelation,
+            action,
+            project_id,
+            workitem_id,
+            workitem_ids,
+            relation_type,
         )
 
     @server.tool(name="ce_intake")
-    def ce_intake(
+    async def ce_intake(
         action: Literal["decide"],
         project_id: str,
         workitem_id: str,
@@ -299,11 +384,9 @@ def main():
         Sends a plain PATCH to intake-issues/<id>/ with the caller's API key; CE allows it
         for project admins only. Returns the reread intake record.
         """
-        if action != "decide":
-            raise ValueError("ce_intake supports decide only")
         client, workspace = get_plane_client_context()
-        return decide_intake(
-            client.intake, workspace, project_id, workitem_id, status, snoozed_till, duplicate_to
+        return await run_intake_action(
+            client, workspace, action, project_id, workitem_id, status, snoozed_till, duplicate_to
         )
 
     @server.tool(name="ce_page", description=CE_PAGE_DESCRIPTION)
@@ -317,22 +400,18 @@ def main():
         expected_updated_at: str = "",
         force: bool = False,
     ) -> dict | list:
-        path = page_request(action, project_id, page_id)
-        project_id = canonical_uuid(project_id)
         client, workspace = get_plane_client_context()
-        return await run_page_action(
+        return await run_ce_page(
             client,
             workspace,
-            path,
             action,
             project_id,
-            dict(
-                name=name,
-                description_html=description_html,
-                access=access,
-                expected_updated_at=expected_updated_at,
-                force=force,
-            ),
+            page_id,
+            name,
+            description_html,
+            access,
+            expected_updated_at,
+            force,
         )
 
     server.run(
