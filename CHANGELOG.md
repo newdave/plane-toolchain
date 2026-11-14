@@ -14,6 +14,10 @@ All notable changes to this project are documented here. The format follows
 
 - `plane_toolchain.ids` (PTC-112): UUID, task identifier and relation-type helpers now live in one module used by `cli`, `cli_commands`, `relation_plan` and `settings`, and `task list` and `comment list` share one paging helper. Behaviour is unchanged. `ce_tools.py` ships alone as the MCP server and is untouched; `tests/test_ids.py` pins its local copies to `ids.py`.
 
+### Tests
+
+- Review gaps (PTC-114): a test that the `plane-prompt.zsh` status cache expires after 30 seconds with no input change. The other seven reviewed cases (tampered installer receipt, bare-URL matcher, Pages rollback failure, SIGTERM mid-swap, empty page body, late Live store after the lock, `label` without `PLANE_API_URL`) already had tests; they are named in the PR. The three fake Docker builders under `tests/support_workspace_rename_*` are now one `make_fake_docker`.
+
 ## [0.5.0] - 2026-11-14
 
 ### Added

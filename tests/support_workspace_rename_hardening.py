@@ -5,7 +5,7 @@ import os
 import sys
 import time
 import pytest
-from support_workspace_rename_deploy import Host
+from support_workspace_rename_deploy import Host, make_fake_docker
 from plane_toolchain import workspace_rename as wr
 
 
@@ -25,13 +25,7 @@ def hold_lock(directory):
 
 @pytest.fixture
 def fake():
-    from fake_docker import FakeDocker
-    from support_workspace_rename_deploy import ALL
-
-    fake = FakeDocker()
-    for name in [*ALL, "plane-api"]:
-        fake.add(name)
-    return fake
+    return make_fake_docker()
 
 
 def backup_dir(tmp_path):
