@@ -1,0 +1,25 @@
+tests/support_ce_tools_surface.py
+  s_a03650451d84d5::t_0fc814e5d506e1 1-62
+tests/test_ce_tools_functions.py
+  s_a03650451d84d5::t_d35984128f243b 179-180
+  s_a03650451d84d5::t_772078a00e33f1 1-167,169-178,181-232
+  s_a03650451d84d5::t_a015ba489a485e 168
+tests/fixtures/ce_tools_surface.json
+  s_a03650451d84d5::t_57b9a30e92ae2e 1-163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "8dfa6f527cc7d09d7771f7713367acdb75685335",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
