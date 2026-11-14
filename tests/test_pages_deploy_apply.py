@@ -15,6 +15,7 @@ from support_pages_deploy import (
     IMAGE,
     LABEL,
     LOOKUP,
+    MUTATIONS,
     NOTE,
     PAGES,
     PS,
@@ -23,6 +24,8 @@ from support_pages_deploy import (
     SOURCE,
     assert_freshly_applied,
     assert_original_restored,
+    hang_after,
+    labelled_running,
     deploy,
     remote,
     restart,
@@ -143,6 +146,30 @@ def test_apply_start_failure_retains_failed_derived_and_restores_original(host, 
     assert not host.containers[failed]["running"]
     assert retained(host) == {failed: "no"}
     assert restart(host, "api") == "unless-stopped"
+
+
+def test_apply_docker_timeout_mid_swap_rolls_back(host, monkeypatch):
+    # PTC-96: a hung `docker start` of the derived container expires and the swap rolls back.
+    host.hang.append("start")
+    with pytest.raises(RuntimeError, match=r"^docker start timed out after 300 s$"):
+        remote("apply", host, monkeypatch)
+    assert host.calls[-3:] == [
+        ("rename", BACKUP, "api"),
+        ("update", "--restart=unless-stopped", "api"),
+        ("start", "api"),
+    ]
+    assert_original_restored(host)
+    assert all(host.timeouts.values()), host.timeouts  # every docker call had a timeout
+    assert host.timeouts[("build", "-t", IMAGE, "-")] == 1800
+
+
+def test_apply_hung_existence_probe_raises_instead_of_reading_absent(host, monkeypatch):
+    # PTC-96 review: `probe("inspect", backup)` timing out must not look like "no backup".
+    host.hang.append(("inspect", BACKUP))
+    with pytest.raises(RuntimeError, match=r"^docker inspect timed out after 300 s$"):
+        remote("apply", host, monkeypatch)
+    assert not [c for c in host.calls if c[0] in MUTATIONS | {"build"}]
+    assert host.containers["api"]["running"] and BACKUP not in host.containers
 
 
 def test_apply_health_failure_retains_failed_derived_and_restores_original(host, monkeypatch):
@@ -351,3 +378,265 @@ def test_applied_container_gets_fresh_hostname(host):
     deploy("apply", host)
     derived = host.containers["api"]
     assert derived["hostname"] != old and derived["hostname"] == derived["id"][:12]
+
+
+@pytest.mark.parametrize(
+    "failing",
+    [[("rename", BACKUP, "api")], ["start"]],
+    ids=["rollback-rename", "rollback-start"],
+)
+def test_apply_rollback_failure_still_restores_the_original(host, monkeypatch, failing):
+    host.fail.append(("create", "api"))
+    host.fail.extend(failing)
+    with pytest.raises(ValueError, match="creation") as raised:
+        remote("apply", host, monkeypatch)
+    # The original error wins; the recovery error stays as its context.
+    assert isinstance(raised.value.__context__, subprocess.CalledProcessError)
+    assert_original_restored(host)
+    assert BACKUP not in host.containers
+
+
+def test_apply_sigterm_between_the_retire_rename_and_set_restart_restores_the_original(host):
+    real = host.probe
+
+    def terminate(*args):
+        if args == ("update", "--restart=no", BACKUP):
+            raise SystemExit(143)  # what the SIGTERM handler raises
+        return real(*args)
+
+    host.probe = terminate
+    with pytest.raises(SystemExit):
+        deploy("apply", host)
+    assert_original_restored(host)
+    assert BACKUP not in host.containers
+
+
+@pytest.mark.parametrize("renames_failing", [1, 2], ids=["once", "persistently"])
+def test_apply_rollback_never_starts_the_derived_container_when_moving_it_aside_fails(
+    host, monkeypatch, capsys, renames_failing
+):
+    host.created_healthy = False
+    host.fail.extend([("rename", "api", f"api-pages-failed-{NOW}")] * renames_failing)
+    with pytest.raises(ValueError, match="API health check failed"):
+        remote("apply", host, monkeypatch)
+    if renames_failing == 1:
+        # The retry moves the derived aside and the original comes back.
+        assert_original_restored(host)
+        assert not host.containers[f"api-pages-failed-{NOW}"]["running"]
+    else:
+        # A stopped API beats a live unhealthy derived container: both stay stopped.
+        assert running(host) == []
+        assert host.containers["api"]["labels"].get(LABEL) == DIGEST
+        assert not host.containers[BACKUP]["running"]
+        assert "Rollback incomplete" in capsys.readouterr().err
+
+
+def derived_running(host):
+    return [n for n, c in host.containers.items() if c["labels"].get(LABEL) and c["running"]]
+
+
+def fail_after_derived_start(host, command, nth, also=()):
+    """Fail the `nth` call (1-based) of `command` on `api` once the derived container started."""
+    real, state = host.execute, {"started": False, "seen": 0}
+
+    def execute(*args, **kw):
+        state["started"] = state["started"] or args[:2] == ("start", "api")
+        if state["started"] and args[:2] == (command, "api"):
+            state["seen"] += 1
+            if state["seen"] in nth:
+                host.fail.append((command, "api"))
+                host.fail.extend(also)
+        return real(*args, **kw)
+
+    host.execute = execute
+
+
+@pytest.mark.parametrize("nth", [1, 2], ids=["main-rollback-inspect", "recovery-inspect"])
+def test_apply_rollback_does_not_start_an_uninspectable_name(host, capsys, nth):
+    host.created_healthy = False
+    host.fail.append(("rename", "api", f"api-pages-failed-{NOW}"))
+    fail_after_derived_start(host, "inspect", {nth})
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", host)
+    assert derived_running(host) == []
+    assert not host.containers[BACKUP]["running"]
+    assert "Rollback incomplete" in capsys.readouterr().err
+
+
+def test_apply_rollback_stop_failure_does_not_start_the_original_beside_the_derived(host, capsys):
+    host.created_healthy = False
+    fail_after_derived_start(host, "stop", {1, 2})  # the rollback's stop, then the recovery's
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", host)
+    assert not host.containers[BACKUP]["running"]
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "stop failed" in err and BACKUP in err
+    # The message must not claim a container is stopped when its stop failed.
+    assert "may still be running" in err and "left stopped" not in err
+
+
+def test_apply_rollback_stops_the_unknown_name_when_inspect_then_ps_fail(host, capsys):
+    host.created_healthy = False
+    # The rollback's own inspect fails, so its rename backs onto a taken name; then the
+    # recovery's ps fails: the state is unknown, but nothing under `api` may keep running.
+    fail_after_derived_start(host, "inspect", {1}, also=["ps"])
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", host)
+    assert derived_running(host) == []
+    assert not host.containers["api"]["running"]
+    assert not host.containers[BACKUP]["running"]
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "api (stopped)" in err
+
+
+def test_apply_rollback_incomplete_names_the_parked_derived_container(host, capsys):
+    host.created_healthy = False
+    host.fail.extend([("rename", BACKUP, "api")] * 2)  # the rollback's rename, then the recovery's
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", host)
+    failed = f"api-pages-failed-{NOW}"
+    assert not host.containers[failed]["running"] and "api" not in host.containers
+    err = capsys.readouterr().err
+    assert f"derived container {failed} (stopped)" in err
+    assert f"original {BACKUP} (stopped)" in err
+    assert "absent" not in err and "unknown" not in err
+
+
+def test_apply_two_rollback_start_failures_leave_the_original_stopped_and_say_so(host, capsys):
+    host.fail.extend([("create", "api"), "start", "start"])
+    with pytest.raises(ValueError, match="creation"):
+        deploy("apply", host)
+    assert running(host) == []
+    assert not host.containers["api"]["running"]
+    assert host.containers["api"]["labels"] == {"owner": "kept"}
+    assert BACKUP not in host.containers
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "original api (stopped)" in err
+
+
+# PTC-96 fix round 2: a probe that times out raises RuntimeError. Inside a rollback or recovery
+# it is an unknown state: no start, a best-effort stop, "Rollback incomplete", original error.
+
+
+def test_hung_inspect_in_recover_original_is_rollback_incomplete(host, monkeypatch, capsys):
+    host.created_healthy = False
+    failed = f"api-pages-failed-{NOW}"
+    host.fail.append(("rename", "api", failed))  # the rollback's move aside fails: recovery
+    hang_after(host, ("start", "api"), ("inspect", failed), nth=2)  # recovery's failed_name
+    with pytest.raises(ValueError, match="API health check failed"):
+        remote("apply", host, monkeypatch)
+    assert ("hung", "inspect", failed) in host.calls
+    assert labelled_running(host) == []
+    assert not host.containers[BACKUP]["running"]
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "Traceback" not in err
+
+
+def test_hung_stop_in_recover_original_is_rollback_incomplete(host, monkeypatch, capsys):
+    host.created_healthy = False
+    hang_after(host, ("start", "api"), ("inspect", "api"), nth=1)  # rollback: unknown holder
+    hang_after(host, ("start", "api"), ("inspect", "api"), nth=1)  # recovery's inspect too
+    hang_after(host, ("start", "api"), ("stop", "api"), nth=1)  # and its best-effort stop
+    with pytest.raises(ValueError, match="API health check failed"):
+        remote("apply", host, monkeypatch)
+    assert not host.containers[BACKUP]["running"]
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "may still be running" in err
+
+
+def test_hung_health_exec_is_retried_then_passes(host, monkeypatch, capsys):
+    hang_after(host, ("start", "api"), HEALTH, nth=1)
+    remote("apply", host, monkeypatch)
+    assert ("hung", *HEALTH) in host.calls
+    assert host.calls.count(HEALTH) == 1  # the retry, after the hung first attempt
+    assert "Pages derived image applied" in capsys.readouterr().out
+    assert host.containers["api"]["labels"].get(LABEL) == DIGEST
+
+
+def test_hung_probe_in_the_apply_rollback_still_raises_the_original_error(
+    host, monkeypatch, capsys
+):
+    host.fail.append(("rename", "api", BACKUP))  # the retire fails: the original is not retired
+    hang_after(host, ("stop", "api"), ("start", "api"), nth=1)  # the rollback's restart hangs
+    with pytest.raises(subprocess.CalledProcessError):
+        remote("apply", host, monkeypatch)
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "start timed out" in err
+
+
+def test_retire_rename_that_took_effect_but_timed_out_and_failed_start_is_named(
+    host, monkeypatch, capsys
+):
+    hang_after(host, ("stop", "api"), ("rename", "api", BACKUP), nth=1, effect=True)
+    with pytest.raises(RuntimeError):
+        remote("apply", host, monkeypatch)
+    assert "api" not in host.containers and not host.containers[BACKUP]["running"]
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and f"original {BACKUP} (stopped)" in err
+
+
+# PTC-96 fix round 3: the recovery message names where the derived container went, and an
+# original found under `name` after a timeout is neither stopped nor misreported.
+
+
+def test_rename_aside_that_took_effect_but_timed_out_is_named(host, monkeypatch, capsys):
+    host.fail.append("start")  # the derived container's start fails: rollback
+    failed = f"api-pages-failed-{NOW}"
+    hang_after(host, ("start", "api"), ("inspect", "api"), nth=1)  # rollback: to recovery
+    hang_after(host, ("start", "api"), ("rename", "api", failed), nth=1, effect=True)
+    with pytest.raises(subprocess.CalledProcessError):
+        remote("apply", host, monkeypatch)
+    assert failed in host.containers and "api" not in host.containers
+    assert labelled_running(host) == [] and not host.containers[BACKUP]["running"]
+    err = capsys.readouterr().err
+    assert f"derived container unknown, possibly api or {failed} (stopped)" in err
+    assert f"original {BACKUP} (stopped)" in err
+
+
+def test_original_start_that_took_effect_but_timed_out_is_left_running(host, monkeypatch, capsys):
+    host.created_healthy = False
+    failed = f"api-pages-failed-{NOW}"
+    host.fail.append(("rename", "api", failed))  # the rollback's move aside fails: recovery
+    hang_after(host, ("start", "api"), ("start", "api"), nth=1, effect=True)
+    with pytest.raises(ValueError, match="API health check failed"):
+        remote("apply", host, monkeypatch)
+    assert host.containers["api"]["running"]
+    assert host.containers["api"]["labels"].get(LABEL) is None  # the original, not stopped
+    assert labelled_running(host) == []
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "original api (running)" in err
+    assert f"derived container {failed} (stopped)" in err
+
+
+# PTC-96 fix round 4: the rollback's own move aside can take effect and time out, and an
+# inspect error other than "No such" is an unknown state, never "absent".
+
+
+def test_rollback_rename_aside_that_took_effect_but_timed_out_is_named(host, monkeypatch, capsys):
+    host.fail.append("start")  # the derived container's start fails: rollback
+    failed = f"api-pages-failed-{NOW}"
+    hang_after(host, ("start", "api"), ("rename", "api", failed), nth=1, effect=True)
+    hang_after(host, ("start", "api"), ("rename", BACKUP, "api"), nth=1)  # recovery's move
+    with pytest.raises(subprocess.CalledProcessError):
+        remote("apply", host, monkeypatch)
+    assert not host.containers[failed]["running"] and "api" not in host.containers
+    assert labelled_running(host) == [] and not host.containers[BACKUP]["running"]
+    err = capsys.readouterr().err
+    assert f"derived container unknown, possibly api or {failed} (stopped)" in err
+    assert f"original {BACKUP} (stopped)" in err
+    assert "absent" not in err
+
+
+def test_inspect_daemon_error_after_a_timeout_is_unknown_not_absent(host, monkeypatch, capsys):
+    host.fail.append("start")  # the derived container's start fails: rollback
+    failed = f"api-pages-failed-{NOW}"
+    host.fail.append(("rename", "api", failed))  # the rollback's move aside fails: recovery
+    hang_after(host, ("start", "api"), ("rename", BACKUP, "api"), nth=1)  # recovery's move
+    host.error_output = b"Error response from daemon: connection refused\n"
+    with pytest.raises(subprocess.CalledProcessError):
+        remote("apply", host, monkeypatch)
+    assert labelled_running(host) == [] and not host.containers[BACKUP]["running"]
+    assert host.calls[-2:] == [("inspect", "api"), ("stop", "api")]  # the unknown path's stop
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "absent" not in err
+    assert f"original unknown, possibly {BACKUP} or api" in err

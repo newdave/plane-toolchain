@@ -9,9 +9,11 @@ from urllib.parse import urlsplit
 
 SLUG_RE = re.compile(r"^[a-zA-Z0-9_-]+\Z")
 MAX_SLUG = 48
-# OLD must end at a path, quote, query or fragment boundary or at the end of the value, so a
-# workspace whose slug only shares a prefix (`acme-two` for `acme`) never matches.
-_END = r"""(?=[/"'?#]|\Z)"""
+# OLD must not be followed by a slug character, so a workspace whose slug only shares a prefix
+# (`acme-two` for `acme`) never matches, while a bare URL followed by whitespace or prose
+# punctuation (`https://host/acme, see`) still does. A dot ends OLD only when no slug character
+# follows it, so a sentence's full stop matches but a file name (`/acme.png`) does not.
+_END = r"""(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])"""
 
 
 def validate_slug(new, restricted, taken):

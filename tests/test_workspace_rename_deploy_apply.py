@@ -1,6 +1,8 @@
 """Workspace rename host program: apply flow and failure restarts."""
 
 import hashlib
+import subprocess
+import sys
 import json
 import pytest
 from fake_docker import Killed
@@ -197,6 +199,50 @@ def test_missing_summary_or_ok_false_is_failure(tmp_path, lines):
         wr.snippet_ok("api", "", "step_rows", {}, directory, scripted(lines, directory))
 
 
+IMPORT_ERROR = (
+    b"Traceback (most recent call last):\n"
+    b'  File "/code/manage.py", line 11, in <module>\n'
+    b"    from plane.settings import x\n"
+    b"ModuleNotFoundError: No module named 'plane.secret_module_name'\n"
+)
+
+
+def test_failing_snippet_reports_exception_class_and_redacted_stderr_tail(host, capsys):
+    # PTC-95: stderr was discarded, so an import error showed only "check gave no summary".
+    host.fake.on_manage_shell = lambda text: ("not json " + PRIVATE + "\n", 1)
+    host.fake.shell_stderr = IMPORT_ERROR + b'connect to plane-db password="hunter2" failed\n'
+    with pytest.raises(RuntimeError) as failure:
+        host.deploy("check")
+    message = str(failure.value)
+    assert "ModuleNotFoundError" in message and "exited with code 1" in message
+    out = capsys.readouterr()
+    shown = message + out.out + out.err
+    for hidden in ("secret_module_name", "hunter2", "plane-db", PRIVATE):
+        assert hidden not in shown
+    assert "<redacted>" in message and "<container>" in message
+
+
+def test_exception_class_is_from_the_last_traceback_only(tmp_path):
+    text = (
+        b"Traceback (most recent call last):\nKeyError: 'x'\nwarning: noise\n"
+        b"Traceback (most recent call last):\n  File 'x'\n"
+        b"django.db.utils.OperationalError: connection failed\n\tIs the server running?\n"
+    )
+    with (tmp_path / "e").open("w+b") as handle:
+        handle.write(text)
+        assert wr.exception_class(handle) == "django.db.utils.OperationalError"
+    with (tmp_path / "f").open("w+b") as handle:
+        handle.write(b"plain failure: no traceback\n")
+        assert wr.exception_class(handle) == ""
+        assert wr.snippet_cause(handle) == "stderr: plain failure: no traceback"
+
+
+def test_failing_snippet_without_stderr_still_says_it_exited(tmp_path):
+    directory = wr.secure_receipt_dir(tmp_path / "r")
+    with pytest.raises(RuntimeError, match=r"^check gave no summary$"):
+        wr.snippet_ok("api", "", "check", {}, directory, scripted([], directory))
+
+
 def test_journal_event_outside_an_apply_step_is_refused(tmp_path):
     directory = tmp_path / "r"
     lines = [json.dumps({"event": "journal", "record": {"kind": "workspace"}})]
@@ -210,7 +256,7 @@ def test_request_is_one_json_argument_line_before_the_snippet(host):
     assert host.shell.requests[0] == {"op": "check", "args": {"old": OLD, "new": NEW}}
     piped = [c for c in host.fake.calls if "manage.py" in c][0]
     assert piped[:3] == ("exec", "-i", "-e") and piped[3].startswith("PLANE_RENAME_RUN=")
-    assert piped[4:] == ("plane-api", "python", "manage.py", "shell")
+    assert piped[4:] == ("plane-api", "python", "manage.py", "shell", "-c", wr.BOOTSTRAP)
 
 
 @pytest.mark.parametrize("failure", ["celery_missing", "probe_fails", "stop_fails"])
@@ -311,3 +357,70 @@ def test_complete_receipt_is_a_no_op(host):
     host.fake.calls.clear()
     assert "already complete" in host.deploy()
     assert not mutating(host.fake)
+
+
+def test_apply_acks_every_journal_line_the_snippet_waited_for(host):
+    # PTC-94: the snippet writes a row only after the host acks its fsynced journal line.
+    assert host.deploy().startswith("Rename complete")
+    assert host.fake.acks == host.shell.acks == len(host.journal()) > 0
+
+
+ACK_PROGRAM = """\
+import json, pathlib, sys
+# é: the length line counts bytes, not characters
+record = {"kind": "workspace", "id": "w1", "slug": "old-slug"}
+print(json.dumps({"event": "journal", "record": record}), flush=True)
+ack = sys.stdin.buffer.readline()
+lines = (pathlib.Path(RENAME_REQUEST["args"]["directory"]) / "records.jsonl").read_text()
+summary = {"event": "summary", "ok": ack == b"ack\\n", "durable": lines.count("\\n")}
+print(json.dumps(summary), flush=True)
+"""
+
+
+def test_bootstrap_pipes_the_program_and_acks_only_after_the_fsync(tmp_path):
+    # A real child running BOOTSTRAP (as `manage.py shell -c` would): it waits for the ack and
+    # then finds its journal line already on disk.
+    directory = wr.secure_receipt_dir(tmp_path / "r")
+
+    children = []
+
+    def popen(argv, **kw):
+        assert argv[-2:] == ["-c", wr.BOOTSTRAP]
+        command = [sys.executable, "-c", wr.BOOTSTRAP]  # the shipped bootstrap only
+        children.append(subprocess.Popen(command, **kw))  # noqa: S603 - fixed argv
+        return children[-1]
+
+    summary, _ = wr.run_snippet(
+        "api", ACK_PROGRAM, "step_slug", {"directory": str(directory)}, directory, popen
+    )
+    children[0].stdout.close()
+    assert summary == {"event": "summary", "ok": True, "durable": 1}
+
+
+def test_docker_timeout_while_stopping_services_restarts_them(host, monkeypatch, capsys):
+    # PTC-96: through the real docker() helper, a hung `docker stop` expires and rolls back.
+    host.fake.hang.append(("stop", "plane-space"))
+    assert run_remote(wr.REMOTE, host.payload(), host, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "docker stop timed out after 300 s" in err and "Services restarted" in err
+    assert "plane-space" not in err
+    assert all(host.running().values())
+    assert host.receipt()["step"] == "pending"
+    assert all(host.fake.timeouts.values())
+
+
+@pytest.mark.parametrize("hang", ["pg_dump", "pg_restore", "pg_database_size"])
+def test_backup_children_have_a_deadline(host, monkeypatch, hang):
+    monkeypatch.setattr(wr, "BACKUP_SECONDS", 0.2)
+    monkeypatch.setattr(wr, "DB_SIZE_SECONDS", 0.2)
+    host.fake.hang_exec = hang
+    if hang == "pg_database_size":  # an unknown size falls back to the minimum and goes on
+        assert host.deploy().startswith("Rename complete")
+        return
+    message = "pg_dump timed out" if hang == "pg_dump" else "pg_restore did not finish"
+    with pytest.raises(RuntimeError, match="Services restarted") as caught:
+        host.deploy()
+    assert message in str(caught.value)
+    assert all(host.running().values())
+    assert host.receipt()["step"] == "pending"
+    assert not (host.directory / "backup.dump").exists()

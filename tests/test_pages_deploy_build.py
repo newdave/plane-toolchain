@@ -157,3 +157,41 @@ def test_build_failure_hides_the_repository_path_and_the_dns_host(host):
     message = str(error.value)
     assert "plane-backend" not in message and "registry-1.example.net" not in message
     assert "<base image>" in message and "lookup <host>" in message
+
+
+def test_digest_covers_source_replacement_and_dockerfile(monkeypatch):
+    base = pages_deploy.shipped_digest(SOURCE)
+    assert base == pages_deploy.shipped_digest(SOURCE)
+    assert pages_deploy.shipped_digest(SOURCE + "# x\n") != base
+    real = pages_deploy.replacement
+
+    def changed(original, image, live_url, digest):
+        return real(original, image, live_url, digest)
+
+    monkeypatch.setattr(pages_deploy, "replacement", changed)
+    assert pages_deploy.shipped_digest(SOURCE) != base  # replacement() source differs
+    monkeypatch.undo()
+    real_dockerfile = pages_deploy.dockerfile
+    monkeypatch.setattr(pages_deploy, "dockerfile", lambda image: real_dockerfile(image) + b"X")
+    assert pages_deploy.shipped_digest(SOURCE) != base  # Dockerfile template differs
+
+
+@pytest.mark.parametrize("operation", ["check", "prune"])
+def test_main_rejects_a_leading_dash_container(monkeypatch, operation):
+    monkeypatch.setattr(sys, "argv", ["pages_deploy", operation])
+    monkeypatch.setenv("PLANE_MCP_SSH", "owner@host")
+    monkeypatch.setenv("PLANE_API_CONTAINER", "--help")
+    monkeypatch.setenv("PLANE_LIVE_URL", "http://live:3000")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("Must not connect"))
+    with pytest.raises(ValueError, match="Invalid deployment destination"):
+        pages_deploy.main()
+
+
+@pytest.mark.parametrize("worker", ["--help", "wé"])
+def test_main_build_rejects_leading_dash_and_unicode_worker(monkeypatch, worker):
+    monkeypatch.setattr(sys, "argv", ["pages_deploy", "build"])
+    monkeypatch.setenv("PLANE_MCP_SSH", "owner@host")
+    monkeypatch.setenv("PLANE_WORKER_CONTAINER", worker)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("Must not connect"))
+    with pytest.raises(ValueError, match="Invalid deployment destination"):
+        pages_deploy.main()
