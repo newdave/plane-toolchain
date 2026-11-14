@@ -15,6 +15,10 @@ All notable changes to this project are documented here. The format follows
 - `ce_tools.py` (PTC-111): the `ce_workitem_relation`, `ce_intake` and `ce_page` bodies moved out of `main()` into module-level functions that take a client (`run_relation_action`, `run_intake_action`, `run_ce_page`), and every blocking SDK call now goes through one `asyncio.to_thread` helper (`sdk_call`), so the relation and intake tools no longer block the event loop. Tool names, descriptions, argument schemas and CE permissions are unchanged (pinned by a golden registry test); the functions are unit-tested with a fake client and without `plane_mcp`. The file text changed, so the deployed entry-point digest changes: the owner must redeploy the MCP server, and the next release adds the new digest to `RELEASED_ENTRY_POINT_DIGESTS`.
 - `plane_toolchain.ids` (PTC-112): UUID, task identifier and relation-type helpers now live in one module used by `cli`, `cli_commands`, `relation_plan` and `settings`, and `task list` and `comment list` share one paging helper. Behaviour is unchanged. `ce_tools.py` ships alone as the MCP server and is untouched; `tests/test_ids.py` pins its local copies to `ids.py`.
 
+### Tests
+
+- Review gaps (PTC-114): a test that the `plane-prompt.zsh` status cache expires after 30 seconds with no input change. The other seven reviewed cases (tampered installer receipt, bare-URL matcher, Pages rollback failure, SIGTERM mid-swap, empty page body, late Live store after the lock, `label` without `PLANE_API_URL`) already had tests; they are named in the PR. The three fake Docker builders under `tests/support_workspace_rename_*` are now one `make_fake_docker`.
+
 ## [0.5.0] - 2026-11-14
 
 ### Added
