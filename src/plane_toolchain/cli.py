@@ -22,7 +22,13 @@ __all__ = ["ReadbackError", "UsageError", "environment", "execute", "main", "par
 FAILED = "Plane MCP request failed; remote outcome must be checked"
 
 
-WRITES = {("task", "update"), ("comment", "add"), ("page", "create"), ("relation", "add")}
+WRITES = {
+    ("task", "update"),
+    ("comment", "add"),
+    ("page", "create"),
+    ("relation", "add"),
+    ("relation", "plan"),
+}
 NOISY_LOGGERS = ("mcp", "httpx", "httpx2", "httpcore")
 RELATION_TYPES = [
     "blocking",
@@ -96,6 +102,14 @@ def parser() -> argparse.ArgumentParser:
     relation_add.add_argument("ref", help="task UUID or identifier such as PTC-12")
     relation_add.add_argument("others", nargs="+", metavar="other_ref", help="related tasks")
     relation_add.add_argument("--type", choices=RELATION_TYPES, default="blocked_by")
+    relation_plan = relation.add_parser(
+        "plan", parents=[common], help="add blocked_by relations from a JSON plan (dry run)"
+    )
+    relation_plan.add_argument("file", help='JSON list of {"blocked": "ABC-1", "blocker": "ABC-2"}')
+    relation_plan.add_argument("--apply", action="store_true", help="write (default: dry run)")
+    relation_plan.add_argument(
+        "--pause", type=float, default=0.5, help="seconds between writes (default 0.5)"
+    )
     return root
 
 
