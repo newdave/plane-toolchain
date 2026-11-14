@@ -12,6 +12,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Renovate (PTC-106): GitHub Actions updates no longer automerge. Digest updates have no reliable release timestamp, so `minimumReleaseAge` cannot delay them; they now wait for review.
+- CI (PTC-107): pull requests run `scripts/check-commit-msg.py` over every PR commit message and the PR title and body (the squash message), so AI attribution trailers cannot land from a clone without hooks. The step uses no secrets and takes SHAs and text through `env:`.
 - `ce_page` (PTC-97): list, retrieve, create and the project access check now run their blocking SDK calls in a thread (`asyncio.to_thread`), as update already did, so they no longer stall the event loop.
 - Pages (PTC-92): `ce_page` update refuses an empty or whitespace-only `description_html` in the tool and the backend (the default empty argument used to wipe the page); `access` refuses `true` and `false`. Create still accepts an empty body (a new blank page loses nothing). The `ce_tools.py` and `pages_backend.py` payload digests change: redeploy needed, so the MCP compat entry point and Pages must be redeployed (direct route: revert, then apply; or the Saltbox build route). Add the new `ce_tools.py` digest to `RELEASED_ENTRY_POINT_DIGESTS` at release.
 - CI runs `mise run setup` and `mise run check` instead of a copied command list, so it also installs the `tools/mcp-remote` lockfile. `cancel-in-progress` applies only to pull requests, so a running push build on the default branch is no longer cancelled before `release.yml` can find its `check` run. GitHub can still cancel a pending (queued) run in the same concurrency group (PTC-100).
