@@ -7,9 +7,12 @@ The extensions augment the official Plane MCP server. They reuse its API-key aut
 | Tool | Operations | Limits |
 | --- | --- | --- |
 | `ce_workitem_relation` | Definitions, list, create built-in dependencies | Additive, same project, 1–100 distinct targets; no deletion or custom definitions |
+| `ce_intake` | Decide an intake record: reject (-1), snooze (0), accept (1), duplicate (2) | `decide` only; `workitem_id` is the record's issue id; snooze needs `snoozed_till`, duplicate needs `duplicate_to`; CE applies it for project admins only |
 | `ce_page` | List, retrieve, create, update project Pages | Update replaces the whole body; needs `expected_updated_at` and `force=true`; no deletion |
 
 Relations normalise CE `issue_id` objects into the MCP dependency contract. CE relations are workspace-wide, so `list` may return issue ids from other projects. Each row keeps its own `project_id`; rows are not filtered, only ids are exposed (no content), and reading the issue still needs that project's membership. Each source and target is checked through the project-scoped work-item API before creating a relation.
+
+`ce_intake` exists because the official intake update calls `PATCH .../intake-issues/<id>/status`, which Plane CE v1.4.3 does not route (404). It sends the top-level `status`, `snoozed_till` or `duplicate_to` to the routed `PATCH .../intake-issues/<id>/` (`IntakeIssueUpdateSerializer`, read at tag `v1.4.3`), after checking the record is readable. CE applies those fields only when the caller's project role is above member; for others the request succeeds without effect, so the tool rereads the record and fails if the status did not change. Accepting moves a triage item to the project default state.
 
 Pages require both the MCP extension and the backend adapter. The backend keeps Plane authentication, permissions, sanitisation and throttling. It checks project membership and private-page visibility.
 

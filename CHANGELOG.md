@@ -8,6 +8,24 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- MCP apply and revert no longer refuse a host entry point whose receipt is stale but whose content is exactly a `ce_tools.py` shipped in a past release (for example after another deploy wrote `server.py` without updating the receipt). Foreign content is still refused; `check` is unchanged. Releases append their digest to `RELEASED_ENTRY_POINT_DIGESTS`.
+
+## [0.4.0] - 2026-11-14
+
+### Added
+
+- `ce_intake` MCP tool (`decide`): reject, snooze, accept or mark an intake record duplicate through Plane CE's routed `PATCH intake-issues/<id>/`, because the official intake update calls `.../status`, which CE v1.4.3 does not route. Rereads the record and fails if CE ignored the change (non-admin callers). The `ce_tools.py` payload digest changes: redeploy needed.
+
+## [0.3.2] - 2026-11-14
+
+### Fixed
+
+- Workspace rename: the model probe no longer expects an `IssueComment.comment_binary` column, which Plane CE v1.4.3 does not have; the live read-only `check` refused with `Model mismatch: comment.comment_binary (missing)` (PTC-83).
+
+## [0.3.1] - 2026-11-14
+
+### Fixed
+
 - Pages revert: a revert killed after the original was renamed back to `api` but before it started left `api` stopped, and a repeat revert reported "already restored" without starting it. A repeat revert now starts the stopped original, restoring the live restart policy, when a `<api>-pages-reverted-<digits>` container shows the revert was interrupted; a stopped `api` without one is still left alone as stopped on purpose (found by the new kill-injection harness; PTC-80).
 
 ### Tests
