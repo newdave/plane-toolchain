@@ -256,3 +256,30 @@ def test_intake_decide_invalid_input_makes_no_request():
     with pytest.raises(ValueError):
         decide_intake(fake, "ws", "bad", "bad", 0, "", "")
     assert fake.calls == []
+
+
+@pytest.mark.parametrize("action", ["list", "retrieve", "create", "update"])
+def test_ce_page_sdk_calls_run_off_the_event_loop_thread(action):
+    import asyncio
+    import threading
+
+    from plane_toolchain.ce_tools import run_page_action
+
+    threads = []
+
+    def record(*args):
+        threads.append(threading.get_ident())
+        return {}
+
+    pages = SimpleNamespace(_get=record, _post=record, _patch=record)
+    client = SimpleNamespace(projects=SimpleNamespace(retrieve=record), pages=pages)
+    fields = dict(
+        name="N",
+        description_html="<p>x</p>",
+        access=1,
+        expected_updated_at="2026-11-13T01:02:03Z",
+        force=True,
+    )
+    asyncio.run(run_page_action(client, "ws", "proj/ce-pages", action, "proj", fields))
+    assert len(threads) == 2  # projects.retrieve plus the page call
+    assert threading.get_ident() not in threads

@@ -18,7 +18,8 @@ def test_server_payloads_match_existing_deployment_receipts():
         # PTC-70: digest changed again (async ce_page update confirms the late store itself).
         # ce_intake tool added (decide via the routed detail PATCH); see docs/extensions.md.
         # PTC-92: digest changed (update refuses an empty body; access refuses bool).
-        "ce_tools.py": "25bc21e5f8bfbe40923cd4157ad6a6d3066c41ccac4f87e1be140c028362c332",
+        # PTC-97: digest changed (ce_page runs every SDK call in a thread).
+        "ce_tools.py": "858ae35eaf2e8bfef130769238afdbb5580cb45b9e95a154119708914745fd07",
         # PTC-19: digest changed (client messages from a fixed table; CodeQL stack-trace alerts).
         # PTC-44: digest changed (page update route, force_close via Redis); see docs/extensions.md.
         # PTC-29: digest changed (comment and docstring wording only).
