@@ -1,0 +1,25 @@
+CHANGELOG.md
+  s_9eff9a2b37a1ff::t_c4af9a0458594d 13
+src/plane_toolchain/pages_deploy.py
+  s_9eff9a2b37a1ff::t_8d9e70f0223aa9 558,560-562,564-567,569,576-590
+tests/test_pages_deploy_apply.py
+  s_9eff9a2b37a1ff::t_52b656e38c353f 370-384
+tests/test_remote.py
+  s_9eff9a2b37a1ff::t_e3d41bd0ff126c 427-446
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "a333ce62a39c8b3e0894ca406bbf1205adcdf8ec",
+  "prompts": {},
+  "sessions": {
+    "s_9eff9a2b37a1ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "55042e9c-e6eb-4713-981d-553dcbce9ea4",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
