@@ -21,6 +21,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Renovate (PTC-106): GitHub Actions updates no longer automerge. Digest updates have no reliable release timestamp, so `minimumReleaseAge` cannot delay them; they now wait for review.
+- CI (PTC-107): pull requests run `scripts/check-commit-msg.py` over every PR commit message and the PR title and body (the squash message), so AI attribution trailers cannot land from a clone without hooks. The step uses no secrets and takes SHAs and text through `env:`.
 - Pages revert (PTC-104): the parked `<api>-pages-reverted-<ts>` name is checked for a clash and gets `-1` appended until free, through one `unused_name` helper that the `-pages-failed-` name uses too, so two reverts in one second no longer collide. Prune and the revert-recovery policy lookup accept such suffixed names. The shipped Pages remote program text changes; no host state does.
 - MCP deploy (PTC-103): `write_atomic` unlinks a stale or symlinked `.tmp` first, creates it with `O_EXCL|O_NOFOLLOW` and always sets the mode (the requested one, else an existing regular file's, else 0600; never a symlink target's), so it never follows a link or keeps old permissions. A corrupt or non-object receipt now fails with `Receipt unreadable; reconcile` instead of a JSON error. The shipped remote program text changes; no host state does.
 - Rename (PTC-105): the schema probe no longer reports a `manager` mismatch. Its test, `hasattr(model, "_base_manager")`, held for every Django model, so it guarded nothing; the snippet reads through `all_objects` and falls back to the base manager for a model without one, so no probe is needed. The host receives the program on each run, so no redeploy is needed.
