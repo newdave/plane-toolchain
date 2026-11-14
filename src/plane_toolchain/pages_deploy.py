@@ -394,32 +394,54 @@ def restore_any(name, backup, reverted, probe, docker, policy):
 
 
 def recover_original(name, backup, probe, docker, policy, now):
-    """Best effort after a failed apply rollback: never leave the derived container running.
+    """Best effort after a failed apply rollback; never start the derived container.
 
     `restore_any` starts whatever holds `name`, which is right for revert but here could be the
-    failed derived container. A Pages-labelled `name` is stopped and moved aside; when that
-    fails both containers stay stopped and the operator is told to reconcile.
+    failed derived container. A container is started as `name` only when a successful inspect
+    shows it is unlabelled (the original). A Pages-labelled one is stopped and moved aside; an
+    unknown or stuck state leaves things stopped and says where each container is.
     """
+
+    def incomplete(derived, original):
+        say(
+            "Rollback incomplete: the derived container is "
+            + derived
+            + " and the original is "
+            + original
+            + "; both are left stopped. Run apply again to reconcile, or inspect them.",
+            sys.stderr,
+        )
+
     try:
-        derived = probe("inspect", name) and source_label(json.loads(docker("inspect", name))[0])
+        if name not in listed_names(name, docker):
+            holder = None
+        else:
+            holder = json.loads(docker("inspect", name))[0]
     except Exception:
-        derived = True  # Cannot tell what holds the name: do not start it.
-    if not derived:
-        restore_any(name, backup, failed_name(name, probe, now), probe, docker, policy)
+        incomplete("unknown (could not inspect " + name + ")", "unknown, maybe " + backup)
         return
-    probe("stop", name)
-    failed = failed_name(name, probe, now)
-    if probe("rename", name, failed):
-        set_restart(probe, "no", failed)
-        if probe("rename", backup, name):
-            set_restart(probe, policy, name)
-            probe("start", name)
+    if holder is not None and source_label(holder) is None:
+        set_restart(probe, policy, name)  # The original already holds the name.
+        if not probe("start", name):
+            incomplete("unknown", name + " (stopped)")
+        return
+    if holder is not None:
+        if not probe("stop", name):
+            incomplete(name + " (stop failed, may be running)", backup)
             return
-    say(
-        "Rollback incomplete: the derived container and the original are both left stopped; "
-        "run apply again to reconcile, or inspect " + name + " and " + backup,
-        sys.stderr,
-    )
+        failed = failed_name(name, probe, now)
+        if not probe("rename", name, failed):
+            incomplete(name + " (stopped)", backup)
+            return
+        set_restart(probe, "no", failed)
+    else:
+        failed = "gone"
+    if not probe("rename", backup, name):
+        incomplete(failed if failed != "gone" else "absent", backup)
+        return
+    set_restart(probe, policy, name)
+    if not probe("start", name):
+        incomplete(failed if failed != "gone" else "absent", name + " (stopped)")
 
 
 def promotion_policy(held, name, docker, probe):
@@ -629,7 +651,8 @@ def apply(current, payload, backup, docker, probe, create, health, now):
             else:
                 try:
                     if probe("inspect", name):
-                        probe("stop", name)
+                        if not probe("stop", name):  # Never rename a running derived aside.
+                            raise subprocess.CalledProcessError(1, ["docker", "stop", name])
                         failed = failed_name(name, probe, now)
                         docker("rename", name, failed)
                         set_restart(probe, "no", failed)

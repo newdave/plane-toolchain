@@ -355,10 +355,10 @@ def test_applied_container_gets_fresh_hostname(host):
 
 @pytest.mark.parametrize(
     "failing",
-    [[("rename", BACKUP, "api")], ["start", "start"]],
+    [[("rename", BACKUP, "api")], ["start"]],
     ids=["rollback-rename", "rollback-start"],
 )
-def test_apply_rollback_failure_falls_back_to_restore_any(host, monkeypatch, failing):
+def test_apply_rollback_failure_still_restores_the_original(host, monkeypatch, failing):
     host.fail.append(("create", "api"))
     host.fail.extend(failing)
     with pytest.raises(ValueError, match="creation") as raised:
@@ -402,3 +402,44 @@ def test_apply_rollback_never_starts_the_derived_container_when_moving_it_aside_
         assert host.containers["api"]["labels"].get(LABEL) == DIGEST
         assert not host.containers[BACKUP]["running"]
         assert "Rollback incomplete" in capsys.readouterr().err
+
+
+def derived_running(host):
+    return [n for n, c in host.containers.items() if c["labels"].get(LABEL) and c["running"]]
+
+
+def fail_after_derived_start(host, command, nth):
+    """Fail the `nth` call (1-based) of `command` on `api` once the derived container started."""
+    real, state = host.execute, {"started": False, "seen": 0}
+
+    def execute(*args, **kw):
+        state["started"] = state["started"] or args[:2] == ("start", "api")
+        if state["started"] and args[:2] == (command, "api"):
+            state["seen"] += 1
+            if state["seen"] in nth:
+                host.fail.append((command, "api"))
+        return real(*args, **kw)
+
+    host.execute = execute
+
+
+@pytest.mark.parametrize("nth", [1, 2], ids=["main-rollback-inspect", "recovery-inspect"])
+def test_apply_rollback_does_not_start_an_uninspectable_name(host, capsys, nth):
+    host.created_healthy = False
+    host.fail.append(("rename", "api", f"api-pages-failed-{NOW}"))
+    fail_after_derived_start(host, "inspect", {nth})
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", host)
+    assert derived_running(host) == []
+    assert not host.containers[BACKUP]["running"]
+    assert "Rollback incomplete" in capsys.readouterr().err
+
+
+def test_apply_rollback_stop_failure_does_not_start_the_original_beside_the_derived(host, capsys):
+    host.created_healthy = False
+    fail_after_derived_start(host, "stop", {1, 2})  # the rollback's stop, then the recovery's
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", host)
+    assert not host.containers[BACKUP]["running"]
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "stop failed" in err and BACKUP in err
