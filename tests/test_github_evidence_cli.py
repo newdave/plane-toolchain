@@ -653,6 +653,7 @@ def test_main_dispatch(monkeypatch, tmp_path, capsys):
     summary = tmp_path / "s.md"
     monkeypatch.setenv("PLANE_COMMENT_SOURCE", "")
     monkeypatch.setenv("PLANE_TASK_SOURCE", "demo")
+    monkeypatch.setenv("PLANE_API_KEY", KEY)
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     assert cli.main(["gate"]) == 1
     assert cli.main(["evidence"]) == 1
@@ -668,3 +669,60 @@ def test_main_runs_evidence_skip(monkeypatch, tmp_path):
     for name, value in env(PLANE_API_KEY="").items():
         monkeypatch.setenv(name, value)
     assert cli.main(["evidence"]) == 0
+
+
+def test_github_unexpected_request_error_named():
+    def boom(request):
+        raise RuntimeError("Bearer t https://host/secret")
+
+    with pytest.raises(cli.Failure) as caught:
+        github(boom).pull(1)
+    assert str(caught.value) == "GitHub pull failed (request error)"
+
+
+def test_classify_never_passes_secret_text():
+    cli.inputs(env(GH_TOKEN="ghs_TOKENVALUE"), "gate")  # noqa: S106
+    for error in (
+        ValueError("bad value " + KEY),
+        cli.ToolError("failed " + KEY),
+        ValueError("bad ghs_TOKENVALUE"),
+    ):
+        result = cli.classify(error)
+        assert result in {"Unexpected ValueError", "Unexpected ToolError"}
+    assert cli.classify(ValueError("fine text")) == "fine text"
+
+
+def test_connect_failure_is_named(tmp_path, capsys):
+    api, server = FakeGitHub(), Server(error=RuntimeError("HTTP 401 " + KEY))
+    code, _ = gate(tmp_path, gate_event(), api, server)
+    assert (code, api.states[-1]) == (1, "failure")
+    out = capsys.readouterr().out
+    assert "Plane connection failed (HTTP 401)" in out
+    assert KEY not in out
+    code, _ = evidence(tmp_path, "pull_request", FakeGitHub(), Server(error=RuntimeError("429")))
+    assert code == 1
+    assert "::warning title=Plane evidence::Plane connection failed (HTTP 429)" in (
+        capsys.readouterr().out
+    )
+
+
+def test_pulls_for_commit_follows_pages_and_bounds():
+    def handler(request):
+        page = int(request.url.params["page"])
+        rows = 100 if page == 1 else 2
+        return httpx2.Response(200, json=[{"number": page * 1000 + i} for i in range(rows)])
+
+    assert len(github(handler).pulls_for_commit(SHA)) == 102
+
+    def full(request):
+        return httpx2.Response(200, json=[{"number": 1}] * 100)
+
+    with pytest.raises(cli.Failure, match="Commit PR listing incomplete"):
+        github(full).pulls_for_commit(SHA)
+
+
+def test_main_evidence_without_key_skips_before_validation(monkeypatch, capsys):
+    for name, value in env(PLANE_API_KEY="", PLANE_EVIDENCE_CONCLUSION="passed").items():
+        monkeypatch.setenv(name, value)
+    assert cli.main(["evidence"]) == 0
+    assert "Plane evidence skipped: no PLANE_API_KEY" in capsys.readouterr().out

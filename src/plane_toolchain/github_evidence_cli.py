@@ -6,6 +6,7 @@ failure prints a fixed, secret-free cause; no URL, header or body is echoed.
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -51,6 +52,8 @@ class GitHub:
             response = self._client.request(method, url, headers=headers, **options)
         except httpx2.HTTPError:
             raise Failure(f"GitHub {operation} failed (network error)") from None
+        except Exception:
+            raise Failure(f"GitHub {operation} failed (request error)") from None
         if not 200 <= response.status_code < 300:
             raise Failure(f"GitHub {operation} failed (HTTP {response.status_code})")
         try:
@@ -64,9 +67,18 @@ class GitHub:
     def pulls_for_commit(self, sha: str) -> list[dict]:
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise Failure("Invalid commit SHA")
-        return self._request(
-            "commit pulls", "GET", f"/commits/{sha}/pulls", params={"per_page": 100}
-        )
+        pulls: list[dict] = []
+        for page in range(1, 31):
+            rows = self._request(
+                "commit pulls",
+                "GET",
+                f"/commits/{sha}/pulls",
+                params={"per_page": 100, "page": page},
+            )
+            pulls.extend(rows)
+            if len(rows) < 100:
+                return pulls
+        raise Failure("Commit PR listing incomplete")
 
     def files(self, number: int) -> list[str]:
         names: list[str] = []
@@ -193,6 +205,7 @@ def inputs(env: Mapping[str, str], mode: Literal["gate", "evidence"]) -> Inputs:
             "run_id": _integer(env, "GITHUB_RUN_ID", 0),
             "attempt": _integer(env, "GITHUB_RUN_ATTEMPT", 1),
         }
+    _register(env.get("PLANE_API_KEY", ""), env.get("GH_TOKEN", ""))
     return Inputs(
         key=env.get("PLANE_API_KEY", ""),
         token=env.get("GH_TOKEN", ""),
@@ -297,11 +310,21 @@ async def preflight(call, project: str) -> None:
     )
 
 
+_SECRETS: set[str] = set()
+
+
+def _register(*values: str) -> None:
+    _SECRETS.update(value for value in values if value)
+
+
 def classify(error: BaseException) -> str:
     """Fixed, secret-free cause text; never a URL, header or response body."""
     error = _leaf(error)
     if type(error) in {Failure, ValueError, ToolError}:
-        return str(error)
+        text = str(error)
+        if not any(secret in text for secret in _SECRETS):
+            return text
+        return "Unexpected " + type(error).__name__
     code = _status(error)
     operation = getattr(error, "plane_operation", None)
     if code and operation:
@@ -336,6 +359,20 @@ def summarise(line: str, env: Mapping[str, str]) -> None:
 def _event(config: Inputs) -> dict:
     with open(config.event_path, encoding="utf-8") as handle:
         return json.load(handle)
+
+
+@contextlib.asynccontextmanager
+async def _connected(connect):
+    """Open the MCP session, naming an HTTP failure while connecting."""
+    async with contextlib.AsyncExitStack() as stack:
+        try:
+            raw = await stack.enter_async_context(connect())
+        except Exception as error:
+            code = _status(error)
+            if code is None:
+                raise
+            raise Failure(f"Plane connection failed (HTTP {code})") from None
+        yield raw
 
 
 async def _resolve(config: Inputs, call, selected: list[tuple[ge.Update, list[str]]]):
@@ -386,7 +423,7 @@ async def run_gate(
         if ids:
             if not config.key:
                 raise Failure("PLANE_API_KEY unavailable")
-            async with connect() as raw:
+            async with _connected(connect) as raw:
                 call = retrying(raw)
                 resolved = await _resolve(config, call, [(update, ids)])
                 # An edit that kept the gate fields already has its comment.
@@ -462,7 +499,7 @@ async def run_evidence(
             run_url=f"{config.server_url}/{config.repository}/actions/runs/{config.run_id}",
         )
         selected = [(update, ids_by_number[update.pr["number"]]) for update in updates]
-        async with connect() as raw:
+        async with _connected(connect) as raw:
             call = retrying(raw)
             resolved = await _resolve(config, call, selected)
             created = await _publish(config, call, resolved)
@@ -483,6 +520,9 @@ def main(argv: list[str] | None = None) -> int:
         print("usage: github_evidence_cli (gate|evidence)", file=sys.stderr)
         return 2
     mode = argv[0]
+    if mode == "evidence" and not os.environ.get("PLANE_API_KEY"):
+        annotate("notice", "Plane evidence skipped: no PLANE_API_KEY")
+        return 0
     try:
         config = inputs(os.environ, mode)
         github = GitHub(config.token, config.repository, config.api_url)
