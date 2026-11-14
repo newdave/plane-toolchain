@@ -230,3 +230,23 @@ def test_snippet_source_has_no_disk_writes_or_prints_of_config():
     uses = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "settings"]
     assert all(isinstance(n.value, ast.Name) and n.value.id == "orm" for n in uses)
     assert pathlib.Path(backend.__file__).read_text().count("print(") == 1
+
+
+def test_check_reports_bare_url_followed_by_punctuation_as_unfixed():
+    # PTC-91: a URL ending in prose punctuation was missed by the matcher and by check.
+    rows = [
+        {
+            "id": "v1",
+            "description_html": "see https://plane.example.com/old-slug, then",
+            "deleted_at": None,
+        },
+        {
+            "id": "v2",
+            "description_html": "(https://plane.example.com/old-slug)",
+            "deleted_at": None,
+        },
+    ]
+    orm = make_orm(version=("issue_versions", {"description_html": "text"}, rows))
+    ok, events = run_check(orm)
+    event = next(e for e in events if e["event"] == "unfixed" and e["table"] == "issue_versions")
+    assert event["count"] == 2 and event["ids"] == ["v1", "v2"]

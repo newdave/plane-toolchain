@@ -15,6 +15,7 @@ All notable changes to this project are documented here. The format follows
 - Pages deploy validates the API container and worker names strictly (`[A-Za-z0-9][A-Za-z0-9_.-]*`) in `main` and again in the remote program, so a leading dash such as `--help` or a Unicode name is refused, and URL-encodes the name in the container create request (PTC-101).
 - Workspace rename (PTC-82): the orphan sweep ignores read-only `check` snippets (now marked `check:<token>`) instead of refusing or killing them, and an old-format marker makes it refuse with the pid and the kill command instead of an unexplained refusal. The API-container clash check also compares container ids, not only names. `check` probes that `EmailNotificationLog` has no workspace column.
 - MCP apply and revert no longer refuse a host entry point whose receipt is stale but whose content is exactly a `ce_tools.py` shipped in a past release (for example after another deploy wrote `server.py` without updating the receipt). Foreign content is still refused; `check` is unchanged. Releases append their digest to `RELEASED_ENTRY_POINT_DIGESTS`.
+- Workspace rename (PTC-91): an own-host URL to the old workspace followed by whitespace or prose punctuation (`https://host/acme, see`, `(https://host/acme)`) is now rewritten, and `check` reports it when it will not be. The slug must still not be followed by a slug character, so `acme-two` never matches `acme`.
 
 ## [0.4.0] - 2026-11-14
 

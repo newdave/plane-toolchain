@@ -68,6 +68,28 @@ def test_rewrite_terminators_slash_quotes_query_hash_end():
         assert n == 1
 
 
+@pytest.mark.parametrize("tail", [" next", "<br>", ")", ".", ",", ";", "\n", "&amp;"])
+def test_rewrite_bare_url_followed_by_whitespace_or_punctuation(tail):
+    # PTC-91: prose such as "(see https://host/acme)" or "https://host/acme, then" is rewritten.
+    src = f"(see https://plane.example.com/acme{tail}"
+    out, n = m.rewrite_html(src, "acme", "beta", HOSTS)
+    assert (out, n) == (f"(see https://plane.example.com/beta{tail}", 1)
+    assert m.scan_text(src, "acme", HOSTS)["url"] == 1
+
+
+def test_bare_url_prefix_collision_untouched_before_punctuation():
+    src = "https://plane.example.com/acme-two. https://plane.example.com/acme_2, /acmeX"
+    assert m.rewrite_html(src, "acme", "beta", HOSTS) == (src, 0)
+
+
+def test_json_href_followed_by_punctuation():
+    obj = {"href": "https://plane.example.com/acme."}
+    assert m.rewrite_json_slug(obj, "acme", "beta", HOSTS) == (
+        {"href": "https://plane.example.com/beta."},
+        1,
+    )
+
+
 def test_prefix_collision_untouched():
     src = (
         '<a href="/acme-two/x">x</a> <a href="/acme2">y</a> '
