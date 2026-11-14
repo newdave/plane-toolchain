@@ -5,6 +5,7 @@ environment: repository specifics arrive as parameters and the caller supplies
 the MCP ``call``. Evidence is comments only; task state is never changed.
 """
 
+import hashlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -163,3 +164,27 @@ def required_references(
     if not ids:
         raise ValueError(f"Missing standalone {refs.field} field")
     return ids
+
+
+def description(pr: dict) -> str:
+    """Status text binding the gate to this exact head and body.
+
+    The literal prefix stays ``Plane-Tasks`` whatever the field name is.
+    """
+    digest = hashlib.sha256((pr["head"]["sha"] + "\n" + (pr.get("body") or "")).encode())
+    return "Plane-Tasks sha256:" + digest.hexdigest()
+
+
+def gate_fields_changed(
+    before: str, after: str, refs: ReferenceRules, maintenance: MaintenanceRules
+) -> bool:
+    """Whether an edit touched a visible gate field (references or maintenance marker)."""
+
+    def fields(body: str) -> tuple[list[str], list[str]]:
+        body = body or ""
+        return (
+            field_lines(body, refs.field),
+            field_lines(body, maintenance.field) if maintenance.field else [],
+        )
+
+    return fields(before) != fields(after)

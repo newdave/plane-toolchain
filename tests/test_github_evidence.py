@@ -1,5 +1,7 @@
 """GitHub evidence core: reference parsing, gate rules, events and Plane publishing."""
 
+import hashlib
+
 import pytest
 from plane_toolchain import github_evidence as ge
 
@@ -156,3 +158,30 @@ def test_title_prefix_bang():
     assert ge.eligible(renovate_pr(title="chore(deps)!: x"), REPO, MAINTENANCE)
     assert not ge.eligible(renovate_pr(title="chore(deps) x"), REPO, MAINTENANCE)
     assert not ge.eligible(renovate_pr(title="chore(depsX): x"), REPO, MAINTENANCE)
+
+
+def digest(head: str, body: str) -> str:
+    return "Plane-Tasks sha256:" + hashlib.sha256((head + "\n" + body).encode()).hexdigest()
+
+
+def test_description_matches_terrain_link():
+    pr = {"head": {"sha": "a" * 40}, "body": "Plane-Tasks: ABC-1"}
+    assert ge.description(pr) == digest("a" * 40, "Plane-Tasks: ABC-1")
+    assert ge.description(dict(pr, body=None)) == digest("a" * 40, "")
+    assert ge.description({"head": {"sha": "a" * 40}}) == digest("a" * 40, "")
+
+
+def test_gate_fields_changed():
+    refs = ge.ReferenceRules()
+    off = ge.MaintenanceRules()
+
+    def changed(before, after, maintenance=off):
+        return ge.gate_fields_changed(before, after, refs, maintenance)
+
+    assert not changed("Plane-Tasks: ABC-1\nold prose", "Plane-Tasks: ABC-1\nnew prose")
+    assert changed("Plane-Tasks: ABC-1, ABC-2", "Plane-Tasks: ABC-2, ABC-1")
+    assert changed("Plane-Tasks: ABC-1", "<!-- Plane-Tasks: ABC-1 -->")
+    assert changed("Plane-Tasks: ABC-1", "Plane-Tasks: ABC-1\n" + EXEMPT, MAINTENANCE)
+    assert not changed("Plane-Tasks: ABC-1", "Plane-Tasks: ABC-1\n" + EXEMPT)
+    assert not changed(None, "")
+    assert changed(None, "Plane-Tasks: ABC-1")
