@@ -1,0 +1,30 @@
+scripts/install_project.py
+  s_a03650451d84d5::t_62be9484149585 461-462
+tests/test_project_install.py
+  s_2c6bc7b15cfdaa::t_247d1cb86c0cdd 1257-1258
+  s_a03650451d84d5::t_62be9484149585 1250-1256
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "ab052b3ac52801ab665ed9b3ac81152be653cbb8",
+  "prompts": {},
+  "sessions": {
+    "s_2c6bc7b15cfdaa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ac4b3f27-e43f-4d0d-921a-80ce1897b568",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    },
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
