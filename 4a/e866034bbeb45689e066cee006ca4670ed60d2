@@ -1,0 +1,33 @@
+tests/test_pages_kill_injection.py
+  s_a03650451d84d5::t_bf8e88d0260882 118-140
+tests/fake_docker.py
+  s_a03650451d84d5::t_bf8e88d0260882 265-266,268,285-289
+  s_a03650451d84d5::t_d64483792b8569 84-85,146
+src/plane_toolchain/pages_deploy.py
+  s_a03650451d84d5::t_eeb15121ef8bc0 416-418,422-427,449-450,454,456,462,465-468,523,529-531
+  s_a03650451d84d5::t_e318d07188e78f 561,579,783
+  s_a03650451d84d5::t_39e38f3f4199ce 786-795
+  s_a03650451d84d5::t_2132ba28b80783 139-140,490,506,511,780-781
+tests/test_pages_deploy_revert.py
+  s_a03650451d84d5::t_50209704c4b056 314,318-320,340-342,346-348
+  s_a03650451d84d5::t_7ae120039b9f85 343-345
+tests/test_pages_deploy_apply.py
+  s_a03650451d84d5::t_a7c9620393f684 514-517
+  s_a03650451d84d5::t_d64483792b8569 646-669
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "4ae866034bbeb45689e066cee006ca4670ed60d2",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
