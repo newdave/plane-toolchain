@@ -180,7 +180,7 @@ def ssh_timeout():
     """Seconds the local SSH session may run: `PLANE_SSH_TIMEOUT`, else SSH_SECONDS.
 
     A long rename can outlast the default and lose its local output (the host program keeps
-    running). The value must be a positive number of seconds; anything else exits naming only
+    running). The value must be from 1 second to 7 days; anything else exits naming only
     the variable."""
     value = os.environ.get("PLANE_SSH_TIMEOUT", "").strip()
     if not value:
@@ -189,8 +189,8 @@ def ssh_timeout():
         seconds = float(value)
     except ValueError:
         seconds = 0.0
-    if not 0 < seconds < float("inf"):  # also rejects nan
-        sys.exit("PLANE_SSH_TIMEOUT must be a positive number of seconds")
+    if not 1 <= seconds <= 7 * 86400:  # also rejects nan and inf
+        sys.exit("PLANE_SSH_TIMEOUT must be a number of seconds from 1 to 604800")
     return seconds
 
 

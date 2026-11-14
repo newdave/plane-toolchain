@@ -494,7 +494,15 @@ def test_run_remote_has_a_default_timeout_and_reports_expiry(monkeypatch, capsys
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(None, 6 * 3600), ("", 6 * 3600), ("  ", 6 * 3600), ("90", 90.0), ("7200.5", 7200.5)],
+    [
+        (None, 6 * 3600),
+        ("", 6 * 3600),
+        ("  ", 6 * 3600),
+        ("90", 90.0),
+        ("7200.5", 7200.5),
+        ("1", 1.0),
+        ("604800", 604800.0),
+    ],
 )
 def test_ssh_timeout_defaults_and_reads_plane_ssh_timeout(monkeypatch, value, expected):
     monkeypatch.delenv("PLANE_SSH_TIMEOUT", raising=False)
@@ -503,12 +511,12 @@ def test_ssh_timeout_defaults_and_reads_plane_ssh_timeout(monkeypatch, value, ex
     assert remote.ssh_timeout() == expected
 
 
-@pytest.mark.parametrize("value", ["0", "-5", "abc", "nan", "inf", "1h"])
+@pytest.mark.parametrize("value", ["0", "0.5", "-5", "abc", "nan", "inf", "1h", "604801", "1e12"])
 def test_ssh_timeout_rejects_a_bad_value_naming_only_the_variable(monkeypatch, value):
     monkeypatch.setenv("PLANE_SSH_TIMEOUT", value)
     with pytest.raises(SystemExit) as stop:
         remote.ssh_timeout()
-    assert str(stop.value) == "PLANE_SSH_TIMEOUT must be a positive number of seconds"
+    assert str(stop.value) == "PLANE_SSH_TIMEOUT must be a number of seconds from 1 to 604800"
 
 
 def test_run_remote_uses_the_env_timeout_and_an_explicit_one_wins(monkeypatch, capsys):
