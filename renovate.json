@@ -21,6 +21,11 @@
   },
   "packageRules": [
     {
+      "description": "Never propose Python 3.15 or later (mise and requires-python pins).",
+      "matchDepNames": ["python"],
+      "allowedVersions": "<3.15"
+    },
+    {
       "description": "Group minor and patch updates per weekly run.",
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "minor and patch updates"
