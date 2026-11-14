@@ -366,6 +366,45 @@ def check(current, payload, health):
     return "Pages image and API health verified (digest " + payload["digest"] + ")"
 
 
+def sigterm_held(action):
+    """Run `action` with SIGTERM held; a deferred SIGTERM lands after it, the report kept.
+
+    The one place apply's retire step blocks SIGTERM: a signal between its rename and its
+    bookkeeping would otherwise leave the API stopped under the backup name."""
+    mask = hold_sigterm()
+    failure = None
+    try:
+        action()
+    except BaseException as caught:
+        failure = caught
+        raise
+    finally:
+        release_sigterm(mask, failure)
+
+
+def recover_swap(mask, error, undo, fallback=None):
+    """The recovery half shared by apply and revert: undo a failed swap with SIGTERM held.
+
+    Call it inside the `except BaseException as error` of the swap, then re-raise. The first
+    statement of that handler is `mask = hold_sigterm()`, so nothing, not even building the
+    `undo` and `fallback` callables, runs unprotected; this releases `mask`. `undo`
+    puts the containers back. When `undo` raises an Exception and a `fallback` is given, the
+    fallback (apply: recover_original; revert: restore_any) runs and `error` is raised, with
+    the recovery error as its __context__. A SIGTERM that arrives meanwhile waits until the
+    recovery is done (release_sigterm reports `error` first)."""
+    try:
+        if fallback is None:
+            undo()
+        else:
+            try:
+                undo()
+            except Exception:
+                fallback()
+                raise error
+    finally:
+        release_sigterm(mask, error)
+
+
 def restore_any(name, backup, reverted, probe, docker, policy):
     """Best effort after failed recovery: leave exactly one started `name` container.
 
@@ -587,6 +626,18 @@ def start_restored(current, name, docker, probe, health):
     return "Original API container restored"
 
 
+def undo_revert(name, backup, reverted, done, policy, docker, probe):
+    """Undo the completed steps of a failed revert swap, then start `name` again."""
+    if "original" in done:
+        docker("stop", name)
+        docker("rename", name, backup)
+        set_restart(probe, "no", backup)
+    if "derived" in done:
+        docker("rename", reverted, name)
+    set_restart(probe, policy, name)
+    docker("start", name)
+
+
 def revert(current, payload, backup, docker, probe, health, now):
     name = payload["container"]
     if current is None:
@@ -615,22 +666,13 @@ def revert(current, payload, backup, docker, probe, health, now):
         docker("start", name)
         health(name, pages=False)
     except BaseException as error:
-        mask = hold_sigterm()  # A SIGTERM now waits until the recovery is done.
-        try:
-            try:
-                if "original" in done:
-                    docker("stop", name)
-                    docker("rename", name, backup)
-                    set_restart(probe, "no", backup)
-                if "derived" in done:
-                    docker("rename", reverted, name)
-                set_restart(probe, policy, name)
-                docker("start", name)
-            except Exception:
-                restore_any(name, backup, reverted, probe, docker, policy)
-                raise error  # Recovery error stays as __context__.
-        finally:
-            release_sigterm(mask, error)
+        mask = hold_sigterm()  # First, so a SIGTERM now waits until the recovery is done.
+        recover_swap(
+            mask,
+            error,
+            lambda: undo_revert(name, backup, reverted, done, policy, docker, probe),
+            lambda: restore_any(name, backup, reverted, probe, docker, policy),
+        )
         raise
     return "Original API container restored; derived container retained stopped" + retained_note(
         name, docker
@@ -701,6 +743,48 @@ def derive(base_container, payload, docker):
     return namespace["replacement"](base_container, image, payload["live_url"], digest)
 
 
+def retire_original(name, backup, docker, probe, swap):
+    """Apply's retire step: stop `name` and park it under `backup`, noting it in `swap`."""
+    docker("stop", name)
+    docker("rename", name, backup)
+    swap["retired"] = True
+    set_restart(probe, "no", backup)  # After the rename: a failed rename keeps the policy.
+
+
+def undo_apply(name, backup, policy, docker, probe, now, swap):
+    """Undo a failed apply swap: put the original back under `name`, started.
+
+    `swap` says whether the original was retired and, once tried, where the stopped derived
+    container went; this updates `parked` as it goes."""
+    if not swap["retired"]:
+        # Never leave the live API stopped; its policy is unchanged.
+        started = answer(probe, "start", name)
+        if started is None:
+            recovery_incomplete("not created", name + " (start timed out, state unknown)")
+        elif not started:
+            # A retire rename that took effect and timed out leaves the original under
+            # the backup name, so the start of `name` fails: name where it really is.
+            held = answer(probe, "inspect", backup)
+            if held is None:
+                original = name + " or " + backup + " (state unknown)"
+            else:
+                original = (backup if held else name) + " (stopped)"
+            recovery_incomplete("not created", original)
+        return
+    if probe("inspect", name):
+        if not probe("stop", name):  # Never rename a running derived aside.
+            raise subprocess.CalledProcessError(1, ["docker", "stop", name])
+        failed = unused_name(name + "-pages-failed-", probe, now)
+        # The rename can take effect and then time out: say both names.
+        swap["parked"] = "unknown, possibly " + name + " or " + failed + " (stopped)"
+        docker("rename", name, failed)
+        swap["parked"] = failed + " (stopped)"
+        set_restart(probe, "no", failed)
+    docker("rename", backup, name)
+    set_restart(probe, policy, name)
+    docker("start", name)
+
+
 def apply(current, payload, backup, docker, probe, create, health, now):
     name, digest = payload["container"], payload["digest"]
     applied = current is not None and source_label(current) == digest
@@ -715,63 +799,27 @@ def apply(current, payload, backup, docker, probe, create, health, now):
         return "Pages image already applied; API healthy"
     body = derive(current, payload, docker)
     policy = restart_arg(current)  # Read before retiring; restored when promoted back.
-    retired = False  # The original now sits under its backup name.
-    parked = None  # Where the rollback moved the stopped derived container, once it tried.
+    # retired: the original now sits under its backup name. parked: where the rollback moved the
+    # stopped derived container, once it tried.
+    swap = {"retired": False, "parked": None}
     try:
         # SIGTERM waits across the retire: a signal between the rename and `retired` or the
         # policy update would otherwise leave the API stopped under the backup name.
-        mask = hold_sigterm()
-        failure = None
-        try:
-            docker("stop", name)
-            docker("rename", name, backup)
-            retired = True
-            set_restart(probe, "no", backup)  # After the rename: a failed rename keeps the policy.
-        except BaseException as caught:
-            failure = caught
-            raise
-        finally:
-            # A deferred SIGTERM lands here, inside the rollback's try; the report keeps the cause.
-            release_sigterm(mask, failure)
+        sigterm_held(lambda: retire_original(name, backup, docker, probe, swap))
         create(name, body)
         docker("start", name)
         health(name)
     except BaseException as error:
-        mask = hold_sigterm()  # A SIGTERM now waits until the rollback is done.
-        try:
-            if not retired:
-                # Never leave the live API stopped; its policy is unchanged.
-                started = answer(probe, "start", name)
-                if started is None:
-                    recovery_incomplete("not created", name + " (start timed out, state unknown)")
-                elif not started:
-                    # A retire rename that took effect and timed out leaves the original under
-                    # the backup name, so the start of `name` fails: name where it really is.
-                    held = answer(probe, "inspect", backup)
-                    if held is None:
-                        original = name + " or " + backup + " (state unknown)"
-                    else:
-                        original = (backup if held else name) + " (stopped)"
-                    recovery_incomplete("not created", original)
-            else:
-                try:
-                    if probe("inspect", name):
-                        if not probe("stop", name):  # Never rename a running derived aside.
-                            raise subprocess.CalledProcessError(1, ["docker", "stop", name])
-                        failed = unused_name(name + "-pages-failed-", probe, now)
-                        # The rename can take effect and then time out: say both names.
-                        parked = "unknown, possibly " + name + " or " + failed + " (stopped)"
-                        docker("rename", name, failed)
-                        parked = failed + " (stopped)"
-                        set_restart(probe, "no", failed)
-                    docker("rename", backup, name)
-                    set_restart(probe, policy, name)
-                    docker("start", name)
-                except Exception:
-                    recover_original(name, backup, probe, docker, policy, now, parked)
-                    raise error  # Recovery error stays as __context__.
-        finally:
-            release_sigterm(mask, error)
+        mask = hold_sigterm()  # First, so a SIGTERM now waits until the rollback is done.
+        recover_swap(
+            mask,
+            error,
+            lambda: undo_apply(name, backup, policy, docker, probe, now, swap),
+            # Only a retired original has a fallback; a failed first stop just propagates.
+            (lambda: recover_original(name, backup, probe, docker, policy, now, swap["parked"]))
+            if swap["retired"]
+            else None,
+        )
         raise
     return (
         "Pages derived image applied; API healthy; original container retained for rollback"
@@ -877,6 +925,8 @@ REMOTE = program(
     + [
         check,
         answer,
+        sigterm_held,
+        recover_swap,
         restore_any,
         restore_any_steps,
         recover_original,
@@ -888,10 +938,13 @@ REMOTE = program(
         finish_revert,
         interrupted_revert,
         start_restored,
+        undo_revert,
         revert,
         unused_name,
         reconcile,
         derive,
+        retire_original,
+        undo_apply,
         apply,
         build,
         deploy,
