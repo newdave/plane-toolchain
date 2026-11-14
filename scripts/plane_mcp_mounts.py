@@ -3,6 +3,9 @@
 Configured by PLANE_MCP_SSH and PLANE_MCP_CONTAINER from the environment only. Runs one
 `docker inspect --format` over SSH that reads `.Mounts` and nothing else (no environment,
 no labels), and changes nothing on the host.
+
+The 60 s whole-call timeout is intentional for a single read-only inspect; `remote.docker()`
+uses 300 s for heavier calls.
 """
 
 import os
@@ -39,7 +42,9 @@ def settings(env):
 
 
 def ssh_argv(host, container):
-    remote = " ".join(["docker", "inspect", "--format", shlex.quote(FORMAT), container])
+    remote = " ".join(
+        ["docker", "inspect", "--format", shlex.quote(FORMAT), shlex.quote(container)]
+    )
     options = ["BatchMode=yes", "ConnectTimeout=15", "ServerAliveInterval=15"]
     options += ["ServerAliveCountMax=4", "LogLevel=QUIET"]
     argv = ["ssh"]
@@ -74,6 +79,8 @@ def main(env=None):
         fail(f"ssh or docker inspect failed (exit {result.returncode}); check host and container")
     rows = mounts(result.stdout)
     if not rows:
+        if result.stdout.strip():
+            fail("No parseable bind mounts in the docker output")
         fail("No bind mounts found on the container")
     print("source\tdestination\tmode")
     print("\n".join(rows))

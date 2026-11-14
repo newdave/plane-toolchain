@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).parents[1] / "scripts/owner/plane_mcp_mounts.py"
+SCRIPT = Path(__file__).parents[1] / "scripts/plane_mcp_mounts.py"
 ENV = {"PLANE_MCP_SSH": "owner@host.example", "PLANE_MCP_CONTAINER": "plane-mcp"}
 OUT = "/srv/mcp\t/app/mcp\tro\n/srv/data\t/data\trw\nSECRET=hunter2\n"
 
@@ -102,7 +102,7 @@ def test_timeout_is_reported(monkeypatch):
     assert "timed out after 60 s" in str(info.value)
 
 
-def test_no_bind_mounts_fails(run, monkeypatch):
+def test_no_bind_mounts_fails(monkeypatch):
     module = runpy.run_path(str(SCRIPT))
     assert module["mounts"]("junk\nvolume-only\n") == []
     monkeypatch.setattr(
@@ -113,3 +113,22 @@ def test_no_bind_mounts_fails(run, monkeypatch):
     with pytest.raises(SystemExit) as info:
         module["main"](ENV)
     assert "No bind mounts" in str(info.value)
+
+
+def test_malformed_output_reports_unparseable(monkeypatch):
+    module = runpy.run_path(str(SCRIPT))
+    monkeypatch.setattr(
+        module["subprocess"],
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(a, 0, stdout="junk\n", stderr=""),
+    )
+    with pytest.raises(SystemExit) as info:
+        module["main"](ENV)
+    assert "No parseable bind mounts" in str(info.value)
+
+
+def test_container_is_shell_quoted():
+    module = runpy.run_path(str(SCRIPT))
+    module["CONTAINER"] = __import__("re").compile(r".+")  # bypass validation: quoting must hold
+    remote = module["ssh_argv"]("h", "a;b")[-1]
+    assert remote.endswith(" 'a;b'")
