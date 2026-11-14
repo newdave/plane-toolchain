@@ -1,0 +1,21 @@
+src/plane_toolchain/remote.py
+  s_a03650451d84d5::t_7f8ea7de41667d 179-197,200-201,209
+tests/test_remote.py
+  s_a03650451d84d5::t_7f8ea7de41667d 476,493-525
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "0dc8f264e3b2a67c45fada0645802a6c06079bb1",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
