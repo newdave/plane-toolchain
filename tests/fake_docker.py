@@ -45,6 +45,9 @@ class FakeDocker:
         # One-shot failures: a bare command, or a tuple matching the leading arguments,
         # e.g. "start" or ("rename", "api", "api-before-plane-toolchain-pages").
         self.fail = []
+        # One-shot hangs for subprocess_run, matched like `fail`: the call raises TimeoutExpired.
+        self.hang = []
+        self.timeouts = {}  # docker args -> timeout of the latest subprocess_run call
         self.streams = {}  # docker args -> (stdout, stderr) routing of the latest call
         self.builds = []
         self.tracked = False
@@ -67,6 +70,7 @@ class FakeDocker:
         # immortal: the kill script cannot stop them.
         self.procs = []
         self.hang_ops = set()
+        self.hang_exec = None  # a popen argv substring (e.g. "pg_dump") that hangs once
         self.snippet_outlives_client = False
         self.immortal = False
         self.kill_calls = []
@@ -332,6 +336,11 @@ class FakeDocker:
                 if self.result is None:
                     piped = bytes(self.stdin.data) if self.stdin is not None else None
                     text = (piped or b"").decode()
+                    if fake.hang_exec and fake.hang_exec in " ".join(argv):
+                        fake.calls.append(tuple(argv[1:]))
+                        fake.hang_exec = None  # one-shot
+                        self.result = (-9, Hung(self.dead))
+                        return self.result
                     if "manage.py" in argv and any(f'"op": "{op}"' in text for op in fake.hang_ops):
                         fake.calls.append(tuple(argv[1:]))
                         token = next(
@@ -363,6 +372,8 @@ class FakeDocker:
                 return self.run()[1]
 
             def wait(self):
+                if isinstance(self.run()[1], Hung):  # a hung child exits only once killed
+                    self.dead.wait(10)
                 self.returncode = self.run()[0]
                 return self.returncode
 
@@ -419,6 +430,12 @@ class FakeDocker:
         else:
             assert argv[0] == "docker"
             self.streams[tuple(argv[1:])] = (kw.get("stdout"), kw.get("stderr"))
+            self.timeouts[tuple(argv[1:])] = kw.get("timeout")
+            for entry in self.hang:
+                if entry == argv[1] or (isinstance(entry, tuple) and tuple(argv[1:]) == entry):
+                    self.hang.remove(entry)
+                    self.calls.append(tuple(argv[1:]))
+                    raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
             code, stdout = self.execute(*argv[1:], input=kw.get("input"))
         if code and kw.get("check"):
             raise subprocess.CalledProcessError(code, argv, stderr=self.error_output)

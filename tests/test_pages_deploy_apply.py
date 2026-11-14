@@ -145,6 +145,21 @@ def test_apply_start_failure_retains_failed_derived_and_restores_original(host, 
     assert restart(host, "api") == "unless-stopped"
 
 
+def test_apply_docker_timeout_mid_swap_rolls_back(host, monkeypatch):
+    # PTC-96: a hung `docker start` of the derived container expires and the swap rolls back.
+    host.hang.append("start")
+    with pytest.raises(RuntimeError, match=r"^docker start timed out after 300 s$"):
+        remote("apply", host, monkeypatch)
+    assert host.calls[-3:] == [
+        ("rename", BACKUP, "api"),
+        ("update", "--restart=unless-stopped", "api"),
+        ("start", "api"),
+    ]
+    assert_original_restored(host)
+    assert all(host.timeouts.values()), host.timeouts  # every docker call had a timeout
+    assert host.timeouts[("build", "-t", IMAGE, "-")] == 1800
+
+
 def test_apply_health_failure_retains_failed_derived_and_restores_original(host, monkeypatch):
     host.created_healthy = False
     with pytest.raises(ValueError, match="API health check failed"):

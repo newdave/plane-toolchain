@@ -395,3 +395,32 @@ def test_bootstrap_pipes_the_program_and_acks_only_after_the_fsync(tmp_path):
     )
     children[0].stdout.close()
     assert summary == {"event": "summary", "ok": True, "durable": 1}
+
+
+def test_docker_timeout_while_stopping_services_restarts_them(host, monkeypatch, capsys):
+    # PTC-96: through the real docker() helper, a hung `docker stop` expires and rolls back.
+    host.fake.hang.append(("stop", "plane-space"))
+    assert run_remote(wr.REMOTE, host.payload(), host, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "docker stop timed out after 300 s" in err and "Services restarted" in err
+    assert "plane-space" not in err
+    assert all(host.running().values())
+    assert host.receipt()["step"] == "pending"
+    assert all(host.fake.timeouts.values())
+
+
+@pytest.mark.parametrize("hang", ["pg_dump", "pg_restore", "pg_database_size"])
+def test_backup_children_have_a_deadline(host, monkeypatch, hang):
+    monkeypatch.setattr(wr, "BACKUP_SECONDS", 0.2)
+    monkeypatch.setattr(wr, "DB_SIZE_SECONDS", 0.2)
+    host.fake.hang_exec = hang
+    if hang == "pg_database_size":  # an unknown size falls back to the minimum and goes on
+        assert host.deploy().startswith("Rename complete")
+        return
+    message = "pg_dump timed out" if hang == "pg_dump" else "pg_restore did not finish"
+    with pytest.raises(RuntimeError, match="Services restarted") as caught:
+        host.deploy()
+    assert message in str(caught.value)
+    assert all(host.running().values())
+    assert host.receipt()["step"] == "pending"
+    assert not (host.directory / "backup.dump").exists()

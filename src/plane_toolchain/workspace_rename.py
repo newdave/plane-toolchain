@@ -41,6 +41,10 @@ DB_SIZE = (
     'psql -tA -U "$POSTGRES_USER" "$POSTGRES_DB" -c "select pg_database_size(current_database())"'
 )
 MIN_FREE_BYTES = 64 << 20
+# Deadlines for the streamed `docker exec` children (the docker() helper has its own): past
+# one the local client is killed. Two backup deadlines fit inside remote.SSH_SECONDS.
+DB_SIZE_SECONDS = 120
+BACKUP_SECONDS = 2 * 3600  # pg_dump, and again the pg_restore read-back
 SALTBOX_LABEL = "com.github.saltbox.saltbox_managed"
 DRAIN_SECONDS = 60
 DRAIN_INTERVAL = 2
@@ -502,17 +506,34 @@ def no_summary(op, events):
     return op + " gave no summary"
 
 
+def kill_after(process, seconds):
+    """Kill `process` (a local `docker exec` client) once `seconds` pass; return (timer,
+    expired). `expired` holds True once the deadline fired; cancel the timer when done."""
+    expired = []
+
+    def fire():
+        expired.append(True)
+        process.kill()
+
+    timer = threading.Timer(seconds, fire)
+    timer.daemon = True
+    timer.start()
+    return timer, expired
+
+
 def database_size(db, popen):
-    """Size of the Plane database in bytes from the db container, or None if it is unknown."""
-    process = None
+    """Size of the Plane database in bytes from the db container, or None if it is unknown
+    (including a query still running after DB_SIZE_SECONDS)."""
+    process, timer = None, None
     try:
         process = popen(
             ["docker", "exec", db, "sh", "-c", DB_SIZE],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
+        timer, expired = kill_after(process, DB_SIZE_SECONDS)
         out = process.stdout.read(64)
-        if process.wait() != 0:
+        if process.wait() != 0 or expired:
             return None
         return int(out.decode().strip())
     except Exception:  # noqa: BLE001 - an unknown size falls back to the minimum
@@ -520,6 +541,9 @@ def database_size(db, popen):
             process.kill()
             process.wait()
         return None
+    finally:
+        if timer is not None:
+            timer.cancel()
 
 
 def check_free_space(directory, db, popen):
@@ -540,7 +564,8 @@ def validate_dump(db, dump, popen, hide=()):
 
     That reads the whole archive, every data block included, and writes it nowhere: it proves
     the dump is complete and readable by the tool that restores it, without touching the
-    database. The dump goes in on stdin."""
+    database. The dump goes in on stdin. A read-back still running after BACKUP_SECONDS is
+    killed and refused."""
     with tempfile.TemporaryFile() as errors, open(dump, "rb") as source:
         process = popen(
             ["docker", "exec", "-i", db, "pg_restore", "-f", "/dev/null"],
@@ -548,12 +573,20 @@ def validate_dump(db, dump, popen, hide=()):
             stdout=subprocess.DEVNULL,
             stderr=errors,
         )
+        timer, expired = kill_after(process, BACKUP_SECONDS)
         try:
             code = process.wait()
         except BaseException:
             process.kill()
             process.wait()
             raise
+        finally:
+            timer.cancel()
+        if expired:
+            raise RuntimeError(
+                f"backup refused: pg_restore did not finish reading the dump in "
+                f"{BACKUP_SECONDS:g} s"
+            )
         if code != 0:
             reason = stderr_tail(errors, hide=hide)
             raise RuntimeError(
@@ -566,8 +599,9 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hi
     """Stream pg_dump to backup.dump (0600), hashing and fsyncing; record the SHA-256.
 
     Before the dump the receipt directory must have room for it. After it, `pg_restore -f
-    /dev/null` must read the whole file. A failed, empty or unreadable dump raises before any caller changes data,
-    leaving no dump file; failures carry a short, redacted stderr tail.
+    /dev/null` must read the whole file. A failed, empty or unreadable dump raises before any
+    caller changes data, leaving no dump file; failures carry a short, redacted stderr tail.
+    A pg_dump still streaming after BACKUP_SECONDS is killed and fails the same way.
     """
     uid = os.geteuid() if uid is None else uid
     secure_receipt_dir(directory, uid)
@@ -581,7 +615,7 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hi
         os.unlink(temporary)
     check_free_space(directory, db, popen)
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    digest, size, failure, process = hashlib.sha256(), 0, None, None
+    digest, size, failure, process, timer = hashlib.sha256(), 0, None, None, None
     try:
         with tempfile.TemporaryFile() as errors:
             process = popen(
@@ -589,6 +623,7 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hi
                 stdout=subprocess.PIPE,
                 stderr=errors,
             )
+            timer, expired = kill_after(process, BACKUP_SECONDS)
             while True:
                 chunk = process.stdout.read(1 << 20)
                 if not chunk:
@@ -596,7 +631,9 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hi
                 digest.update(chunk)
                 size += len(chunk)
                 os.write(descriptor, chunk)
-            if process.wait() != 0:
+            if process.wait() != 0 and expired:
+                failure = f"backup failed: pg_dump timed out after {BACKUP_SECONDS:g} s"
+            elif process.returncode != 0:
                 reason = stderr_tail(errors, hide=hide)
                 failure = "backup failed: pg_dump exited with an error" + (
                     " (" + reason + ")" if reason else ""
@@ -612,6 +649,9 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hi
         os.close(descriptor)
         os.unlink(temporary)
         raise
+    finally:
+        if timer is not None:
+            timer.cancel()
     os.close(descriptor)
     try:
         if failure:
@@ -1811,6 +1851,7 @@ SHIPPED = (
     detect_saltbox,
     set_receipt_field,
     stderr_tail,
+    kill_after,
     exception_class,
     snippet_cause,
     no_summary,
@@ -1870,6 +1911,8 @@ SHIPPED_CONSTANTS = {
     "PG_DUMP": PG_DUMP,
     "DB_SIZE": DB_SIZE,
     "MIN_FREE_BYTES": MIN_FREE_BYTES,
+    "DB_SIZE_SECONDS": DB_SIZE_SECONDS,
+    "BACKUP_SECONDS": BACKUP_SECONDS,
     "SNIPPET_IDLE_SECONDS": SNIPPET_IDLE_SECONDS,
     "KILL_WAIT": KILL_WAIT,
     "SNIPPET_MARKER": SNIPPET_MARKER,

@@ -22,29 +22,37 @@ PREAMBLE = (
 )
 
 
-def docker(*args, **kw):
+def docker(*args, timeout=None, **kw):
     """Run the Docker CLI; raise on failure unless check=False; return stdout bytes.
 
-    Output is captured unless the caller routes stdout or stderr itself.
+    Output is captured unless the caller routes stdout or stderr itself. A hung CLI or daemon
+    is killed after `timeout` seconds (default 1800 for `build`, 300 otherwise; the literals
+    live here because this source is shipped alone) and raises RuntimeError naming only the
+    Docker command, so a caller's rollback runs and no container name is printed.
     """
     kw.setdefault("check", True)
     if "stdout" not in kw and "stderr" not in kw:
         kw["capture_output"] = True
-    return subprocess.run(["docker", *args], **kw).stdout or b""  # noqa: S603,S607
+    if timeout is None:
+        timeout = 1800 if args[:1] == ("build",) else 300
+    try:
+        return subprocess.run(["docker", *args], timeout=timeout, **kw).stdout or b""  # noqa: S603,S607
+    except subprocess.TimeoutExpired:
+        command = args[0] if args else ""
+        raise RuntimeError(f"docker {command} timed out after {timeout:g} s") from None
 
 
-def docker_ok(*args, timeout=None):
+def docker_ok(*args, timeout=300):
     """Run the Docker CLI without raising or output; return whether it succeeded.
 
-    With a timeout (seconds) a hung command counts as failure.
+    A command still running after `timeout` seconds is killed and counts as failure.
     """
-    extra = {} if timeout is None else {"timeout": timeout}
     try:
         result = subprocess.run(  # noqa: S603 - fixed docker argv
             ["docker", *args],  # noqa: S607 - docker on PATH
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            **extra,
+            timeout=300 if timeout is None else timeout,
         )
     except subprocess.TimeoutExpired:
         return False
@@ -161,19 +169,32 @@ SSH_FAILED = (
 )
 REMOTE_FAILED = "Remote operation failed (exit {}); see the message above."
 INTERRUPTED = "Interrupted locally. The host program may still be running; check the host."
+SSH_SECONDS = 6 * 3600  # a whole remote operation, pg_dump included; dead links fail sooner
+SSH_TIMED_OUT = "SSH session timed out locally after {:g} s."
 
 
-def run_remote(host, source, payload, check=True, interrupted=INTERRUPTED):
+def run_remote(host, source, payload, check=True, interrupted=INTERRUPTED, timeout=SSH_SECONDS):
     """Run the remote program over SSH with the payload on stdin; return its exit code.
 
     The remote's own stderr streams straight to ours. A failure exits with the remote's code
     (1 when unknown) after one fixed line: never the argv (host, program source) or a traceback.
-    With check=False the caller gets any exit code back and only Ctrl-C and a dead link exit here.
+    With check=False the caller gets any exit code back and only Ctrl-C, a dead link and the
+    `timeout` (seconds, for the whole session) exit here. On expiry the local ssh is killed and
+    this exits 124 with the `interrupted` guidance: the host program ignores the hang-up and may
+    still be running, so its own timeouts and rollbacks decide what it leaves behind.
     """
     try:
         result = subprocess.run(  # noqa: S603 - validated owner host; fixed remote program
-            ssh_argv(host, source), input=json.dumps(payload), text=True, check=check
+            ssh_argv(host, source),
+            input=json.dumps(payload),
+            text=True,
+            check=check,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired:
+        say(SSH_TIMED_OUT.format(timeout), sys.stderr)
+        say(interrupted, sys.stderr)
+        sys.exit(124)
     except subprocess.CalledProcessError as failure:
         code = failure.returncode if failure.returncode > 0 else 1
         say(SSH_FAILED if code == 255 else REMOTE_FAILED.format(code), sys.stderr)
