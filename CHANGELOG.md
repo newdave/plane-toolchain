@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `plane-tasks` agent skill and a workflow guide (PTC-116). The project installer now writes `templates/project/skills/plane-tasks/SKILL.md` to `.claude/skills/plane-tasks/SKILL.md` and `.agents/skills/plane-tasks/SKILL.md` and records both in `.plane/install.json` (kind `skill`), so revert removes them (and the directories it created) when unchanged; CRLF copies are accepted. It covers the task lifecycle, `awaiting-decision`, blocked-by rules, `ce_intake` with the issue ID, `ce_page` update limits, planning destinations, task description layout and the `Plane-Tasks:` PR field. `docs/agent-workflow.md` is the longer reference. Existing installs get the skill by revert then apply.
+
 ### Changed
 
 - `plane_toolchain.ids` (PTC-112): UUID, task identifier and relation-type helpers now live in one module used by `cli`, `cli_commands`, `relation_plan` and `settings`, and `task list` and `comment list` share one paging helper. Behaviour is unchanged. `ce_tools.py` ships alone as the MCP server and is untouched; `tests/test_ids.py` pins its local copies to `ids.py`.
