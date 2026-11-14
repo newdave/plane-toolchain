@@ -1,0 +1,25 @@
+.github/rulesets/main.json
+  s_9eff9a2b37a1ff::t_b0657ce7dae205 29
+CHANGELOG.md
+  s_9eff9a2b37a1ff::t_f5979691c0bcf2 11
+CONTRIBUTING.md
+  s_9eff9a2b37a1ff::t_5266959598905c 7
+tests/test_ci_config.py
+  s_9eff9a2b37a1ff::t_d6bc73a0b122fa 1-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "063c5406b8548c60e7b703e6a60afbe092242966",
+  "prompts": {},
+  "sessions": {
+    "s_9eff9a2b37a1ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "55042e9c-e6eb-4713-981d-553dcbce9ea4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
