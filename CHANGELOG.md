@@ -10,6 +10,10 @@ All notable changes to this project are documented here. The format follows
 
 - `plane_toolchain.github_evidence` (PTC-120): core rules for GitHub PR gate and delivery evidence, with repository specifics passed as parameters. It parses the visible `Plane-Tasks` field (comments and fences ignored), applies an opt-in maintenance exemption, builds the gate status description and the PR and run evidence comments, and resolves task external IDs through a full paginated listing (it never trusts a server filter). `publish` reads before create, reads back after, and refuses differing content or duplicate identities. No entry point or action uses it yet.
 
+### Changed
+
+- Rename (PTC-113): `run_apply` and `run_revert` run from step tables (`apply_steps`, `revert_steps`) of module-level effects and failure policies (`pre_slug_failure`, `post_slug_failure`, `slug_unclear`, `revert_failure`) in place of nested closures, and each policy has an isolated test. Behaviour, messages and receipt semantics are unchanged. The shipped rename remote program text changes (new shipped functions); the backend snippet and its payload digest do not.
+
 ### Security
 
 - The mise `uv` pin moves from 0.9.3 to 0.13.4, past GHSA-hq85-5cpj-mr62 (critical: bundled CA store), GHSA-4gg8-gxpx-9rph, GHSA-pjjw-68hj-v9mw, GHSA-pqhf-p39g-3x64 and GHSA-w476-p2h3-79g9. Dependabot does not scan `mise.toml`; the example workflow pin was already bumped in #63 (PTC-84).
