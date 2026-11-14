@@ -1,0 +1,35 @@
+CHANGELOG.md
+  s_9eff9a2b37a1ff::t_3bca470e4aaff7 18
+docs/extensions.md
+  s_9eff9a2b37a1ff::t_cb328a709ce6cf 146-147
+docs/workspace-rename.md
+  s_9eff9a2b37a1ff::t_68554104e22a77 186-187
+src/plane_toolchain/remote.py
+  s_9eff9a2b37a1ff::t_30e5ecac70b016 25,28-31,36-42,45,48,55,172-173,176,181-184,188-192,194-197
+src/plane_toolchain/workspace_rename.py
+  s_9eff9a2b37a1ff::t_1a91992e35f307 44-47,509-523,525-527,534,536,544-546,567-568,576,583-589,602-604,618,626,634-636,652-654,1854,1914-1915
+tests/fake_docker.py
+  s_9eff9a2b37a1ff::t_ab3238ef3c4203 48-50,73,339-343,375-376,433-438
+tests/test_pages_deploy_apply.py
+  s_9eff9a2b37a1ff::t_d9b773f77b92bd 148-162
+tests/test_remote.py
+  s_9eff9a2b37a1ff::t_32d41a7a9995f9 29-31,45,57,429-467
+tests/test_workspace_rename_deploy_apply.py
+  s_9eff9a2b37a1ff::t_d74f5cdf136307 398-426
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "586c90f8ac5663a30715defa2e0099b071425897",
+  "prompts": {},
+  "sessions": {
+    "s_9eff9a2b37a1ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "55042e9c-e6eb-4713-981d-553dcbce9ea4",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
