@@ -83,6 +83,10 @@ env = { VIRTUAL_ENV = false }
 [tasks."owner:plane-workspace-rename:revert"]
 run = "uv run --locked python -m plane_toolchain.workspace_rename revert"
 env = { VIRTUAL_ENV = false }
+[tasks."owner:plane-mcp-mounts:check"]
+description = "Read-only: list the Plane MCP container bind mounts (PLANE_MCP_SSH, PLANE_MCP_CONTAINER)"
+run = "uv run --locked python scripts/owner/plane_mcp_mounts.py"
+env = { VIRTUAL_ENV = false }
 [tasks."plane:example"]
 run = "uv run --locked python examples/github/plane_event.py"
 env = { VIRTUAL_ENV = false }

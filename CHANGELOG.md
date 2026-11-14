@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `mise run owner:plane-mcp-mounts:check` (PTC-119): read-only owner task that lists the Plane MCP container's bind mounts (source, destination, mode) over SSH, to find `PLANE_MCP_DIRECTORY`. It reads `PLANE_MCP_SSH` and `PLANE_MCP_CONTAINER` from the environment, validates both, and prints no environment or labels.
 - `plane_toolchain.github_evidence` (PTC-120): core rules for GitHub PR gate and delivery evidence, with repository specifics passed as parameters. It parses the visible `Plane-Tasks` field (comments and fences ignored), applies an opt-in maintenance exemption, builds the gate status description and the PR and run evidence comments, and resolves task external IDs through a full paginated listing (it never trusts a server filter). `publish` reads before create, reads back after, and refuses differing content or duplicate identities. No entry point or action uses it yet.
 
 ### Security
