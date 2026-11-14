@@ -1,0 +1,21 @@
+CHANGELOG.md
+  s_0f9f4887aae26e::t_6101d3a3a57532 9-12
+mise.toml
+  s_0f9f4887aae26e::t_ba7e81367de36f 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "38a6c57ca7da4d39727d401a43c2b8aad9605d96",
+  "prompts": {},
+  "sessions": {
+    "s_0f9f4887aae26e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3292e112-0ccb-44da-a9cd-0e74c6eec52c",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
