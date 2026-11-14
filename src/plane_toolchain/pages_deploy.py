@@ -380,11 +380,9 @@ def restore_any(name, backup, reverted, probe, docker, policy):
     try:
         restore_any_steps(name, backup, reverted, aside, probe, policy)
     except RuntimeError:
-        stopped = answer(probe, "stop", name)
         say(
             "Rollback incomplete: Docker did not answer in time; "
-            + name
-            + (" (stopped)" if stopped else " (stop failed or timed out, may still be running)")
+            + settle_unknown(name, probe, docker)[1]
             + "; the original and derived containers may be under "
             + ", ".join((name, reverted, backup, aside))
             + ". Inspect them, then run revert again.",
@@ -434,17 +432,42 @@ def recover_original(name, backup, probe, docker, policy, now, parked=None):
     A probe that times out is such an unknown state; this never raises it, so the caller still
     raises its original error.
     """
+    # Where the derived container is, kept current by the steps so a timeout can say it.
+    where = {"derived": parked + " (stopped)" if parked else None}
     try:
-        recover_original_steps(name, backup, probe, docker, policy, now, parked)
+        recover_original_steps(name, backup, probe, docker, policy, now, where)
     except RuntimeError:
-        stopped = answer(probe, "stop", name)
-        held = name + (
-            " (stopped)" if stopped else " (stop failed or timed out, may still be running)"
-        )
-        recovery_incomplete(
-            (parked + " (stopped)") if parked else "unknown, possibly " + held,
-            "unknown, possibly " + backup + " or " + held,
-        )
+        kind, held = settle_unknown(name, probe, docker)
+        if kind == "original":
+            recovery_incomplete(where["derived"] or "not under " + name, held)
+        elif kind == "absent":  # the original never left its backup name, and stays stopped
+            recovery_incomplete(where["derived"] or "unknown", backup + " (stopped)")
+        elif kind == "derived":
+            recovery_incomplete(held, "unknown, possibly " + backup)
+        else:
+            recovery_incomplete(
+                where["derived"] or "unknown, possibly " + held,
+                "unknown, possibly " + backup + " or " + held,
+            )
+
+
+def settle_unknown(name, probe, docker):
+    """After a timeout: inspect `name` once more; return (kind, text) for the message.
+
+    kind is "original" (unlabelled: left as it is, never stopped), "absent", "derived" or
+    "unknown" (the inspect failed too). A derived or unknown holder is stopped, best effort.
+    """
+    try:
+        held = json.loads(docker("inspect", name))[0]
+    except subprocess.CalledProcessError:
+        return "absent", name + " (absent)"
+    except Exception:
+        held = None
+    if held is not None and source_label(held) is None:
+        return "original", name + (" (running)" if held["State"].get("Running") else " (stopped)")
+    stopped = answer(probe, "stop", name)
+    text = name + (" (stopped)" if stopped else " (stop failed or timed out, may still be running)")
+    return ("derived" if held is not None else "unknown"), text
 
 
 def recovery_incomplete(derived, original):
@@ -458,11 +481,12 @@ def recovery_incomplete(derived, original):
     )
 
 
-def recover_original_steps(name, backup, probe, docker, policy, now, parked=None):
-    """recover_original's steps; a probe timeout raises RuntimeError out of them."""
+def recover_original_steps(name, backup, probe, docker, policy, now, where):
+    """recover_original's steps; a probe timeout raises RuntimeError out of them. `where`
+    ["derived"] says where the derived container is, when known (every container named
+    stopped was stopped), and is updated before and after each move of it."""
     incomplete = recovery_incomplete
-    # Where the derived container is, when known; every container named stopped was stopped.
-    derived = parked + " (stopped)" if parked else None
+    derived = where["derived"]
     try:
         if name not in listed_names(name, docker):
             holder = None
@@ -489,10 +513,11 @@ def recover_original_steps(name, backup, probe, docker, policy, now, parked=None
             incomplete(name + " (stop failed, may still be running)", backup + " (stopped)")
             return
         failed = failed_name(name, probe, now)
+        where["derived"] = "unknown, possibly " + name + " or " + failed + " (stopped)"
         if not probe("rename", name, failed):
             incomplete(name + " (stopped)", backup + " (stopped)")
             return
-        derived = failed + " (stopped)"
+        derived = where["derived"] = failed + " (stopped)"
         set_restart(probe, "no", failed)
     if not probe("rename", backup, name):
         incomplete(derived or "absent", backup + " (stopped)")
@@ -835,6 +860,7 @@ REMOTE = program(
         restore_any_steps,
         recover_original,
         recovery_incomplete,
+        settle_unknown,
         recover_original_steps,
         held_policy,
         promotion_policy,

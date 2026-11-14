@@ -257,16 +257,19 @@ def seams(fake):
     return dict(docker=fake.docker, probe=fake.probe, create=fake.create, health=health)
 
 
-def hang_after(fake, trigger, target, nth=1):
+def hang_after(fake, trigger, target, nth=1, effect=False):
     """Once a call starting with `trigger` was made, the `nth` call starting with `target`
     hangs: it raises TimeoutExpired as subprocess.run does, which the shipped docker() and
-    docker_ok() turn into RuntimeError. Only the remote() path goes through them."""
+    docker_ok() turn into RuntimeError. Only the remote() path goes through them. With
+    `effect` the call takes effect on the host first and only its answer is lost."""
     real, state = fake.execute, {"armed": False, "seen": 0}
 
     def execute(*args, **kw):
         if state["armed"] and args[: len(target)] == target:
             state["seen"] += 1
             if state["seen"] == nth:
+                if effect:
+                    real(*args, **kw)
                 fake.calls.append(("hung", *args))
                 raise subprocess.TimeoutExpired(["docker", *args], 300)
         state["armed"] = state["armed"] or args[: len(trigger)] == trigger
