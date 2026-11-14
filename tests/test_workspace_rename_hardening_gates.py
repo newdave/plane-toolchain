@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from support_workspace_rename_deploy import mutating
 from plane_toolchain import workspace_rename as wr
+from plane_toolchain import workspace_rename_backend as backend
 from support_workspace_rename_hardening import drained_failure, mismatches, probe, snippet_call
 from support_workspace_rename_hardening import host  # noqa: F401
 
@@ -68,17 +69,57 @@ def test_probe_checks_json_columns_are_jsonb_and_binary_columns_are_binary():
     assert found[("issue", "description_binary", "kind")]["found"] == "text"
 
 
-def test_probe_checks_table_names_and_the_unfiltered_manager():
+def test_probe_checks_table_names():
     from support_workspace_rename_backend import make_orm
 
     orm = make_orm()
     orm.models["email_log"].db_table = "email_logs_renamed"
-    orm.models["comment"].no_manager = True
     ok, events = probe(orm)
     found = mismatches(events)
     assert not ok
     assert found[("email_log", "", "table")]["found"] == "email_logs_renamed"
-    assert ("comment", "", "manager") in found
+
+
+def test_django_orm_reads_through_the_base_manager_when_a_model_has_no_all_objects(monkeypatch):
+    # The old probe (hasattr(model, "_base_manager")) was true for every Django model, so it
+    # guarded nothing. The code reads through `Unfiltered(model).all_objects`, which falls back to
+    # the base manager, so a model without `all_objects` is still read unfiltered and needs no probe.
+    import sys
+    import types
+
+    base = object()
+    own = object()
+
+    def stub(name, **attrs):
+        return type(name, (), {"_base_manager": base, **attrs})
+
+    names = ("Description", "EmailNotificationLog", "Issue", "IssueComment", "Notification", "Page")
+    plane_models = {n: stub(n) for n in names}
+    plane_models["Workspace"] = stub("Workspace", all_objects=own)
+    stubs = {
+        "django": types.ModuleType("django"),
+        "django.apps": types.SimpleNamespace(apps=types.SimpleNamespace(get_models=lambda: [])),
+        "django.conf": types.SimpleNamespace(settings=object()),
+        "django.core": types.ModuleType("django.core"),
+        "django.core.exceptions": types.SimpleNamespace(FieldDoesNotExist=KeyError),
+        "django.core.cache": types.SimpleNamespace(cache={}),
+        "django.db": types.SimpleNamespace(
+            connection=object(),
+            models=types.SimpleNamespace(),
+            transaction=types.SimpleNamespace(atomic=None),
+        ),
+        "plane": types.ModuleType("plane"),
+        "plane.db": types.ModuleType("plane.db"),
+        "plane.db.models": types.SimpleNamespace(**plane_models),
+        "plane.utils": types.ModuleType("plane.utils"),
+        "plane.utils.constants": types.SimpleNamespace(RESTRICTED_WORKSPACE_SLUGS=()),
+    }
+    for name, module in stubs.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    orm = backend._django_orm()
+    assert orm.models["workspace"].all_objects is own
+    assert orm.models["issue"].all_objects is base
+    assert not hasattr(orm, "has_manager")
 
 
 def test_probe_passes_when_email_log_has_no_workspace_column():
