@@ -55,3 +55,14 @@ def test_patch_returns_at_once_with_a_late_store_hint_and_never_polls(monkeypatc
     assert hint["seconds"] >= 12
     assert ("save", True, b"new") in log
     assert len(versions) == 1
+
+
+def test_patch_cap_never_deletes_another_pages_versions(monkeypatch):
+    view, log, versions = _patch_env(monkeypatch, existing_versions=21)
+    # 30 other-page versions, all older than the edited page's: an unfiltered cap would prune them.
+    other = [{"id": 5000 + n, "page_id": "other-page", "last_saved_at": -n} for n in range(30)]
+    versions.extend(other)
+    _run_patch(view)
+    assert [v for v in versions if v["page_id"] == "other-page"] == other
+    assert _tuples(log, "prune") == [("prune", [1, 2], True)]
+    assert len([v for v in versions if v["page_id"] == view.kwargs["page_id"]]) == 20

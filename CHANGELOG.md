@@ -11,6 +11,9 @@ All notable changes to this project are documented here. The format follows
 - The mise `uv` pin moves from 0.9.3 to 0.13.4, past GHSA-hq85-5cpj-mr62 (critical: bundled CA store), GHSA-4gg8-gxpx-9rph, GHSA-pjjw-68hj-v9mw, GHSA-pqhf-p39g-3x64 and GHSA-w476-p2h3-79g9. Dependabot does not scan `mise.toml`; the example workflow pin was already bumped in #63 (PTC-84).
 
 - Bridge and CLI (PTC-102): `PLANE_MCP_URL` is never read from `config/defaults.env` or from any layer git tracks, so a committed URL cannot receive `PLANE_API_KEY`; set it in the environment or a git-ignored layer (`config/local.env`, `.env`, `.plane/local.env`). `scripts/plane-mcp.sh` now checks the exit status of `session.py connection` and stops with a message instead of continuing without the settings.
+### Documentation
+
+- ADR 0003 records the bounded `PageVersion` deletion in Pages update (20 versions per page, same page only, oldest first), and a test checks the cap never touches another page's versions. No behaviour change, no redeploy (PTC-108).
 
 ### Fixed
 
