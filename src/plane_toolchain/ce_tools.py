@@ -106,6 +106,9 @@ def page_update_body(description_html, expected_updated_at, force):
     """Request body for a whole-body Page update; the backend validates it again."""
     if not isinstance(expected_updated_at, str) or not expected_updated_at:
         raise ValueError("update requires expected_updated_at from retrieve")
+    # An empty body would wipe the page; create may still be empty, update may not.
+    if not isinstance(description_html, str) or not description_html.strip():
+        raise ValueError("update requires a non-empty description_html")
     return {
         "description_html": description_html,
         "expected_updated_at": expected_updated_at,

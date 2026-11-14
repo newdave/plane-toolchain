@@ -62,6 +62,9 @@ def test_ce_page_update_targets_canonical_page_path_with_precondition_body():
     }
     with pytest.raises(ValueError, match="expected_updated_at"):
         page_update_body("<p>x</p>", "", True)
+    for empty in ("", "  \n\t "):
+        with pytest.raises(ValueError, match="non-empty description_html"):
+            page_update_body(empty, "2026-11-13T01:02:03Z", True)
 
 
 def test_ce_page_description_explains_update_precondition_and_force():
