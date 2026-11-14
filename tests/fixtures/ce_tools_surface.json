@@ -1,0 +1,163 @@
+{
+  "ce_intake": {
+    "description": "Plane CE intake decision (the official intake update calls an unrouted /status path).\n\ndecide sets status on an intake record: -1 rejected, 0 snoozed (needs snoozed_till,\nISO 8601 datetime), 1 accepted, 2 duplicate (needs duplicate_to, a work item UUID).\nworkitem_id is the intake record's issue id (its work item id), as listed by intake.\nSends a plain PATCH to intake-issues/<id>/ with the caller's API key; CE allows it\nfor project admins only. Returns the reread intake record.",
+    "parameters": {
+      "properties": {
+        "action": {
+          "const": "decide",
+          "title": "Action",
+          "type": "string"
+        },
+        "duplicate_to": {
+          "default": "",
+          "title": "Duplicate To",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "snoozed_till": {
+          "default": "",
+          "title": "Snoozed Till",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "integer"
+        },
+        "workitem_id": {
+          "title": "Workitem Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "project_id",
+        "workitem_id",
+        "status"
+      ],
+      "title": "Args",
+      "type": "object"
+    },
+    "returns": "<class 'dict'>"
+  },
+  "ce_page": {
+    "description": "Plane CE project Pages: list, retrieve, create, update.\n\nCreate and update validate HTML and use Plane Live to generate the editor document.\naccess: 0 public within project, 1 private. Project membership and private-page\npermissions are enforced by the backend with the caller's API key.\nRetrieve/list before creating to avoid duplicate pages after an uncertain write.\n\nupdate replaces the whole body of page_id with description_html. Pass\nexpected_updated_at exactly as returned by retrieve; a changed page is refused (409).\nLocked and archived pages are refused. update requires force=true because it\ndisconnects everyone editing the page in Live first; unsaved edits from the last\nfew seconds may be lost. The replaced body is kept as a page version.\nAfter the write the tool waits the backend's late_store_check seconds (about 12), retrieves\nthe page and compares its body digest. The result carries late_store: \"unchanged\"; if an open\neditor's late save replaced the update, the tool fails naming the page, so retrieve and retry.\n",
+    "parameters": {
+      "properties": {
+        "access": {
+          "default": 1,
+          "title": "Access",
+          "type": "integer"
+        },
+        "action": {
+          "enum": [
+            "list",
+            "retrieve",
+            "create",
+            "update"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "description_html": {
+          "default": "",
+          "title": "Description Html",
+          "type": "string"
+        },
+        "expected_updated_at": {
+          "default": "",
+          "title": "Expected Updated At",
+          "type": "string"
+        },
+        "force": {
+          "default": false,
+          "title": "Force",
+          "type": "boolean"
+        },
+        "name": {
+          "default": "",
+          "title": "Name",
+          "type": "string"
+        },
+        "page_id": {
+          "default": "",
+          "title": "Page Id",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "project_id"
+      ],
+      "title": "Args",
+      "type": "object"
+    },
+    "returns": "dict | list"
+  },
+  "ce_workitem_relation": {
+    "description": "Plane CE public relations API.\n\nAdditive dependencies only; no custom definitions or deletion.\n\nlist_definitions returns built-in types. list returns dependencies and legacy\nduplicate/relates_to groups. create sets direction from workitem_id's perspective.\nAll operations retain official MCP API-key authentication and backend permissions.",
+    "parameters": {
+      "properties": {
+        "action": {
+          "enum": [
+            "list_definitions",
+            "list",
+            "create"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "project_id": {
+          "default": "",
+          "title": "Project Id",
+          "type": "string"
+        },
+        "relation_type": {
+          "default": "blocked_by",
+          "enum": [
+            "blocking",
+            "blocked_by",
+            "start_before",
+            "start_after",
+            "finish_before",
+            "finish_after"
+          ],
+          "title": "Relation Type",
+          "type": "string"
+        },
+        "workitem_id": {
+          "default": "",
+          "title": "Workitem Id",
+          "type": "string"
+        },
+        "workitem_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workitem Ids"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "Args",
+      "type": "object"
+    },
+    "returns": "<class 'dict'>"
+  }
+}
