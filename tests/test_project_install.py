@@ -130,6 +130,61 @@ def test_edited_installation_never_reverted_or_reapplied(tmp_path):
     assert snapshot(tmp_path) == before
 
 
+@pytest.mark.parametrize("escape", ["../outside/AGENTS.md", "{abs}/outside/AGENTS.md", "a/../../x"])
+def test_receipt_paths_outside_the_target_are_refused_untouched(tmp_path, escape):
+    target = tmp_path / "project"
+    target.mkdir()
+    apply(target)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "AGENTS.md").write_text((target / "AGENTS.md").read_text())
+    path = target / ".plane/install.json"
+    data = json.loads(path.read_text())
+    data["entries"][escape.format(abs=tmp_path)] = {"kind": "block", "created": True}
+    path.write_text(json.dumps(data))
+    before = snapshot(tmp_path)
+    for operation in (revert, apply):
+        with pytest.raises(ValueError, match="outside target|Invalid installation receipt"):
+            operation(target)
+    assert snapshot(tmp_path) == before
+    # An interrupted (pending) receipt is checked just as strictly.
+    data["pending"] = True
+    path.write_text(json.dumps(data))
+    before = snapshot(tmp_path)
+    for operation in (revert, apply):
+        with pytest.raises(ValueError, match="outside target|Invalid installation receipt"):
+            operation(target)
+    assert snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("claude", [None, "@AGENTS.md\n", "# Mine\n"])
+@pytest.mark.parametrize("preapprove", [True, False])
+def test_every_planned_path_is_an_allowed_receipt_path(tmp_path, claude, preapprove):
+    if claude is not None:
+        (tmp_path / "CLAUDE.md").write_text(claude)
+    planned = {rel for rel, _ in installer["plan"](tmp_path, preapprove)}
+    assert planned <= installer["PLANNED"]
+
+
+def test_old_format_receipt_still_reverts(tmp_path):
+    seed_project(tmp_path)
+    apply(tmp_path)
+    path = tmp_path / ".plane/install.json"
+    old = {
+        "version": 1,
+        "directories": json.loads(path.read_text()).get("directories", []),
+        "entries": {
+            rel: {"kind": entry["kind"], "created": entry["created"]}
+            for rel, entry in json.loads(path.read_text())["entries"].items()
+        },
+    }
+    path.write_text(json.dumps(old, indent=2) + "\n")
+    revert(tmp_path)
+    (tmp_path / ".plane/local.env").unlink()
+    (tmp_path / ".plane/.gitignore").unlink(missing_ok=True)
+    assert snapshot(tmp_path) == EXISTING
+
+
 def test_symlinked_paths_refused(tmp_path):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -905,6 +960,70 @@ def test_user_edit_of_a_file_apply_never_reached_does_not_block_revert_or_reappl
     revert(tmp_path)
     assert (tmp_path / "AGENTS.md").read_text() == mine
     assert (tmp_path / "CLAUDE.md").read_text() == "# Mine\n"
+
+
+@pytest.mark.parametrize("nth", range(1, 14))
+def test_revert_crashed_midway_can_be_rerun(tmp_path, monkeypatch, nth):
+    seed_project(tmp_path)
+    apply(tmp_path)
+    crashed = False
+    with monkeypatch.context() as patch:
+        failing_replace(patch, nth)
+        try:
+            revert(tmp_path)
+        except OSError:
+            crashed = True
+    if crashed:
+        assert (tmp_path / ".plane/install.json").exists()
+        revert(tmp_path)
+    (tmp_path / ".plane/local.env").unlink()
+    (tmp_path / ".plane/.gitignore").unlink(missing_ok=True)
+    assert snapshot(tmp_path) == EXISTING
+
+
+def test_revert_crashed_after_an_unlink_can_be_rerun(tmp_path, monkeypatch):
+    apply(tmp_path)  # fresh project: the installer created every file, so revert unlinks them
+    real, calls = Path.unlink, []
+
+    def unlink(self, *args, **kwargs):
+        calls.append(self.name)
+        if len(calls) == 2:
+            raise OSError("injected failure")
+        return real(self, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", unlink)
+        with pytest.raises(OSError, match="injected"):
+            revert(tmp_path)
+    revert(tmp_path)
+    (tmp_path / ".plane/local.env").unlink()
+    (tmp_path / ".plane/.gitignore").unlink(missing_ok=True)
+    assert not list(path for path in tmp_path.rglob("*") if path.is_file())
+
+
+def test_apply_and_label_refuse_an_interrupted_revert(tmp_path, monkeypatch):
+    apply(tmp_path)
+    with monkeypatch.context() as patch:
+        failing_replace(patch, 2)
+        with pytest.raises(OSError, match="injected"):
+            revert(tmp_path)
+    with pytest.raises(ValueError, match="revert"):
+        apply(tmp_path)
+    with pytest.raises(ValueError, match="revert"):
+        installer["label"](tmp_path)
+
+
+def test_revert_still_refuses_an_edit_made_after_a_crashed_revert(tmp_path, monkeypatch):
+    seed_project(tmp_path)
+    apply(tmp_path)
+    with monkeypatch.context() as patch:
+        failing_replace(patch, 2)
+        with pytest.raises(OSError, match="injected"):
+            revert(tmp_path)
+    mcp = tmp_path / ".mcp.json"
+    mcp.write_text(mcp.read_text().replace("plane.sh", "mine.sh"))
+    with pytest.raises(ValueError, match=r"\.mcp\.json"):
+        revert(tmp_path)
 
 
 def test_resume_notes_a_conflicting_pre_approval_choice(tmp_path, monkeypatch, capsys):
