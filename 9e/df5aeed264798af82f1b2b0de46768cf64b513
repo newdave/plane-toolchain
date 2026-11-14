@@ -1,0 +1,47 @@
+src/plane_toolchain/session.py
+  s_a03650451d84d5::t_631461aafd872e 14,79-91,104-111
+tests/test_pages_deploy_names.py
+  s_a03650451d84d5::t_631461aafd872e 1-68
+tests/test_pages_deploy_apply.py
+  s_a03650451d84d5::t_631461aafd872e 525
+tests/test_pages_deploy_revert.py
+  s_a03650451d84d5::t_631461aafd872e 43
+tests/test_github_evidence.py
+  s_a03650451d84d5::t_631461aafd872e 1-532
+tests/test_pages_kill_injection.py
+  s_a03650451d84d5::t_631461aafd872e 23-24,44
+tests/test_mcp_deploy.py
+  s_a03650451d84d5::t_631461aafd872e 1126-1196
+docs/configuration.md
+  s_a03650451d84d5::t_631461aafd872e 32
+scripts/plane-mcp.sh
+  s_a03650451d84d5::t_631461aafd872e 42-50
+src/plane_toolchain/pages_deploy.py
+  s_a03650451d84d5::t_631461aafd872e 518,541-543,603,640-650,681,761,892
+src/plane_toolchain/mcp_deploy.py
+  s_a03650451d84d5::t_631461aafd872e 8,80-82,85-97,101,236-241,372
+tests/test_worktree_bridge.py
+  s_a03650451d84d5::t_631461aafd872e 440-491
+src/plane_toolchain/github_evidence.py
+  s_a03650451d84d5::t_631461aafd872e 1-371
+CHANGELOG.md
+  s_a03650451d84d5::t_631461aafd872e 9-12,17,26-27
+tests/test_pages_deploy_housekeeping.py
+  s_a03650451d84d5::t_631461aafd872e 214-221
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "9edf5aeed264798af82f1b2b0de46768cf64b513",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
