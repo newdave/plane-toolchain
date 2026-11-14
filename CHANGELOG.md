@@ -6,32 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-14
+
 ### Added
 
-
-
 - `mise run owner:plane-mcp-mounts:check` (PTC-119): read-only owner task that lists the Plane MCP container's bind mounts (source, destination, mode) over SSH, to find `PLANE_MCP_DIRECTORY`. It reads `PLANE_MCP_SSH` and `PLANE_MCP_CONTAINER` from the environment, validates both, and prints no environment or labels.
-- `plane_toolchain.github_evidence` (PTC-120): core rules for GitHub PR gate and delivery evidence, with repository specifics passed as parameters. It parses the visible `Plane-Tasks` field (comments and fences ignored), applies an opt-in maintenance exemption, builds the gate status description and the PR and run evidence comments, and resolves task external IDs through a full paginated listing (it never trusts a server filter). `publish` reads before create, reads back after, and refuses differing content or duplicate identities. No entry point or action uses it yet.
-- `plane_toolchain.github_evidence_cli` (PTC-121): `gate` and `evidence` entry points over the core module, with a GitHub REST client (PR, commit PRs, changed files, status), the environment contract the coming actions will set, a Plane preflight that names a 401, 403 or empty project, and read-only retries (429 and 5xx wait 2, 4 and 8 s, or `Retry-After` capped at 30 s; creates are never retried). Every failure becomes a fixed, secret-free cause in a workflow annotation and the job summary. The gate fails closed and reposts its status when an edit changes the body but not the gate fields; evidence skips PRs without a reference field and never fails the gate. No action uses it yet.
+- `plane relation plan <file> [--apply] [--pause SECONDS]` (PTC-117): add many `blocked_by` relations from a JSON plan of `{blocked, blocker}` identifier pairs. Dry run by default. It refuses self-links, cycles (including those closed by existing relations, followed transitively up to 500 items), unknown items and items outside the project before any write, adds only missing links through `ce_workitem_relation`, paces writes and rereads each item. It never deletes relations.
+- `plane_toolchain.github_evidence` (PTC-120): core rules for GitHub PR gate and delivery evidence, with repository specifics passed as parameters. It parses the visible `Plane-Tasks` field (comments and fences ignored), applies an opt-in maintenance exemption, builds the gate status description and the PR and run evidence comments, and resolves task external IDs through a full paginated listing (it never trusts a server filter). `publish` reads before create, reads back after, and refuses differing content or duplicate identities.
+- `plane_toolchain.github_evidence_cli` (PTC-121): `gate` and `evidence` entry points over the core module, with a GitHub REST client (PR, commit PRs, changed files, status), the environment contract the coming actions will set, a Plane preflight that names a 401, 403 or empty project, and read-only retries (429 and 5xx wait 2, 4 and 8 s, or `Retry-After` capped at 30 s; creates are never retried). Every failure becomes a fixed, secret-free cause in a workflow annotation and the job summary. The gate fails closed and reposts its status when an edit changes the body but not the gate fields; evidence skips PRs without a reference field and never fails the gate.
 - `plane-pr-gate` and `plane-evidence` composite actions (PTC-122) in `.github/actions/`, ADR 0002 and a "Composite actions: PR gate and evidence" section in `docs/github-actions.md`. Each action installs uv from a SHA-pinned `astral-sh/setup-uv` step (uv 0.13.4, cache on), runs `uv sync --locked --no-dev` against this repository's `uv.lock`, then calls the entry point with every input mapped through `env:`. The gate uses `pull_request_target` with no PR code and fails closed; evidence takes same-repo events only. `lint:ci` now runs zizmor on `.github/actions`.
 
 ### Changed
 
 - Pages (PTC-113): `apply` and `revert` share one swap recovery, `recover_swap` (SIGTERM held, undo, then `recover_original` or `restore_any` as the fallback), and apply's retire step uses `sigterm_held`; the inline copies are gone. Behaviour, messages and SIGTERM semantics are unchanged. The shipped Pages remote program text changes (new shipped functions); the derived image source and its digest do not.
 - The MCP cursor pagination helper `paginated` moves from `plane_toolchain.github_evidence` to `plane_toolchain.connection` (PTC-118) as the single shared implementation. `github_evidence.paginated` still resolves to it. The CLI readback loop is unchanged: it stops early on a match and tolerates a missing cursor.
-
-### Changed
-
 - Rename (PTC-113): `run_apply` and `run_revert` run from step tables (`apply_steps`, `revert_steps`) of module-level effects and failure policies (`pre_slug_failure`, `post_slug_failure`, `slug_unclear`, `revert_failure`) in place of nested closures, and each policy has an isolated test. Behaviour, messages and receipt semantics are unchanged. The shipped rename remote program text changes (new shipped functions); the backend snippet and its payload digest do not.
+- MCP deploy: `RELEASED_ENTRY_POINT_DIGESTS` gains the v0.5.0 `ce_tools.py` digest, so apply and revert recognise an entry point written by this release even under a stale receipt.
 
 ### Security
 
 - The mise `uv` pin moves from 0.9.3 to 0.13.4, past GHSA-hq85-5cpj-mr62 (critical: bundled CA store), GHSA-4gg8-gxpx-9rph, GHSA-pjjw-68hj-v9mw, GHSA-pqhf-p39g-3x64 and GHSA-w476-p2h3-79g9. Dependabot does not scan `mise.toml`; the example workflow pin was already bumped in #63 (PTC-84).
-
 - Bridge and CLI (PTC-102): `PLANE_MCP_URL` is never read from `config/defaults.env` or from any layer git tracks, so a committed URL cannot receive `PLANE_API_KEY`; set it in the environment or a git-ignored layer (`config/local.env`, `.env`, `.plane/local.env`). `scripts/plane-mcp.sh` now checks the exit status of `session.py connection` and stops with a message instead of continuing without the settings.
-### Documentation
-
-- ADR 0003 records the bounded `PageVersion` deletion in Pages update (20 versions per page, same page only, oldest first), and a test checks the cap never touches another page's versions. No behaviour change, no redeploy (PTC-108).
 
 ### Fixed
 
@@ -58,6 +53,10 @@ All notable changes to this project are documented here. The format follows
 - Workspace rename (PTC-93): `check` counts the Description rows the slug step rewrites without Live whose stored `description_binary` keeps the old slug, lists them by id (`Not rebuilt: N in descriptions.description_binary`) and refuses, as does apply, unless `PLANE_RENAME_ALLOW_STALE_BINARIES=1` accepts them. The `rebuild` count no longer includes Description rows, and the slug step's `not_rebuilt` no longer counts comments (they have no binary in Plane CE v1.4.3) or rows with no stored binary.
 - Workspace rename (PTC-94): the snippet now waits for the host to acknowledge each journal line on stdin, sent only after the line is fsynced, before the write it covers, so a killed host program can no longer leave a rewritten row without a journal entry (the documented known risk is closed). The snippet runs as `manage.py shell -c <bootstrap>`, which reads a length-prefixed program from stdin and keeps stdin open for the acknowledgements. The row step journals the same single read of each row that it rewrites, instead of a second query.
 - Deploy helpers and workspace rename (PTC-96): every Docker CLI call has a timeout (`docker()` and `docker_ok()` default to 5 minutes, `docker build` to 30), and expiry raises `docker <command> timed out after <n> s` without container names, so the usual rollback runs. `docker_ok()` raises on expiry too instead of returning False, so a hung `inspect` never reads as a missing container. Pages health retries a hung probe within its budget, and a hung probe in an apply rollback, `recover_original` or the revert recovery (`restore_any`) starts nothing more, inspects the API name once more (an error other than `No such` is unknown, not missing) and stops it (best effort) unless it holds the unlabelled original, and reports `Rollback incomplete` with where the derived container may be (including a `-pages-failed-` name it was being moved to), then the original error is raised. `run_remote` limits the SSH session to 6 hours (exit 124 with the interrupted guidance). The rename's streamed `pg_dump` and `pg_restore` read-back have 2 hour deadlines and the database size query 2 minutes. `docker()` and `run_remote` keep their signatures; `timeout=` overrides the default.
+
+### Documentation
+
+- ADR 0003 records the bounded `PageVersion` deletion in Pages update (20 versions per page, same page only, oldest first), and a test checks the cap never touches another page's versions. No behaviour change, no redeploy (PTC-108).
 
 ## [0.4.0] - 2026-11-14
 
