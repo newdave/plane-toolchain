@@ -1,0 +1,29 @@
+src/plane_toolchain/pages_deploy.py
+  s_a03650451d84d5::t_c17e2ac0ad27ca 425,790-794
+tests/test_pages_kill_injection.py
+  s_a03650451d84d5::t_1083f4e009cb96 9-10,133-134,138-141
+tests/test_pages_deploy_revert.py
+  s_a03650451d84d5::t_6fe5c46fc6ef25 319-320
+tests/test_pages_deploy_apply.py
+  s_a03650451d84d5::t_6ebea929576f24 457-458,479,481-483,488-490
+  s_a03650451d84d5::t_6fe5c46fc6ef25 664,666,670-682
+CHANGELOG.md
+  s_a03650451d84d5::t_b2abe540d5f79a 18
+  s_a03650451d84d5::t_228f34715acbdf 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "b65ae8cae7009f4fdcf540c1bd942f68a4cd6e7c",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
