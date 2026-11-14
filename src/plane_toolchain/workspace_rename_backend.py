@@ -286,8 +286,6 @@ def probe_models(args, orm, emit, convert=None):
     for key, (table, fields) in sorted(_expected_schema().items()):
         if key not in orm.models:
             continue
-        if not orm.has_manager(key):
-            mismatch(key, "", "manager")
         found_table = orm.table_name(key)
         if found_table != table:
             mismatch(key, "", "table", expected=table, found=found_table)
@@ -970,9 +968,6 @@ def _django_orm():
 
     orm.describe = describe
     orm.table_name = lambda key: models[key]._meta.db_table
-    orm.has_manager = lambda key: (
-        hasattr(models[key], "all_objects") or hasattr(models[key], "_base_manager")
-    )
     return orm
 
 

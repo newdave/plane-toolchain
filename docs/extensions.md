@@ -35,7 +35,7 @@ Permission model, aligned with Plane CE v1.4.3 (`apps/api/plane/app/permissions/
 4. Publish Live's `force_close` command for the page on the Redis channel `hocuspocus:admin` (Plane's `REDIS_URL`). A publish error or no subscriber returns 502.
 5. Wait 1 second so Live can store edits it held in memory.
 6. In a transaction, lock the row with `select_for_update` and recheck locked and archived. Refuse with 409 only if the stored body differs from the digest. Live re-storing an unchanged document on unload bumps `updated_at`; that does not block the write.
-7. Save the old body as a `PageVersion` and prune the page's versions to 20, oldest first. Then write the HTML, JSON and binary formats in one `save()`.
+7. Save the old body as a `PageVersion` and prune the page's versions to 20, oldest first ([ADR 0003](decisions/0003-bounded-page-version-deletion.md)). Then write the HTML, JSON and binary formats in one `save()`.
 
 After commit it queues Plane's `page_transaction` (mention log). It does not queue `track_page_version`: in CE v1.4.3 that task reads a missing `Page.description` attribute, and if fixed it would overwrite the snapshot in place.
 
