@@ -1,0 +1,49 @@
+tests/test_check_commit_msg.py
+  s_a03650451d84d5::t_b4d554803d5a5a 60-65
+mise.toml
+  s_a03650451d84d5::t_b4d554803d5a5a 86-89
+tests/test_ci_config.py
+  s_a03650451d84d5::t_b4d554803d5a5a 34-60
+src/plane_toolchain/connection.py
+  s_a03650451d84d5::t_b4d554803d5a5a 17-38
+tests/test_github_evidence_cli.py
+  s_a03650451d84d5::t_b4d554803d5a5a 1-728
+tests/test_pagination.py
+  s_a03650451d84d5::t_b4d554803d5a5a 1-65
+docs/extensions.md
+  s_a03650451d84d5::t_b4d554803d5a5a 83,86-90
+  s_a03650451d84d5::t_c6b54e7191d5ee 91
+CHANGELOG.md
+  s_a03650451d84d5::t_2341dbf04201a8 12
+  s_a03650451d84d5::t_b4d554803d5a5a 13,15-19,32-33
+renovate.json
+  s_a03650451d84d5::t_b4d554803d5a5a 44-47
+  s_a03650451d84d5::t_372e962706c2e9 43
+.github/workflows/ci.yml
+  s_a03650451d84d5::t_b4d554803d5a5a 19-35
+src/plane_toolchain/github_evidence_cli.py
+  s_a03650451d84d5::t_b4d554803d5a5a 1-542
+src/plane_toolchain/github_evidence.py
+  s_a03650451d84d5::t_b4d554803d5a5a 16
+  s_a03650451d84d5::t_f685f8eb3a14c1 17
+scripts/plane_mcp_mounts.py
+  s_a03650451d84d5::t_b4d554803d5a5a 1-90
+tests/test_owner_mcp_mounts.py
+  s_a03650451d84d5::t_b4d554803d5a5a 1-134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "d75fe6e210cfbc9cb0bbe0b5eb186663462a64f5",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
