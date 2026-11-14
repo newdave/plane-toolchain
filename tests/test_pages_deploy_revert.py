@@ -5,6 +5,8 @@ import pytest
 from fake_docker import NOW, FakeDocker
 from support_pages_deploy import (
     BACKUP,
+    hang_after,
+    labelled_running,
     DIGEST,
     HEALTH,
     HELD,
@@ -315,3 +317,19 @@ def test_revert_recovery_nothing_startable_reraises_original(applied):
     assert caught.value.__context__ is not None
     assert not any(c["running"] for c in applied.containers.values())
     assert "api" in applied.containers and BACKUP in applied.containers
+
+
+def test_hung_probe_in_restore_any_is_rollback_incomplete_and_reraises(
+    applied, monkeypatch, capsys
+):
+    # PTC-96 fix round 2: revert recovery fails over to restore_any, whose inspect hangs.
+    applied.containers[BACKUP]["healthy"] = False
+    applied.fail.append(("rename", "api", BACKUP))
+    hang_after(applied, ("rename", "api", BACKUP), ("inspect", "api"), nth=1)
+    with pytest.raises(ValueError, match="health"):
+        remote("revert", applied, monkeypatch)
+    assert ("hung", "inspect", "api") in applied.calls
+    assert labelled_running(applied) == []
+    assert not applied.containers["api"]["running"]  # unknown state: stopped, never started
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "Traceback" not in err

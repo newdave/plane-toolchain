@@ -24,6 +24,8 @@ from support_pages_deploy import (
     SOURCE,
     assert_freshly_applied,
     assert_original_restored,
+    hang_after,
+    labelled_running,
     deploy,
     remote,
     restart,
@@ -510,3 +512,53 @@ def test_apply_two_rollback_start_failures_leave_the_original_stopped_and_say_so
     assert BACKUP not in host.containers
     err = capsys.readouterr().err
     assert "Rollback incomplete" in err and "original api (stopped)" in err
+
+
+# PTC-96 fix round 2: a probe that times out raises RuntimeError. Inside a rollback or recovery
+# it is an unknown state: no start, a best-effort stop, "Rollback incomplete", original error.
+
+
+def test_hung_inspect_in_recover_original_is_rollback_incomplete(host, monkeypatch, capsys):
+    host.created_healthy = False
+    failed = f"api-pages-failed-{NOW}"
+    host.fail.append(("rename", "api", failed))  # the rollback's move aside fails: recovery
+    hang_after(host, ("start", "api"), ("inspect", failed), nth=2)  # recovery's failed_name
+    with pytest.raises(ValueError, match="API health check failed"):
+        remote("apply", host, monkeypatch)
+    assert ("hung", "inspect", failed) in host.calls
+    assert labelled_running(host) == []
+    assert not host.containers[BACKUP]["running"]
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "Traceback" not in err
+
+
+def test_hung_stop_in_recover_original_is_rollback_incomplete(host, monkeypatch, capsys):
+    host.created_healthy = False
+    hang_after(host, ("start", "api"), ("inspect", "api"), nth=1)  # rollback: unknown holder
+    hang_after(host, ("start", "api"), ("inspect", "api"), nth=1)  # recovery's inspect too
+    hang_after(host, ("start", "api"), ("stop", "api"), nth=1)  # and its best-effort stop
+    with pytest.raises(ValueError, match="API health check failed"):
+        remote("apply", host, monkeypatch)
+    assert not host.containers[BACKUP]["running"]
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "may still be running" in err
+
+
+def test_hung_health_exec_is_retried_then_passes(host, monkeypatch, capsys):
+    hang_after(host, ("start", "api"), HEALTH, nth=1)
+    remote("apply", host, monkeypatch)
+    assert ("hung", *HEALTH) in host.calls
+    assert host.calls.count(HEALTH) == 1  # the retry, after the hung first attempt
+    assert "Pages derived image applied" in capsys.readouterr().out
+    assert host.containers["api"]["labels"].get(LABEL) == DIGEST
+
+
+def test_hung_probe_in_the_apply_rollback_still_raises_the_original_error(
+    host, monkeypatch, capsys
+):
+    host.fail.append(("rename", "api", BACKUP))  # the retire fails: the original is not retired
+    hang_after(host, ("stop", "api"), ("start", "api"), nth=1)  # the rollback's restart hangs
+    with pytest.raises(subprocess.CalledProcessError):
+        remote("apply", host, monkeypatch)
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "start timed out" in err
