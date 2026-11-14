@@ -547,11 +547,14 @@ def database_size(db, popen):
 
 
 def check_free_space(directory, db, popen):
-    """Refuse when the receipt directory cannot hold a dump of the database.
+    """Refuse when the receipt directory cannot hold a dump of the database and the journal.
 
-    The dump is compressed, so the database size is a safe upper bound; with no size, the
-    minimum applies. Free space is what an unprivileged writer can use."""
-    needed = max(database_size(db, popen) or 0, MIN_FREE_BYTES)
+    The dump is compressed, so the database size is a safe upper bound for it; the journal
+    records the old value of every row apply rewrites, which the database size also bounds, so
+    the need is twice that size. Rotated backups and journals are hard links (finish_rotation),
+    so they take no new space and the files already there are already out of the free count.
+    With no size, the minimum applies. Free space is what an unprivileged writer can use."""
+    needed = max(2 * (database_size(db, popen) or 0), MIN_FREE_BYTES)
     info = os.statvfs(directory)
     if info.f_bavail * info.f_frsize < needed:
         raise RuntimeError(
@@ -766,7 +769,7 @@ def stop_snippet(api, token, popen):
     return run_killer(api, token, popen) == "gone"
 
 
-def run_snippet(api, snippet, op, args, directory, popen, uid=None, hide=()):
+def run_snippet(api, snippet, op, args, directory, popen, uid=None, hide=(), idle=None):
     """Run one snippet operation through `docker exec -i <api> python manage.py shell`.
 
     The program runs as `manage.py shell -c BOOTSTRAP`. Stdin is a length line, then the
@@ -780,7 +783,7 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None, hide=()):
 
     The process runs with a `PLANE_RENAME_RUN=<receipt-dir id>:<token>` marker in its environment. Killing the
     local `docker exec` client does not stop the Python process in the container, so every
-    abort (a deadline of SNIPPET_IDLE_SECONDS without output, an error, an interrupt, a
+    abort (a deadline of `idle` seconds, default SNIPPET_IDLE_SECONDS, without output, an error, an interrupt, a
     non-zero exit) is followed by stop_snippet, and the caller hears of the failure only once
     the process is confirmed gone. If that cannot be confirmed the failure is a STUCK one:
     callers must not restart services or reset the receipt then.
@@ -806,7 +809,17 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None, hide=()):
             stdout=subprocess.PIPE,
             stderr=errors,
         )
-        summary, events = read_snippet(process, source, api, op, token, directory, popen, uid)
+        summary, events = read_snippet(
+            process,
+            source,
+            api,
+            op,
+            token,
+            directory,
+            popen,
+            uid,
+            SNIPPET_IDLE_SECONDS if idle is None else idle,
+        )
         if summary is None:
             code = process.wait()
             cause = snippet_cause(errors, hide=(*hide, api))
@@ -815,7 +828,7 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None, hide=()):
     return summary, events
 
 
-def read_snippet(process, source, api, op, token, directory, popen, uid):
+def read_snippet(process, source, api, op, token, directory, popen, uid, idle):
     """run_snippet's loop: pipe `source` to the started snippet `process`, then read its
     output; returns (summary, events)."""
     summary, events = None, []
@@ -828,7 +841,7 @@ def read_snippet(process, source, api, op, token, directory, popen, uid):
     def arm():
         for old in timer:
             old.cancel()
-        timer[:] = [threading.Timer(SNIPPET_IDLE_SECONDS, expire)]
+        timer[:] = [threading.Timer(idle, expire)]
         timer[0].daemon = True
         timer[0].start()
 
@@ -884,7 +897,7 @@ def read_snippet(process, source, api, op, token, directory, popen, uid):
             raise RuntimeError(STUCK + " (" + op + ")")
         if expired:
             raise RuntimeError(
-                f"{op} timed out after {SNIPPET_IDLE_SECONDS:g} s without output; the snippet "
+                f"{op} timed out after {idle:g} s without output; the snippet "
                 "process was stopped in the API container"
             )
         summary = None
@@ -952,9 +965,9 @@ def report(op, summary, events):
         say(f"Partial restore: {summary.get('skipped', 0)} rows skipped; this is not a full revert")
 
 
-def snippet_ok(api, snippet, op, args, directory, popen, uid=None, hide=()):
+def snippet_ok(api, snippet, op, args, directory, popen, uid=None, hide=(), idle=None):
     """run_snippet and report; return the summary. A missing summary or ok:false raises."""
-    summary, events = run_snippet(api, snippet, op, args, directory, popen, uid, hide)
+    summary, events = run_snippet(api, snippet, op, args, directory, popen, uid, hide, idle)
     report(op, summary, events)
     if summary is None:
         raise RuntimeError(no_summary(op, events))
@@ -1129,7 +1142,7 @@ def verify_backup(directory, receipt, uid):
     return None
 
 
-def slug_state(api, snippet, old, new, workspace_id, directory, popen, uid=None):
+def slug_state(api, snippet, old, new, workspace_id, directory, popen, uid=None, idle=None):
     """Read-only probe of the slug after an unclear step_slug: "renamed", "original" or
     "unknown".
 
@@ -1140,7 +1153,9 @@ def slug_state(api, snippet, old, new, workspace_id, directory, popen, uid=None)
 
     def held(first, second):
         args = {"old": first, "new": second, "workspace_id": workspace_id}
-        summary, events = run_snippet(api, snippet, "health", args, directory, popen, uid)
+        summary, events = run_snippet(
+            api, snippet, "health", args, directory, popen, uid, idle=idle
+        )
         checks = {e.get("check"): e.get("ok") for e in events if e.get("event") == "health"}
         return summary is not None and checks.get("new_present") and checks.get("old_absent")
 
@@ -1149,7 +1164,9 @@ def slug_state(api, snippet, old, new, workspace_id, directory, popen, uid=None)
             if held(old, new):
                 return "renamed"
             return "original" if held(new, old) else "unknown"
-        summary, _ = run_snippet(api, snippet, "check", {"old": old, "new": new}, directory, popen)
+        summary, _ = run_snippet(
+            api, snippet, "check", {"old": old, "new": new}, directory, popen, idle=idle
+        )
         return "original" if summary is not None and summary.get("ok") is True else "unknown"
     except Exception:  # noqa: BLE001 - a failed probe is an unknown state, never a guess
         return "unknown"
@@ -1190,6 +1207,14 @@ def drain_state(reason):
     return None
 
 
+def snippet_idle(data):
+    """The run's silence deadline: a valid `snippet_idle_seconds` in the payload, else the default."""
+    idle = data.get("snippet_idle_seconds")
+    if isinstance(idle, (int, float)) and not isinstance(idle, bool) and 0 < idle <= 86400:
+        return idle
+    return SNIPPET_IDLE_SECONDS
+
+
 def run_context(data, seams, operations=None):
     """What check, apply and revert share for one run, as a dict: the seams (docker, popen,
     clock, crash, uid, and seams itself for the lazily read sleep) and the payload (operation,
@@ -1215,6 +1240,7 @@ def run_context(data, seams, operations=None):
     run["directory"] = run_directory(data)
     run["names"] = service_names(data.get("services") or {})
     run["options"] = {key: data[key] for key in ("live_url", "api_url") if data.get(key)}
+    run["idle"] = snippet_idle(data)
     run["undrained"] = data.get("allow_undrained") is True
     run["stale_binaries"] = data.get("allow_stale_binaries") is True
     return run
@@ -1249,6 +1275,7 @@ def run_call(run, op, args):
         run["popen"],
         run["uid"],
         run["names"].values(),
+        run["idle"],
     )
 
 
@@ -1269,6 +1296,7 @@ def run_slug_state(run, workspace_id):
         run["directory"],
         run["popen"],
         run["uid"],
+        idle=run["idle"],
     )
 
 
@@ -1481,10 +1509,14 @@ def apply_recover(run, step, target, failure):
 
 
 def any_running(run):
-    for key in ("beat", "worker", "web", "space", "admin"):
-        state = json.loads(run["docker"]("inspect", run["names"][key]))[0].get("State") or {}
-        if state.get("Running"):
-            return True
+    """True when a service runs, False when none does, None when inspect cannot say."""
+    try:
+        for key in ("beat", "worker", "web", "space", "admin"):
+            state = json.loads(run["docker"]("inspect", run["names"][key]))[0].get("State") or {}
+            if state.get("Running"):
+                return True
+    except Exception:  # noqa: BLE001 - an unreadable state is unknown, never "stopped"
+        return None
     return False
 
 
@@ -1498,8 +1530,17 @@ def resume_stop(run, step, slug_committed):
     """On resume between stopped and cache_done: stop the services again; return the step.
 
     Services that ran again since a kill, before the slug change, void the backup: the receipt
-    is reset and the step is pending."""
-    if not slug_committed and not slug_reached(step) and any_running(run):
+    is reset and the step is pending. When inspect cannot say whether they run, refuse and keep
+    the backup: rotating a good backup on a guess would force a new dump for nothing."""
+    running = False if slug_committed or slug_reached(step) else any_running(run)
+    if running is None:
+        refusal = RuntimeError(
+            f"Rename resume refused at {step}: cannot tell whether the services run (docker "
+            "inspect failed). Nothing was reset and the backup was kept. Check Docker, then rerun apply."
+        )
+        refusal.unknown_services = True
+        raise refusal
+    if running:
         say("Services ran again since the kill; setting the backup aside for a fresh one")
         reset_receipt(run["directory"], run["clock"], run["uid"], run["crash"])
         run["workspace_id"], run["backup_action"] = None, None
@@ -1627,6 +1668,8 @@ def run_apply(data, seams):
         if at_or_past(step, "stopped") and not at_or_past(step, "started"):
             step = resume_stop(run, step, slug_committed)
     except Exception as failure:  # noqa: BLE001
+        if getattr(failure, "unknown_services", False):
+            raise
         resume_failed(run, step, reason_of(failure))
 
     run_steps(
@@ -1662,6 +1705,7 @@ def revert_restore_rows(run):
         run["popen"],
         uid,
         run["names"].values(),
+        run["idle"],
     )
     report("restore", summary, events)
     crash("after_restore")
@@ -1902,16 +1946,11 @@ def lock_run(directory, uid, create):
 def run_locked(data, seams, run, create, lock=True):
     """Run `run(data, seams)` under the run lock of the receipt directory (none for check).
 
-    A valid `snippet_idle_seconds` in the payload replaces SNIPPET_IDLE_SECONDS for the run."""
-    global SNIPPET_IDLE_SECONDS
+    The snippet deadline override (`snippet_idle_seconds`) is read per run by run_context."""
     descriptor = lock_run(run_directory(data), seam_uid(seams), create) if lock else None
-    idle, previous = data.get("snippet_idle_seconds"), SNIPPET_IDLE_SECONDS
-    if isinstance(idle, (int, float)) and not isinstance(idle, bool) and 0 < idle <= 86400:
-        SNIPPET_IDLE_SECONDS = idle
     try:
         return run(data, seams)
     finally:
-        SNIPPET_IDLE_SECONDS = previous
         if descriptor is not None:
             os.close(descriptor)
 
@@ -2008,6 +2047,7 @@ SHIPPED = (
     run_call,
     run_health,
     run_slug_state,
+    snippet_idle,
     run_preflight,
     run_stop,
     run_start,
