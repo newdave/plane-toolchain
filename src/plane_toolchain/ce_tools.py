@@ -106,6 +106,9 @@ def page_update_body(description_html, expected_updated_at, force):
     """Request body for a whole-body Page update; the backend validates it again."""
     if not isinstance(expected_updated_at, str) or not expected_updated_at:
         raise ValueError("update requires expected_updated_at from retrieve")
+    # An empty body would wipe the page; create may still be empty, update may not.
+    if not isinstance(description_html, str) or not description_html.strip():
+        raise ValueError("update requires a non-empty description_html")
     return {
         "description_html": description_html,
         "expected_updated_at": expected_updated_at,
@@ -198,6 +201,36 @@ async def confirm_late_store(result, retrieve, sleep):
     return {**result, "late_store": "unchanged"}
 
 
+async def run_page_action(client, workspace, path, action, project_id, fields):
+    """Run a ce_page action; every blocking SDK call runs in a thread, off the event loop."""
+    await asyncio.to_thread(client.projects.retrieve, workspace, project_id)
+    endpoint = f"{workspace}/projects/{path}"
+    if action == "create":
+        return await asyncio.to_thread(
+            sdk_private(client.pages, "_post"),
+            endpoint,
+            {
+                "name": fields["name"],
+                "description_html": fields["description_html"],
+                "access": fields["access"],
+            },
+        )
+    if action == "update":
+        result = await asyncio.to_thread(
+            sdk_private(client.pages, "_patch"),
+            endpoint,
+            page_update_body(
+                fields["description_html"], fields["expected_updated_at"], fields["force"]
+            ),
+        )
+        return await confirm_late_store(
+            result,
+            lambda: asyncio.to_thread(sdk_private(client.pages, "_get"), endpoint),
+            asyncio.sleep,
+        )
+    return await asyncio.to_thread(sdk_private(client.pages, "_get"), endpoint)
+
+
 def main():
     from plane.models.work_items import CreateWorkItemRelation
     from plane_mcp.client import get_plane_client_context
@@ -287,26 +320,20 @@ def main():
         path = page_request(action, project_id, page_id)
         project_id = canonical_uuid(project_id)
         client, workspace = get_plane_client_context()
-        client.projects.retrieve(workspace, project_id)
-        endpoint = f"{workspace}/projects/{path}"
-        if action == "create":
-            return sdk_private(client.pages, "_post")(
-                endpoint, {"name": name, "description_html": description_html, "access": access}
-            )
-        if action == "update":
-            # SDK calls are blocking: run them in threads so the event loop stays free
-            # during the wait.
-            result = await asyncio.to_thread(
-                sdk_private(client.pages, "_patch"),
-                endpoint,
-                page_update_body(description_html, expected_updated_at, force),
-            )
-            return await confirm_late_store(
-                result,
-                lambda: asyncio.to_thread(sdk_private(client.pages, "_get"), endpoint),
-                asyncio.sleep,
-            )
-        return sdk_private(client.pages, "_get")(endpoint)
+        return await run_page_action(
+            client,
+            workspace,
+            path,
+            action,
+            project_id,
+            dict(
+                name=name,
+                description_html=description_html,
+                access=access,
+                expected_updated_at=expected_updated_at,
+                force=force,
+            ),
+        )
 
     server.run(
         transport="streamable-http",

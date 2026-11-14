@@ -26,11 +26,22 @@ def test_creation_sanitises_html_then_converts_consistent_document_formats():
         {"name": "X", "description_html": "text", "owned_by": "other"},
         {"name": "", "description_html": "text"},
         {"name": "X", "description_html": "text", "access": 2},
+        {"name": "X", "description_html": "text", "access": True},
+        {"name": "X", "description_html": "text", "access": False},
     ],
 )
 def test_creation_rejects_unadvertised_or_invalid_fields_before_conversion(data):
     with pytest.raises(ValueError):
         creation_payload(data, lambda value: value, lambda value: pytest.fail("Must not convert"))
+
+
+def test_creation_allows_an_empty_body_for_a_new_blank_page():
+    result = creation_payload(
+        {"name": "Blank", "description_html": ""},
+        lambda value: value,
+        lambda value: {"description_json": {"type": "doc"}, "description_binary": "AQ=="},
+    )
+    assert result["description_html"] == ""
 
 
 def test_conversion_failure_does_not_produce_a_partial_document():
