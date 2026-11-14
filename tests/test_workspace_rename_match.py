@@ -194,3 +194,28 @@ def test_json_leaves_unrelated_string_values():
 def test_scan_json_counts_forms_without_rewriting():
     assert m.scan_json(DOC, "acme", HOSTS) == {"url": 1, "href": 1, "embed": 1, "slug": 0}
     assert m.scan_json({"workspace_slug": "acme"}, "acme", HOSTS)["slug"] == 1
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "/acme.png",
+        "https://plane.example.com/acme.tar.gz",
+        "https://plane.example.com/acme.png",
+        "https://plane.example.com/acme._x",
+    ],
+)
+def test_dotted_file_names_on_own_host_untouched(href):
+    # PTC-91 review: a dot followed by a slug character continues a file name, not a slug.
+    src = f'<a href="{href}">x</a> {href}'
+    assert m.rewrite_html(src, "acme", "beta", HOSTS) == (src, 0)
+    assert m.rewrite_json_slug({"href": href}, "acme", "beta", HOSTS) == ({"href": href}, 0)
+
+
+@pytest.mark.parametrize("tail", [". next", ".", ".<br>", '."'])
+def test_sentence_dot_after_url_still_rewritten(tail):
+    src = f"https://plane.example.com/acme{tail}"
+    assert m.rewrite_html(src, "acme", "beta", HOSTS) == (
+        f"https://plane.example.com/beta{tail}",
+        1,
+    )
