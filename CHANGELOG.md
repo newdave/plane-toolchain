@@ -8,9 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- `plane relation plan <file> [--apply] [--pause SECONDS]` (PTC-117): add many `blocked_by` relations from a JSON plan of `{blocked, blocker}` identifier pairs. Dry run by default. It refuses self-links, cycles (including those closed by existing relations, followed transitively up to 500 items), unknown items and items outside the project before any write, adds only missing links through `ce_workitem_relation`, paces writes and rereads each item. It never deletes relations.
 
+
+- `mise run owner:plane-mcp-mounts:check` (PTC-119): read-only owner task that lists the Plane MCP container's bind mounts (source, destination, mode) over SSH, to find `PLANE_MCP_DIRECTORY`. It reads `PLANE_MCP_SSH` and `PLANE_MCP_CONTAINER` from the environment, validates both, and prints no environment or labels.
 - `plane_toolchain.github_evidence` (PTC-120): core rules for GitHub PR gate and delivery evidence, with repository specifics passed as parameters. It parses the visible `Plane-Tasks` field (comments and fences ignored), applies an opt-in maintenance exemption, builds the gate status description and the PR and run evidence comments, and resolves task external IDs through a full paginated listing (it never trusts a server filter). `publish` reads before create, reads back after, and refuses differing content or duplicate identities. No entry point or action uses it yet.
+- `plane_toolchain.github_evidence_cli` (PTC-121): `gate` and `evidence` entry points over the core module, with a GitHub REST client (PR, commit PRs, changed files, status), the environment contract the coming actions will set, a Plane preflight that names a 401, 403 or empty project, and read-only retries (429 and 5xx wait 2, 4 and 8 s, or `Retry-After` capped at 30 s; creates are never retried). Every failure becomes a fixed, secret-free cause in a workflow annotation and the job summary. The gate fails closed and reposts its status when an edit changes the body but not the gate fields; evidence skips PRs without a reference field and never fails the gate. No action uses it yet.
+
+### Changed
+
+- The MCP cursor pagination helper `paginated` moves from `plane_toolchain.github_evidence` to `plane_toolchain.connection` (PTC-118) as the single shared implementation. `github_evidence.paginated` still resolves to it. The CLI readback loop is unchanged: it stops early on a match and tolerates a missing cursor.
 
 ### Security
 
@@ -23,6 +29,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Renovate (PTC-106): GitHub Actions updates no longer automerge. Digest updates have no reliable release timestamp, so `minimumReleaseAge` cannot delay them; they now wait for review.
+- CI (PTC-107): pull requests run `scripts/check-commit-msg.py` over every PR commit message and the PR title and body (the squash message), so AI attribution trailers cannot land from a clone without hooks. The step uses no secrets and takes SHAs and text through `env:`.
 - Pages revert (PTC-104): the parked `<api>-pages-reverted-<ts>` name is checked for a clash and gets `-1` appended until free, through one `unused_name` helper that the `-pages-failed-` name uses too, so two reverts in one second no longer collide. Prune and the revert-recovery policy lookup accept such suffixed names. The shipped Pages remote program text changes; no host state does.
 - MCP deploy (PTC-103): `write_atomic` unlinks a stale or symlinked `.tmp` first, creates it with `O_EXCL|O_NOFOLLOW` and always sets the mode (the requested one, else an existing regular file's, else 0600; never a symlink target's), so it never follows a link or keeps old permissions. A corrupt or non-object receipt now fails with `Receipt unreadable; reconcile` instead of a JSON error. The shipped remote program text changes; no host state does.
 - Rename (PTC-105): the schema probe no longer reports a `manager` mismatch. Its test, `hasattr(model, "_base_manager")`, held for every Django model, so it guarded nothing; the snippet reads through `all_objects` and falls back to the base manager for a model without one, so no probe is needed. The host receives the program on each run, so no redeploy is needed.
