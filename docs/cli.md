@@ -86,6 +86,26 @@ mise run plane:cli -- relation add PTC-12 PTC-3 --type blocking
 
 `--type` is one of `blocking`, `blocked_by` (default), `start_before`, `start_after`, `finish_before` or `finish_after`. The direction is from the first task's point of view. The tasks must be distinct, and a task cannot relate to itself.
 
+### Relation plans
+
+`relation plan` adds many `blocked_by` relations from a JSON file. The file is a list of pairs, or an object with that list under `pairs`:
+
+```json
+[{"blocked": "ABC-12", "blocker": "ABC-7"}, {"blocked": "ABC-12", "blocker": "ABC-9"}]
+```
+
+```sh
+mise run plane:cli -- relation plan plan.json
+mise run plane:cli -- relation plan plan.json --apply --pause 1
+```
+
+The default is a dry run. It prints what is missing and writes nothing. `--apply` writes. Checks run first, and any failure stops the run before the first write:
+
+- Offline: identifiers must be well formed, no item may block itself, and the plan must have no cycle. Duplicate pairs are merged.
+- Remote: every item must exist and be in the project (`--project` or `PLANE_PROJECT`). Existing relations are read transitively and added to the cycle check. A failed read stops the run.
+
+`--apply` adds only the links that are missing, one write per blocked item, then rereads that item. A link missing on reread exits 5. `--pause SECONDS` (default 0.5) waits between items. Rerunning is safe because it writes only what is still missing, so there is no receipt file. The command never deletes a relation and never removes a link to break a cycle. The cycle check follows existing `blocked_by` and `blocking` relations transitively from the plan items, so a cycle through items outside the plan is found. It reads at most 500 items. If the walk reaches more, the run stops with an error and writes nothing. Split the plan. A missing link is detected from the `blocked_by` list of the blocked item, the same way `relation add` confirms a write. If a write or its reread fails, the CLI prints the links already written and the failing item on standard error, then exits as usual. Rerun to finish. The plan is written by hand or by your own script. There is no markdown extractor.
+
 Body options: `--html TEXT` or `--file PATH`. Use `--file -` to read standard input. Files must be UTF-8. An empty body is a usage error.
 
 ## Output
