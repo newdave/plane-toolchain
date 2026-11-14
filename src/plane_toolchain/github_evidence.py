@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 
+from plane_toolchain.connection import paginated
+
 
 @dataclass(frozen=True)
 class ReferenceRules:
@@ -287,25 +289,6 @@ def aggregate(results: Mapping[str, str]) -> str:
     if "cancelled" in values:
         return "cancelled"
     return "success"
-
-
-async def paginated(call, name: str, arguments: dict) -> list[dict]:
-    """Follow explicit MCP cursors, rejecting incomplete or repeated pagination."""
-    rows = []
-    seen = set()
-    cursor = ""
-    for _ in range(100):
-        data = await call(name, dict(arguments, cursor=cursor, per_page=100))
-        if isinstance(data, list):
-            return rows + data
-        rows.extend(data["results"])
-        if not data.get("next_page_results"):
-            return rows
-        cursor = data.get("next_cursor")
-        if not cursor or cursor in seen:
-            raise ValueError("Invalid MCP pagination")
-        seen.add(cursor)
-    raise ValueError("MCP pagination limit reached")
 
 
 def directory_entries(rows: list[dict], source: str, pattern: str) -> dict[str, dict]:

@@ -14,6 +14,28 @@ from mcp.client.streamable_http import streamable_http_client
 from plane_toolchain.settings import Settings
 
 
+async def paginated(call, name: str, arguments: dict) -> list[dict]:
+    """Follow explicit MCP cursors, rejecting incomplete or repeated pagination.
+
+    Raises ValueError on a repeated or missing cursor and after 100 pages.
+    """
+    rows = []
+    seen = set()
+    cursor = ""
+    for _ in range(100):
+        data = await call(name, dict(arguments, cursor=cursor, per_page=100))
+        if isinstance(data, list):
+            return rows + data
+        rows.extend(data["results"])
+        if not data.get("next_page_results"):
+            return rows
+        cursor = data.get("next_cursor")
+        if not cursor or cursor in seen:
+            raise ValueError("Invalid MCP pagination")
+        seen.add(cursor)
+    raise ValueError("MCP pagination limit reached")
+
+
 def paced(call, *, clock=time.monotonic, sleep=asyncio.sleep):
     """Space tool starts by one second without retrying uncertain remote writes.
 
