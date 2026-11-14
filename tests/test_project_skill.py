@@ -99,6 +99,8 @@ def test_interrupted_apply_is_reverted_with_the_skill(tmp_path, monkeypatch):
     monkeypatch.setitem(scope, "write", real)
     revert(tmp_path)
     assert not list(tmp_path.rglob("SKILL.md"))
+    for client in (".claude", ".agents"):
+        assert not (tmp_path / client / "skills/plane-tasks").exists()
 
 
 @pytest.mark.parametrize("path", [TEMPLATE, GUIDE], ids=["skill", "guide"])
@@ -121,6 +123,10 @@ def test_skill_states_the_rules_it_ports():
         "expected_updated_at",
         "force=true",
         "Plane-Tasks:",
+        "column 0",
+        "[A-Z][A-Z0-9]*-\\d+[A-Z]?",
+        "duplicate_to",
+        "rejected",
         "awaiting-decision",
         "health check",
         "## Context",
@@ -142,3 +148,37 @@ def test_skill_is_formatter_stable_markdown():
         assert not re.match(r"\s*[*+] ", line), number
         assert not line.startswith("|"), number
     assert "\n\n\n" not in text
+
+
+def test_revert_survives_a_directory_that_cannot_be_removed(tmp_path, monkeypatch, capsys):
+    apply(tmp_path)
+    (tmp_path / ".plane/local.env").unlink()
+    real = Path.rmdir
+
+    def failing(self):
+        if self.name == "plane-tasks" and ".agents" in self.parts:
+            raise OSError("busy")
+        real(self)
+
+    monkeypatch.setattr(Path, "rmdir", failing)
+    revert(tmp_path)
+    assert not (tmp_path / ".plane/install.json").exists()
+    assert "Left in place" in capsys.readouterr().out
+    assert (tmp_path / ".agents/skills/plane-tasks").is_dir()
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_revert_leaves_a_directory_swapped_for_a_symlink(tmp_path):
+    apply(tmp_path)
+    (tmp_path / ".plane/local.env").unlink()
+    receipt = json.loads((tmp_path / ".plane/install.json").read_text())
+    assert ".codex" in receipt["directories"]
+    (tmp_path / ".codex/config.toml").unlink()
+    (tmp_path / ".codex/hooks.json").unlink()
+    (tmp_path / ".codex").rmdir()
+    elsewhere = tmp_path.parent / f"{tmp_path.name}-elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / ".codex").symlink_to(elsewhere)
+    with pytest.raises(ValueError, match="removed since installation|symlink"):
+        revert(tmp_path)
+    assert elsewhere.is_dir()

@@ -751,12 +751,25 @@ def revert(target):
             write(target / rel, text)
         entries[rel]["reverted"] = True
         write(receipt_path, json.dumps({**receipt, "reverting": True}, indent=2) + "\n")
+    # Client directories go only if apply created them and they are still empty real
+    # directories; one that cannot be removed is left and reported, never an error. They go
+    # before the receipt, which lives in .plane/ and is the last thing to leave.
+    left = []
+    names = [n for n in receipt.get("directories", []) if n in DIRECTORIES and n != ".plane"]
+    for name in sorted(names, key=lambda n: -n.count("/")):
+        path = target / name
+        if path.is_symlink() or not path.is_dir() or any(path.iterdir()):
+            continue
+        try:
+            path.rmdir()
+        except OSError:
+            left.append(name)
     receipt_path.unlink()
-    # .plane/ belongs to the installer; client directories go only if it created them.
-    for name in sorted({".plane", *receipt.get("directories", [])}, key=lambda n: -n.count("/")):
-        if name in DIRECTORIES and (target / name).is_dir() and not any((target / name).iterdir()):
-            (target / name).rmdir()
+    if plane.is_dir() and not plane.is_symlink() and not any(plane.iterdir()):
+        plane.rmdir()
     print("Removed unchanged Plane integration")
+    if left:
+        print("Left in place (could not remove): " + ", ".join(left))
     if kept:
         print("Kept ignored local files in .plane/: " + ", ".join(kept))
 

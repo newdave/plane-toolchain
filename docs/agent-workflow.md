@@ -58,7 +58,7 @@ A full-task prerequisite is a Plane blocked-by relation from the dependent task 
 
 Unapproved requests and discovered scope go to Intake after a duplicate check. Record the problem, the evidence, the proposed outcome and any affected tasks. An intake record is not a start signal. Owner-approved work goes straight to Backlog.
 
-Decide with `ce_intake` action `decide`. The official intake update sends decisions to a route Plane CE does not have and returns 404. Pass the record's `issue` ID, not its record ID. Statuses: `-1` declined, `0` snoozed (needs `snoozed_till`), `1` accepted, `2` duplicate (needs `duplicate_to`). Only a project admin's key can decide. Reread to verify the decision and the resulting work item.
+Decide with `ce_intake` action `decide`. The official intake update sends decisions to a route Plane CE does not have and returns 404. Pass the record's `issue` ID, not its record ID. Statuses: `-1` rejected, `0` snoozed (needs `snoozed_till`), `1` accepted, `2` duplicate (needs `duplicate_to`, the canonical work item's UUID). Only a project admin's key can decide. Reread to verify the decision and the resulting work item.
 
 ## Planning destinations
 
@@ -88,13 +88,13 @@ See [extensions](extensions.md) for the full contract and the risks of an update
 
 ## Pull requests and delivery evidence
 
-Where a repository uses the `plane-pr-gate` action, a task-bearing PR needs a visible standalone field in its body with one to three task IDs:
+Where a repository uses the `plane-pr-gate` action, a task-bearing PR needs one visible `Plane-Tasks:` field in its body. The line starts at column 0 (not bulleted or indented), comments and fenced code blocks are ignored, and there is exactly one such field. It holds one to three comma-separated IDs matching `[A-Z][A-Z0-9]*-\d+[A-Z]?`, with no duplicates:
 
 ```text
 Plane-Tasks: ABC-12, ABC-13
 ```
 
-A missing, malformed or unresolved reference fails the `Plane task references` status. Comments and code fences do not count. See [GitHub Actions](github-actions.md#composite-actions-pr-gate-and-evidence) and [ADR 0002](decisions/0002-github-pr-gate-and-evidence-events.md) for the inputs, the maintenance exemption and the security model.
+A missing, malformed, duplicate or unresolved reference fails the `Plane task references` status. See [GitHub Actions](github-actions.md#composite-actions-pr-gate-and-evidence) and [ADR 0002](decisions/0002-github-pr-gate-and-evidence-events.md) for the inputs, the maintenance exemption and the security model.
 
 The gate and the evidence action write comments and a status only. They never set In Progress or Done, never infer acceptance and never record deployed health. The agent makes lifecycle updates and verifies deployment separately. Never pass secrets to code from a fork PR.
 

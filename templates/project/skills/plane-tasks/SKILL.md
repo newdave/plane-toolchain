@@ -46,7 +46,7 @@ Record a full-task prerequisite as a Plane blocked-by relation from the dependen
 
 Put an unapproved request or discovered scope in Intake after you check for duplicates. Record the problem, the evidence and the proposed outcome. Do not start the work or set In Progress because an intake record exists. Owner-approved work goes straight to Backlog.
 
-Decide an intake record with `ce_intake` and action `decide`. Pass the record's `issue` ID, not the record's own ID. The statuses are `-1` declined, `0` snoozed (needs a date), `1` accepted and `2` duplicate (needs the canonical issue ID). Only a project admin's key can decide. Reread to verify the decision and the resulting work item.
+Decide an intake record with `ce_intake` and action `decide`. Pass the record's `issue` ID, not the record's own ID. The statuses are `-1` rejected, `0` snoozed (needs `snoozed_till`), `1` accepted and `2` duplicate (needs `duplicate_to`, the canonical work item's UUID). Only a project admin's key can decide. Reread to verify the decision and the resulting work item.
 
 ## Planning destinations
 
@@ -72,7 +72,7 @@ Use `ce_page` for project Pages: list, retrieve, create and update.
 
 ## Pull requests
 
-When the project gates pull requests on Plane, put a standalone `Plane-Tasks:` field in the PR body, with one to three task IDs, for example `Plane-Tasks: ABC-12, ABC-13`. A missing, malformed or unresolved reference fails the gate. The gate and the evidence comments only write comments and a status. They never change a task's state, never infer acceptance and never record deployed health. You make the lifecycle updates yourself and verify deployment separately. Never hand secrets to code from a fork PR.
+When the project gates pull requests on Plane, put one visible `Plane-Tasks:` field in the PR body, for example `Plane-Tasks: ABC-12, ABC-13`. The line starts at column 0, not bulleted or indented. Comments and fenced code blocks are ignored. Use exactly one such field, with one to three comma-separated IDs that match `[A-Z][A-Z0-9]*-\d+[A-Z]?`, no duplicates. A missing, malformed or unresolved reference fails the gate. The gate and the evidence comments only write comments and a status. They never change a task's state, never infer acceptance and never record deployed health. You make the lifecycle updates yourself and verify deployment separately. Never hand secrets to code from a fork PR.
 
 ## What a project may set
 
