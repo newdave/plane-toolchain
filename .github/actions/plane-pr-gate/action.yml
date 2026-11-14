@@ -1,0 +1,106 @@
+name: Plane PR gate
+description: Post the Plane task references status for a pull request. Fails closed. Use only on pull_request_target.
+inputs:
+  plane-api-key:
+    description: Dedicated Plane bot key with single-project Member access. Required for the gate; may be empty for evidence, which then skips.
+    required: true
+  mcp-url:
+    description: Plane MCP endpoint URL.
+    required: true
+  workspace:
+    description: Plane workspace slug.
+    required: true
+  project:
+    description: Plane project identifier or ID the references resolve in.
+    required: true
+  task-source:
+    description: Work item external_source that task references match.
+    required: true
+  comment-source:
+    description: external_source recorded on the comments this action writes.
+    required: true
+  github-token:
+    description: Token for GitHub API reads and, for the gate, the status write.
+    required: false
+    default: ${{ github.token }}
+  references-field:
+    description: PR body field that lists the Plane task IDs.
+    required: false
+    default: Plane-Tasks
+  references-pattern:
+    description: Regular expression each task ID must match.
+    required: false
+    default: '[A-Z][A-Z0-9]*-\d+[A-Z]?'
+  references-min:
+    description: Fewest task IDs the field may hold.
+    required: false
+    default: '1'
+  references-max:
+    description: Most task IDs the field may hold.
+    required: false
+    default: '3'
+  maintenance-field:
+    description: Field that carries the maintenance value. Empty turns the exemption off.
+    required: false
+    default: ''
+  maintenance-value:
+    description: Value that marks a maintenance PR.
+    required: false
+    default: dependency-update
+  maintenance-author:
+    description: PR author that qualifies for the exemption.
+    required: false
+    default: ''
+  maintenance-title-prefix:
+    description: Title prefix that qualifies for the exemption.
+    required: false
+    default: ''
+  maintenance-branch-prefix:
+    description: Head branch prefix that qualifies for the exemption.
+    required: false
+    default: ''
+  maintenance-base:
+    description: Base branch that qualifies for the exemption.
+    required: false
+    default: ''
+  maintenance-allowed-files:
+    description: Newline list of files a maintenance PR may change.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      with:
+        version: 0.13.4
+        enable-cache: true
+        cache-dependency-glob: ${{ github.action_path }}/../../../uv.lock
+    - name: Install plane-toolchain
+      shell: bash
+      env:
+        ACTION_ROOT: ${{ github.action_path }}/../../..
+      run: uv sync --locked --no-dev --project "$ACTION_ROOT"
+    - name: Run gate
+      shell: bash
+      env:
+        ACTION_ROOT: ${{ github.action_path }}/../../..
+        PLANE_ENABLED: 'true'
+        PLANE_API_KEY: ${{ inputs.plane-api-key }}
+        PLANE_MCP_URL: ${{ inputs.mcp-url }}
+        PLANE_WORKSPACE: ${{ inputs.workspace }}
+        PLANE_PROJECT: ${{ inputs.project }}
+        PLANE_TASK_SOURCE: ${{ inputs.task-source }}
+        PLANE_COMMENT_SOURCE: ${{ inputs.comment-source }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        PLANE_REFERENCES_FIELD: ${{ inputs.references-field }}
+        PLANE_REFERENCES_PATTERN: ${{ inputs.references-pattern }}
+        PLANE_REFERENCES_MIN: ${{ inputs.references-min }}
+        PLANE_REFERENCES_MAX: ${{ inputs.references-max }}
+        PLANE_MAINTENANCE_FIELD: ${{ inputs.maintenance-field }}
+        PLANE_MAINTENANCE_VALUE: ${{ inputs.maintenance-value }}
+        PLANE_MAINTENANCE_AUTHOR: ${{ inputs.maintenance-author }}
+        PLANE_MAINTENANCE_TITLE_PREFIX: ${{ inputs.maintenance-title-prefix }}
+        PLANE_MAINTENANCE_BRANCH_PREFIX: ${{ inputs.maintenance-branch-prefix }}
+        PLANE_MAINTENANCE_BASE: ${{ inputs.maintenance-base }}
+        PLANE_MAINTENANCE_ALLOWED_FILES: ${{ inputs.maintenance-allowed-files }}
+      run: uv run --locked --no-dev --project "$ACTION_ROOT" python -m plane_toolchain.github_evidence_cli gate
