@@ -31,3 +31,30 @@ def test_ci_runs_mise_check_and_only_cancels_pull_requests():
     assert ci["concurrency"]["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"
     release = (ROOT / ".github/workflows/release.yml").read_text()
     assert 'select(.name == "check"' in release
+
+
+def test_ci_checks_pr_commit_messages_safely():
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    steps = ci["jobs"]["check"]["steps"]
+    checkout = steps[0]
+    assert checkout["with"]["persist-credentials"] is False
+    assert checkout["with"]["fetch-depth"] == 0
+    step = next(s for s in steps if s.get("name") == "Check commit messages")
+    assert step["if"] == "github.event_name == 'pull_request'"
+    assert "scripts/check-commit-msg.py" in step["run"]
+    assert "git rev-list --no-merges" in step["run"]
+    # Untrusted event fields reach the shell only through env.
+    assert "${{" not in step["run"]
+    assert {"BASE_SHA", "HEAD_SHA", "PR_TITLE", "PR_BODY"} <= set(step["env"])
+    assert not any("secrets." in str(v) for v in step["env"].values())
+    assert ci["permissions"] == {"contents": "read"}
+
+
+def test_renovate_actions_digests_do_not_automerge():
+    cfg = json.loads((ROOT / "renovate.json").read_text())
+    rules = cfg["packageRules"]
+    idx = next(i for i, r in enumerate(rules) if r.get("matchManagers") == ["github-actions"])
+    assert rules[idx]["automerge"] is False
+    # Later rules win in Renovate: the override must follow the generic automerge rule.
+    generic = next(i for i, r in enumerate(rules) if "digest" in r.get("matchUpdateTypes", []))
+    assert idx > generic

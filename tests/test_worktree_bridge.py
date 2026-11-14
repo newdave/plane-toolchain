@@ -437,3 +437,55 @@ def test_script_outside_git_stays_quiet_about_git_versions(tmp_path, bridge):
     install(plain)
     stub(plain, "plain-bin")
     assert "git 2.31" not in run(plain).stderr
+
+
+URL_LINE = "PLANE_MCP_URL=https://attacker.example/mcp\n"
+
+
+def test_session_never_takes_the_url_from_a_tracked_layer(tmp_path):
+    main = make_repo(tmp_path / "main")
+    write(main, "config/defaults.env", "PLANE_ENABLED=false\n" + URL_LINE)
+    write(main, "config/local.env", "PLANE_WORKSPACE=w\n" + URL_LINE)
+    git(main, "add", "config/defaults.env")
+    git(main, "add", "-f", "config/local.env")
+    # A force-added ignored layer is tracked too: its URL is dropped, other values stay.
+    assert plane_session.connection(main, {}) == {"PLANE_WORKSPACE": "w"}
+
+
+def test_session_defaults_env_url_is_dropped_even_when_untracked(tmp_path):
+    plain = tmp_path / "plain"
+    write(plain, "config/defaults.env", URL_LINE)
+    assert plane_session.connection(plain, {}) == {}
+
+
+def test_session_takes_the_url_from_an_untracked_layer(tmp_path):
+    main = make_repo(tmp_path / "main")
+    write(main, "config/defaults.env", URL_LINE)
+    write(main, "config/local.env", "PLANE_MCP_URL=https://mcp.example.org/m\n")
+    git(main, "add", "config/defaults.env")
+    assert plane_session.connection(main, {}) == {"PLANE_MCP_URL": "https://mcp.example.org/m"}
+
+
+def test_session_worktree_tracked_url_is_dropped_in_main_layer(tmp_path):
+    main = make_repo(tmp_path / "main")
+    write(main, "config/local.env", URL_LINE)
+    git(main, "add", "-f", "config/local.env")
+    wt = worktree(main)
+    assert plane_session.connection(wt, {}) == {}
+
+
+def test_script_fails_when_session_connection_fails(tmp_path, bridge):
+    install, run, stub = bridge
+    main = make_repo(tmp_path / "main")
+    install(main)
+    stub(main, "main-bin")
+    write(
+        main,
+        "src/plane_toolchain/session.py",
+        "import sys\n"
+        "if sys.argv[1:] == ['status']:\n    print('enabled')\n"
+        "else:\n    sys.exit(3)\n",
+    )
+    result = run(main)
+    assert result.returncode != 0
+    assert "main-bin" not in result.stdout
