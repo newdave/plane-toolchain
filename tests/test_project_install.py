@@ -1247,3 +1247,12 @@ def test_label_http_client_never_sends_key_across_a_redirect(code):
         target.shutdown()
         target.server_close()
     assert seen == []
+
+
+@pytest.mark.parametrize(
+    "bad", ["/tools\nPLANE_ENABLED=true", "/tools\x00", "/tools\x1b[0m", "/t\r"]
+)
+def test_local_env_rejects_control_characters_in_toolchain(bad):
+    with pytest.raises(ValueError, match="toolchain"):
+        installer["local_env"](bad, {})
+    assert "PLANE_TOOLCHAIN=/tools\n" in installer["local_env"]("/tools", {})
