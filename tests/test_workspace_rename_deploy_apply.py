@@ -237,6 +237,16 @@ def test_exception_class_is_from_the_last_traceback_only(tmp_path):
         assert wr.snippet_cause(handle) == "stderr: plain failure: no traceback"
 
 
+def test_exception_class_survives_a_traceback_longer_than_4096_bytes(tmp_path):
+    # PTC-115: a deep recursion error puts the Traceback line far above the class line.
+    frames = b'  File "/app/x.py", line 1, in f\n    f()\n' * 400
+    text = b"Traceback (most recent call last):\n" + frames + b"RecursionError: depth\n"
+    assert len(text) > 4096
+    with (tmp_path / "e").open("w+b") as handle:
+        handle.write(text)
+        assert wr.exception_class(handle) == "RecursionError"
+
+
 def test_failing_snippet_without_stderr_still_says_it_exited(tmp_path):
     directory = wr.secure_receipt_dir(tmp_path / "r")
     with pytest.raises(RuntimeError, match=r"^check gave no summary$"):
