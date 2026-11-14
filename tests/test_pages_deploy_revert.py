@@ -311,10 +311,14 @@ def test_revert_parked_original_returns_to_backup_name(applied):
     assert [n for n, c in applied.containers.items() if c["running"]] == ["api"]
 
 
-def test_revert_recovery_nothing_startable_reraises_original(applied):
+def test_revert_recovery_nothing_startable_reraises_original(applied, capsys):
     applied.fail += [("start", "api")] * 5  # revert, recovery, then the cascade starts
     with pytest.raises(subprocess.CalledProcessError) as caught:
         deploy("revert", applied)
+    err = capsys.readouterr().err  # PTC-115: a cascade that gives up says so
+    assert "Rollback incomplete" in err and "start failed, state not verified" in err
+    assert "no API is running" not in err
+    assert "Run revert again" in err
     assert caught.value.__context__ is not None
     assert not any(c["running"] for c in applied.containers.values())
     assert "api" in applied.containers and BACKUP in applied.containers
@@ -334,3 +338,12 @@ def test_hung_probe_in_restore_any_is_rollback_incomplete_and_reraises(
     assert not applied.containers["api"]["running"]  # unknown state: stopped, never started
     err = capsys.readouterr().err
     assert "Rollback incomplete" in err and "Traceback" not in err
+
+
+def test_restore_any_rename_failure_is_reported_not_silent(applied, capsys):
+    # Revert start, undo start and the first cascade start fail; so does moving api aside.
+    reverted = f"api-pages-reverted-{NOW}"
+    applied.fail += [("start", "api")] * 3 + [("rename", "api", reverted + "-aside")]
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        deploy("revert", applied)
+    assert "Rollback incomplete" in capsys.readouterr().err

@@ -452,7 +452,9 @@ def stderr_tail(handle, limit=300, hide=()):
     characters are dropped and the result is capped.
 
     Best effort: a child could still name a value unquoted, which is why only a short tail is
-    kept and nothing the tool read from the environment is ever added."""
+    kept and nothing the tool read from the environment is ever added. An unquoted value cannot
+    be told from ordinary words, so none is guessed at; the tail goes to the operator's own
+    terminal only, never to a log, the journal, a receipt or Plane (PTC-115)."""
     handle.flush()
     handle.seek(0, 2)
     size = handle.tell()
@@ -474,7 +476,9 @@ def exception_class(handle):
     carries no record content; the message after it is left to stderr_tail."""
     handle.flush()
     handle.seek(0, 2)
-    handle.seek(max(0, handle.tell() - 4096))
+    # A deep traceback puts its `Traceback` line far above the class line, so read a wide
+    # window (64 KiB covers a ~1000-frame recursion error); stderr_tail keeps its short one.
+    handle.seek(max(0, handle.tell() - 65536))
     lines = handle.read().decode("utf-8", "replace").splitlines()
     starts = [i for i, line in enumerate(lines) if line.startswith("Traceback ")]
     for line in lines[starts[-1] + 1 :] if starts else ():

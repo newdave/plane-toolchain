@@ -283,3 +283,46 @@ def test_ce_page_sdk_calls_run_off_the_event_loop_thread(action):
     asyncio.run(run_page_action(client, "ws", "proj/ce-pages", action, "proj", fields))
     assert len(threads) == 2  # projects.retrieve plus the page call
     assert threading.get_ident() not in threads
+
+
+def test_ce_page_update_late_store_retrieve_runs_off_the_event_loop_thread(monkeypatch):
+    import asyncio
+    import hashlib
+    import threading
+
+    from plane_toolchain.ce_tools import run_page_action
+
+    html = "<p>x</p>"
+    threads = {}
+
+    def record(name, reply):
+        def call(*args):
+            threads[name] = threading.get_ident()
+            return reply
+
+        return call
+
+    digest = hashlib.sha256(html.encode()).hexdigest()
+    update_reply = {"id": "page-1", "late_store_check": {"seconds": 0, "html_sha256": digest}}
+    pages = SimpleNamespace(
+        _patch=record("patch", update_reply), _get=record("retrieve", {"description_html": html})
+    )
+    client = SimpleNamespace(projects=SimpleNamespace(retrieve=record("project", {})), pages=pages)
+
+    async def no_wait(seconds):  # the hinted wait is real time; the thread check needs none
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    fields = dict(
+        name="N",
+        description_html=html,
+        access=1,
+        expected_updated_at="2026-11-13T01:02:03Z",
+        force=False,
+    )
+    out = asyncio.run(
+        run_page_action(client, "ws", "proj/ce-pages/page-1", "update", "proj", fields)
+    )
+    assert out["late_store"] == "unchanged"
+    assert set(threads) == {"project", "patch", "retrieve"}  # the late-store retrieve ran
+    assert threading.get_ident() not in threads.values()

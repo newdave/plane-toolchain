@@ -202,3 +202,52 @@ def test_kill_script_escalates_to_sigkill_and_reports_a_survivor(tmp_path, monke
 def test_kill_script_ignores_an_unreadable_environ(tmp_path, monkeypatch):
     (tmp_path / "4001").mkdir()  # a process that exited: no environ file
     assert run_killer(tmp_path, "abc", monkeypatch) == 0
+
+
+HOST_DIES = (
+    "import os, signal, sys\n"
+    "sys.stdin.buffer.readline()\n"  # the length line; the program follows
+    "sys.stderr.write('Traceback (most recent call last):\\nMemoryError: out of memory\\n')\n"
+    "sys.stderr.flush()\n"
+    'sys.stdout.write(\'{"event": "progress"}\\n{"event": "par\')\n'  # a torn last line
+    "sys.stdout.flush()\n"
+    "os.kill(os.getpid(), signal.SIGKILL)\n"
+)
+
+
+def test_a_host_that_dies_mid_line_over_real_pipes_gives_no_summary_and_is_swept(tmp_path):
+    """PTC-115: a docker exec client whose container process is SIGKILLed (OOM, host death)
+    closes its pipes on a torn line; the read ends, no summary, the exit is recorded and the
+    kill script confirms. Real OS pipes and processes, no stand-in."""
+    import subprocess
+    import sys
+
+    calls, children = [], []
+
+    def popen(argv, **kw):
+        calls.append(argv)
+        if argv[-1] == wr.BOOTSTRAP:
+            command = [sys.executable, "-c", HOST_DIES]
+        else:  # the kill script run: confirm the process is gone
+            command = [sys.executable, "-c", "print('gone')"]
+        children.append(subprocess.Popen(command, **kw))  # noqa: S603 - fixed test programs
+        return children[-1]
+
+    started = time.monotonic()
+    try:
+        summary, events = wr.run_snippet(
+            "plane-api",
+            wr.snippet_source(),
+            "check",
+            {"old": "old-slug", "new": "new-slug"},
+            wr.secure_receipt_dir(tmp_path / "receipt"),
+            popen,
+        )
+    finally:
+        for child in children:  # run_snippet leaves the pipes to the caller
+            child.stdout.close()
+    assert time.monotonic() - started < 10
+    assert summary is None
+    (exited,) = [e for e in events if e.get("event") == "exit"]
+    assert exited["code"] == -signal.SIGKILL and "MemoryError" in exited["cause"]
+    assert len(calls) == 2  # the snippet, then the sweep that confirmed it gone
