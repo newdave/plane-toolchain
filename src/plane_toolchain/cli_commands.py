@@ -145,6 +145,12 @@ def validate(namespace: argparse.Namespace) -> None:
             task_reference(ref)
         if len({ref.upper() for ref in refs}) != len(refs):
             raise UsageError("Relation tasks must be distinct")
+    if key == ("relation", "plan"):
+        from plane_toolchain import relation_plan
+
+        if namespace.pause < 0:
+            raise UsageError("--pause must not be negative")
+        namespace.plan = relation_plan.validate(relation_plan.load(namespace.file))
 
 
 async def task_list(call: Call, project: str, namespace: argparse.Namespace) -> Any:
@@ -316,6 +322,26 @@ async def relation_add(call: Call, project: str, namespace: argparse.Namespace) 
     return listing
 
 
+async def relation_plan_run(call: Call, project: str, namespace: argparse.Namespace) -> Any:
+    from plane_toolchain import relation_plan
+
+    target = getattr(namespace, "project", None) or project
+    missing, names = await relation_plan.inspect_remote(call, target, namespace.plan)
+    report: dict[str, Any] = {
+        "applied": bool(namespace.apply),
+        "pairs": len(namespace.plan),
+        "missing": sum(len(blockers) for blockers in missing.values()),
+        "links": [
+            {"blocked": names[blocked], "blocker": names[blocker]}
+            for blocked, blockers in missing.items()
+            for blocker in blockers
+        ],
+    }
+    if namespace.apply:
+        report["added"] = await relation_plan.apply(call, target, missing, namespace.pause)
+    return report
+
+
 HANDLERS: dict[tuple[str, str], Callable[[Call, str, argparse.Namespace], Awaitable[Any]]] = {
     ("task", "list"): task_list,
     ("task", "show"): task_show,
@@ -327,4 +353,5 @@ HANDLERS: dict[tuple[str, str], Callable[[Call, str, argparse.Namespace], Awaita
     ("page", "create"): page_create,
     ("relation", "list"): relation_list,
     ("relation", "add"): relation_add,
+    ("relation", "plan"): relation_plan_run,
 }

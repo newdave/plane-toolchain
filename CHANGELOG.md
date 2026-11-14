@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `plane relation plan <file> [--apply] [--pause SECONDS]` (PTC-117): add many `blocked_by` relations from a JSON plan of `{blocked, blocker}` identifier pairs. Dry run by default. It refuses self-links, cycles (including those closed by existing relations), unknown items and items outside the project before any write, adds only missing links through `ce_workitem_relation`, paces writes and rereads each item. It never deletes relations.
+
 - `plane_toolchain.github_evidence` (PTC-120): core rules for GitHub PR gate and delivery evidence, with repository specifics passed as parameters. It parses the visible `Plane-Tasks` field (comments and fences ignored), applies an opt-in maintenance exemption, builds the gate status description and the PR and run evidence comments, and resolves task external IDs through a full paginated listing (it never trusts a server filter). `publish` reads before create, reads back after, and refuses differing content or duplicate identities. No entry point or action uses it yet.
 
 ### Security
