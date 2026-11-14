@@ -26,7 +26,9 @@ def runs(monkeypatch):
 
 def test_docker_captures_output_by_default(runs):
     assert remote.docker("inspect", "api") == b"out"
-    assert runs == [(["docker", "inspect", "api"], {"check": True, "capture_output": True})]
+    assert runs == [
+        (["docker", "inspect", "api"], {"check": True, "capture_output": True, "timeout": 300})
+    ]
 
 
 @pytest.mark.parametrize(
@@ -40,7 +42,7 @@ def test_docker_captures_output_by_default(runs):
 def test_docker_respects_caller_routing_without_capture(runs, routing):
     assert remote.docker("build", "-", check=False, **routing) == b""
     [(argv, kw)] = runs
-    assert kw == {"check": False, **routing}
+    assert kw == {"check": False, "timeout": 1800, **routing}  # build gets the long timeout
 
 
 def test_docker_ok_discards_output_and_never_raises(monkeypatch):
@@ -52,7 +54,7 @@ def test_docker_ok_discards_output_and_never_raises(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", run)
     assert remote.docker_ok("inspect", "missing") is False
-    assert calls == [{"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}]
+    assert calls == [{"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "timeout": 300}]
 
 
 def test_ssh_argv_never_prompts_and_ends_options_before_host():
@@ -424,3 +426,66 @@ def test_pages_sigterm_during_a_failure_triggered_rollback_does_not_abort_it(tmp
     # ... and the deferred SIGTERM was delivered afterwards, after the failure report.
     assert code == 143 and "API health check failed" in err
     assert err.index("API health check failed") < err.index("Terminated (SIGTERM)")
+
+
+def test_pages_sigterm_right_after_the_retire_rename_does_not_strand_the_api(tmp_path):
+    from support_pages_deploy import BACKUP, payload
+
+    # SIGTERM lands in the policy update that follows the rename of the original to its backup.
+    config = {
+        "kind": "pages",
+        "payload": payload("apply"),
+        "block_call": ["update", "--restart=no", BACKUP],
+        "block": 3,
+    }
+    code, state, err = run_harness(tmp_path, config)
+    assert state is not None, err
+    assert "Traceback" not in err
+    assert code == 143 and "Terminated (SIGTERM)" in err
+    # The swap was undone: the original runs as api again and the backup name is free.
+    assert state["containers"]["api"] == {"running": True, "labelled": False}
+    assert BACKUP not in state["containers"]
+    assert state["calls"].count(["rename", BACKUP, "api"]) == 1
+
+
+def test_docker_timeout_is_overridable_and_expiry_names_only_the_command(monkeypatch):
+    # PTC-96: a hung daemon must not block forever; the error carries no container name.
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(kw["timeout"])
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(RuntimeError) as caught:
+        remote.docker("stop", "secret-container-name")
+    assert str(caught.value) == "docker stop timed out after 300 s"
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+    with pytest.raises(RuntimeError, match="after 7 s"):
+        remote.docker("exec", "secret-container-name", timeout=7)
+    # A hung probe must never read as "the container is absent": False means only that the
+    # command ran and failed (PTC-96 review).
+    with pytest.raises(RuntimeError, match=r"^docker inspect timed out after 300 s$"):
+        remote.docker_ok("inspect", "secret-container-name")
+    with pytest.raises(RuntimeError, match="after 20 s"):
+        remote.docker_ok("inspect", "x", timeout=20)
+    assert seen == [300, 7, 300, 20]
+
+
+def test_run_remote_has_a_default_timeout_and_reports_expiry(monkeypatch, capsys):
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(kw["timeout"])
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(SystemExit) as stop:
+        remote.run_remote(HOST, PROGRAM_TEXT, {})
+    assert stop.value.code == 124
+    err = assert_quiet(capsys).err
+    assert remote.SSH_TIMED_OUT.format(remote.SSH_SECONDS) in err and remote.INTERRUPTED in err
+    with pytest.raises(SystemExit):
+        remote.run_remote(HOST, PROGRAM_TEXT, {}, timeout=5, interrupted="custom guidance")
+    assert "custom guidance" in capsys.readouterr().err
+    assert seen == [remote.SSH_SECONDS, 5]

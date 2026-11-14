@@ -41,6 +41,10 @@ DB_SIZE = (
     'psql -tA -U "$POSTGRES_USER" "$POSTGRES_DB" -c "select pg_database_size(current_database())"'
 )
 MIN_FREE_BYTES = 64 << 20
+# Deadlines for the streamed `docker exec` children (the docker() helper has its own): past
+# one the local client is killed. Two backup deadlines fit inside remote.SSH_SECONDS.
+DB_SIZE_SECONDS = 120
+BACKUP_SECONDS = 2 * 3600  # pg_dump, and again the pg_restore read-back
 SALTBOX_LABEL = "com.github.saltbox.saltbox_managed"
 DRAIN_SECONDS = 60
 DRAIN_INTERVAL = 2
@@ -462,17 +466,74 @@ def stderr_tail(handle, limit=300, hide=()):
     return "".join(c for c in text if c.isprintable())[:limit]
 
 
+def exception_class(handle):
+    """The exception class named by the last Python traceback on a child's stderr, or "".
+
+    It is the first unindented `Name:` (or bare `Name`) line after the last `Traceback` line,
+    for example `ModuleNotFoundError` or `django.db.utils.OperationalError`. A class name
+    carries no record content; the message after it is left to stderr_tail."""
+    handle.flush()
+    handle.seek(0, 2)
+    handle.seek(max(0, handle.tell() - 4096))
+    lines = handle.read().decode("utf-8", "replace").splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith("Traceback ")]
+    for line in lines[starts[-1] + 1 :] if starts else ():
+        found = re.match(r"([A-Za-z_][\w.]*)(?::|$)", line)
+        if found:
+            return found.group(1)
+    return ""
+
+
+def snippet_cause(handle, hide=()):
+    """Why a snippet gave no summary, safe to show: the exception class, then a redacted
+    stderr tail (see stderr_tail). Empty when stderr is empty."""
+    name = exception_class(handle)
+    tail = stderr_tail(handle, hide=hide)
+    return "; ".join(part for part in (name, tail and "stderr: " + tail) if part)
+
+
+def no_summary(op, events):
+    """The failure message for an operation that gave no summary, with the exit cause that
+    run_snippet recorded in an `exit` event, if any."""
+    for event in events:
+        if event.get("event") == "exit":
+            cause = event.get("cause")
+            return (
+                f"{op} gave no summary (exited with code {event.get('code')}"
+                + (": " + cause if cause else "")
+                + ")"
+            )
+    return op + " gave no summary"
+
+
+def kill_after(process, seconds):
+    """Kill `process` (a local `docker exec` client) once `seconds` pass; return (timer,
+    expired). `expired` holds True once the deadline fired; cancel the timer when done."""
+    expired = []
+
+    def fire():
+        expired.append(True)
+        process.kill()
+
+    timer = threading.Timer(seconds, fire)
+    timer.daemon = True
+    timer.start()
+    return timer, expired
+
+
 def database_size(db, popen):
-    """Size of the Plane database in bytes from the db container, or None if it is unknown."""
-    process = None
+    """Size of the Plane database in bytes from the db container, or None if it is unknown
+    (including a query still running after DB_SIZE_SECONDS)."""
+    process, timer = None, None
     try:
         process = popen(
             ["docker", "exec", db, "sh", "-c", DB_SIZE],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
+        timer, expired = kill_after(process, DB_SIZE_SECONDS)
         out = process.stdout.read(64)
-        if process.wait() != 0:
+        if process.wait() != 0 or expired:
             return None
         return int(out.decode().strip())
     except Exception:  # noqa: BLE001 - an unknown size falls back to the minimum
@@ -480,6 +541,9 @@ def database_size(db, popen):
             process.kill()
             process.wait()
         return None
+    finally:
+        if timer is not None:
+            timer.cancel()
 
 
 def check_free_space(directory, db, popen):
@@ -500,7 +564,8 @@ def validate_dump(db, dump, popen, hide=()):
 
     That reads the whole archive, every data block included, and writes it nowhere: it proves
     the dump is complete and readable by the tool that restores it, without touching the
-    database. The dump goes in on stdin."""
+    database. The dump goes in on stdin. A read-back still running after BACKUP_SECONDS is
+    killed and refused."""
     with tempfile.TemporaryFile() as errors, open(dump, "rb") as source:
         process = popen(
             ["docker", "exec", "-i", db, "pg_restore", "-f", "/dev/null"],
@@ -508,12 +573,20 @@ def validate_dump(db, dump, popen, hide=()):
             stdout=subprocess.DEVNULL,
             stderr=errors,
         )
+        timer, expired = kill_after(process, BACKUP_SECONDS)
         try:
             code = process.wait()
         except BaseException:
             process.kill()
             process.wait()
             raise
+        finally:
+            timer.cancel()
+        if expired:
+            raise RuntimeError(
+                f"backup refused: pg_restore did not finish reading the dump in "
+                f"{BACKUP_SECONDS:g} s"
+            )
         if code != 0:
             reason = stderr_tail(errors, hide=hide)
             raise RuntimeError(
@@ -526,8 +599,9 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hi
     """Stream pg_dump to backup.dump (0600), hashing and fsyncing; record the SHA-256.
 
     Before the dump the receipt directory must have room for it. After it, `pg_restore -f
-    /dev/null` must read the whole file. A failed, empty or unreadable dump raises before any caller changes data,
-    leaving no dump file; failures carry a short, redacted stderr tail.
+    /dev/null` must read the whole file. A failed, empty or unreadable dump raises before any
+    caller changes data, leaving no dump file; failures carry a short, redacted stderr tail.
+    A pg_dump still streaming after BACKUP_SECONDS is killed and fails the same way.
     """
     uid = os.geteuid() if uid is None else uid
     secure_receipt_dir(directory, uid)
@@ -541,7 +615,7 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hi
         os.unlink(temporary)
     check_free_space(directory, db, popen)
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    digest, size, failure, process = hashlib.sha256(), 0, None, None
+    digest, size, failure, process, timer = hashlib.sha256(), 0, None, None, None
     try:
         with tempfile.TemporaryFile() as errors:
             process = popen(
@@ -549,6 +623,7 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hi
                 stdout=subprocess.PIPE,
                 stderr=errors,
             )
+            timer, expired = kill_after(process, BACKUP_SECONDS)
             while True:
                 chunk = process.stdout.read(1 << 20)
                 if not chunk:
@@ -556,7 +631,9 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hi
                 digest.update(chunk)
                 size += len(chunk)
                 os.write(descriptor, chunk)
-            if process.wait() != 0:
+            if process.wait() != 0 and expired:
+                failure = f"backup failed: pg_dump timed out after {BACKUP_SECONDS:g} s"
+            elif process.returncode != 0:
                 reason = stderr_tail(errors, hide=hide)
                 failure = "backup failed: pg_dump exited with an error" + (
                     " (" + reason + ")" if reason else ""
@@ -572,6 +649,9 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hi
         os.close(descriptor)
         os.unlink(temporary)
         raise
+    finally:
+        if timer is not None:
+            timer.cancel()
     os.close(descriptor)
     try:
         if failure:
@@ -597,6 +677,13 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hi
 # --- T7: the apply state machine -------------------------------------------------------------
 
 SHELL = ("python", "manage.py", "shell")
+# `manage.py shell -c BOOTSTRAP`: read one length line, then exactly that many bytes of program
+# (the request line and the snippet) from stdin and run them. Stdin then stays open for acks:
+# the host writes `ack` after each journal line is fsynced, and the snippet waits for it before
+# the write that line covers. Plain `manage.py shell` would read stdin to its end first.
+BOOTSTRAP = (
+    "import sys; exec(sys.stdin.buffer.read(int(sys.stdin.buffer.readline())).decode('utf-8'))"
+)
 APPLY_OPS = ("step_slug", "step_rows")  # the only operations that emit journal events
 INTERRUPTED = (
     "Rename interrupted ({}). Services may be stopped. The receipt keeps the last completed "
@@ -679,13 +766,17 @@ def stop_snippet(api, token, popen):
     return run_killer(api, token, popen) == "gone"
 
 
-def run_snippet(api, snippet, op, args, directory, popen, uid=None):
+def run_snippet(api, snippet, op, args, directory, popen, uid=None, hide=()):
     """Run one snippet operation through `docker exec -i <api> python manage.py shell`.
 
-    Stdin is one request line (`RENAME_REQUEST = ...`) and then the snippet source. Stdout is
-    read line by line; non-JSON lines are ignored and never echoed. Each `journal` event is
-    appended to the journal (fsynced) before the next line is read, and is never kept or
+    The program runs as `manage.py shell -c BOOTSTRAP`. Stdin is a length line, then the
+    program: one request line (`RENAME_REQUEST = ...`) and the snippet source. Stdout is read
+    line by line; non-JSON lines are ignored and never echoed. Each `journal` event is appended
+    to the journal (fsynced) and only then acknowledged with an `ack` line on stdin; the
+    snippet writes the row it covers only after that ack. Journal lines are never kept or
     printed. Returns (summary or None, other events). A non-zero exit gives no summary.
+    Stderr goes to a temporary file. Without a summary, an `exit` event carries the exit code
+    and snippet_cause (exception class and redacted stderr tail; `hide` names are masked).
 
     The process runs with a `PLANE_RENAME_RUN=<receipt-dir id>:<token>` marker in its environment. Killing the
     local `docker exec` client does not stop the Python process in the container, so every
@@ -698,12 +789,35 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None):
     source = "RENAME_REQUEST = __import__('json').loads(" + repr(request) + ")\n" + snippet
     # A check only reads and takes no lock, so its marker is not a directory's: a sweep ignores it.
     token = ("check" if op == "check" else run_id(directory)) + ":" + os.urandom(8).hex()
-    process = popen(
-        ["docker", "exec", "-i", "-e", SNIPPET_MARKER + "=" + token, api, *SHELL],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
+    with tempfile.TemporaryFile() as errors:
+        process = popen(
+            [
+                "docker",
+                "exec",
+                "-i",
+                "-e",
+                SNIPPET_MARKER + "=" + token,
+                api,
+                *SHELL,
+                "-c",
+                BOOTSTRAP,
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=errors,
+        )
+        summary, events = read_snippet(process, source, api, op, token, directory, popen, uid)
+        if summary is None:
+            code = process.wait()
+            cause = snippet_cause(errors, hide=(*hide, api))
+            if code or cause:
+                events.append({"event": "exit", "code": code, "cause": cause})
+    return summary, events
+
+
+def read_snippet(process, source, api, op, token, directory, popen, uid):
+    """run_snippet's loop: pipe `source` to the started snippet `process`, then read its
+    output; returns (summary, events)."""
     summary, events = None, []
     expired, timer = [], []
 
@@ -724,8 +838,9 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None):
 
     try:
         arm()
-        process.stdin.write(source.encode())
-        process.stdin.close()
+        program = source.encode()
+        process.stdin.write(str(len(program)).encode() + b"\n" + program)
+        process.stdin.flush()  # stdin stays open: the acks follow
         for raw in process.stdout:
             arm()
             try:
@@ -738,14 +853,21 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None):
                 if op not in APPLY_OPS or not isinstance(event.get("record"), dict):
                     raise RuntimeError("unexpected journal event from " + op + "; refusing")
                 append_journal(directory, event["record"], uid)
+                process.stdin.write(b"ack\n")  # only once the line is durable
+                process.stdin.flush()
             elif event.get("event") == "summary":
                 summary = event
             elif event.get("event") != "progress":  # progress only re-arms the deadline
                 events.append(event)
+        process.stdin.close()
     except BaseException as failure:
         disarm()
         process.kill()
         process.wait()
+        try:
+            process.stdin.close()
+        except OSError:  # the pipe is already broken; nothing is left to send
+            pass
         if not stop_snippet(api, token, popen):
             if isinstance(failure, Exception):
                 raise RuntimeError(STUCK + " (" + op + ")") from None
@@ -799,6 +921,11 @@ def report(op, summary, events):
                 f"Not rewritten: {event.get('count')} in {event.get('table')}."
                 f"{event.get('column')} ({event.get('reason')})"
             )
+        elif kind == "not_rebuilt":
+            say(
+                f"Not rebuilt: {event.get('count')} in {event.get('table')}."
+                f"{event.get('column')} (the stored editor binary keeps the old slug)"
+            )
         elif kind == "health":
             say(
                 "Health " + str(event.get("check")) + ": " + ("ok" if event.get("ok") else "FAILED")
@@ -825,12 +952,12 @@ def report(op, summary, events):
         say(f"Partial restore: {summary.get('skipped', 0)} rows skipped; this is not a full revert")
 
 
-def snippet_ok(api, snippet, op, args, directory, popen, uid=None):
+def snippet_ok(api, snippet, op, args, directory, popen, uid=None, hide=()):
     """run_snippet and report; return the summary. A missing summary or ok:false raises."""
-    summary, events = run_snippet(api, snippet, op, args, directory, popen, uid)
+    summary, events = run_snippet(api, snippet, op, args, directory, popen, uid, hide)
     report(op, summary, events)
     if summary is None:
-        raise RuntimeError(op + " gave no summary")
+        raise RuntimeError(no_summary(op, events))
     if summary.get("ok") is not True:
         raise RuntimeError(op + " failed")
     return summary
@@ -1066,7 +1193,7 @@ def drain_state(reason):
 def run_context(data, seams, operations=None):
     """What check, apply and revert share for one run, as a dict: the seams (docker, popen,
     clock, crash, uid, and seams itself for the lazily read sleep) and the payload (operation,
-    old, new, api, snippet, directory, names, options, undrained).
+    old, new, api, snippet, directory, names, options, undrained, stale_binaries).
 
     run_apply and run_revert each build one, use the run_* helpers below for the snippet call,
     the service stop and start and the step machine, and keep only their own steps and failure
@@ -1089,13 +1216,39 @@ def run_context(data, seams, operations=None):
     run["names"] = service_names(data.get("services") or {})
     run["options"] = {key: data[key] for key in ("live_url", "api_url") if data.get(key)}
     run["undrained"] = data.get("allow_undrained") is True
+    run["stale_binaries"] = data.get("allow_stale_binaries") is True
     return run
+
+
+def stale_binary_gate(run, summary):
+    """Refuse a check whose summary counts `not_rebuilt` rows unless the payload allows it.
+
+    step_slug rewrites Description rows without Live, so their stored editor binary keeps the
+    old slug, and a later editor save can bring it back. With `allow_stale_binaries` the run
+    goes on and says so."""
+    count = summary.get("not_rebuilt") or 0
+    if not count:
+        return
+    text = (
+        f"Description editor binaries not rebuilt: {count}; they keep the old slug and a later "
+        "editor save can bring it back"
+    )
+    if not run["stale_binaries"]:
+        raise RuntimeError(text + ". Set PLANE_RENAME_ALLOW_STALE_BINARIES=1 to accept that")
+    say("Warning: " + text + " (accepted by PLANE_RENAME_ALLOW_STALE_BINARIES)")
 
 
 def run_call(run, op, args):
     """Run one snippet operation; return its summary. No summary or ok:false raises."""
     return snippet_ok(
-        run["api"], run["snippet"], op, args, run["directory"], run["popen"], run["uid"]
+        run["api"],
+        run["snippet"],
+        op,
+        args,
+        run["directory"],
+        run["popen"],
+        run["uid"],
+        run["names"].values(),
     )
 
 
@@ -1190,9 +1343,9 @@ def run_apply(data, seams):
     anything else stops with services down. After the slug change, a failure stops with
     services down for the operator to resume (apply) or revert. There is no automatic rollback.
 
-    Known risk: a kill of this process between the snippet's print of a journal line and the
-    host's fsync of it can leave a written row without a journal entry; only the pg_dump backup
-    recovers that row. Closing it needs an acknowledgement channel, which this does not have.
+    Journal durability: the snippet waits for this process's `ack` (sent after the fsync) before
+    each write a journal line covers (see run_snippet), so a kill of this process between the
+    print and the fsync leaves that row unwritten, never unjournalled.
     """
     run = run_context(data, seams, ("check", "apply"))
     operation, old, new = run["operation"], run["old"], run["new"]
@@ -1247,7 +1400,7 @@ def run_apply(data, seams):
             and run_slug_state(run, workspace_id) == "renamed"
         )
         if not slug_committed:
-            run_call(run, "check", {"old": old, "new": new})
+            stale_binary_gate(run, run_call(run, "check", {"old": old, "new": new}))
         run_call(run, "flush_cache", {"dry_run": True})
         detect_saltbox(names, docker)
     except RuntimeError as failure:
@@ -1491,12 +1644,19 @@ def run_revert(data, seams):
         crash("before_restore")
         args = {"old": old, "new": new, "journal": records, "workspace_id": workspace_id}
         summary, events = run_snippet(
-            run["api"], run["snippet"], "restore", args, directory, run["popen"], uid
+            run["api"],
+            run["snippet"],
+            "restore",
+            args,
+            directory,
+            run["popen"],
+            uid,
+            run["names"].values(),
         )
         report("restore", summary, events)
         crash("after_restore")
         if summary is None:
-            raise RuntimeError("restore gave no summary")
+            raise RuntimeError(no_summary("restore", events))
         skipped = summary.get("skipped", 0) if summary.get("partial") else 0
         if not skipped and summary.get("ok") is not True:
             raise RuntimeError("restore failed")
@@ -1691,6 +1851,10 @@ SHIPPED = (
     detect_saltbox,
     set_receipt_field,
     stderr_tail,
+    kill_after,
+    exception_class,
+    snippet_cause,
+    no_summary,
     database_size,
     check_free_space,
     validate_dump,
@@ -1708,6 +1872,7 @@ SHIPPED = (
     is_stuck,
     stop_snippet,
     run_snippet,
+    read_snippet,
     report,
     snippet_ok,
     inspect_services,
@@ -1725,6 +1890,7 @@ SHIPPED = (
     warnings_text,
     drain_state,
     run_context,
+    stale_binary_gate,
     run_call,
     run_health,
     run_slug_state,
@@ -1745,6 +1911,8 @@ SHIPPED_CONSTANTS = {
     "PG_DUMP": PG_DUMP,
     "DB_SIZE": DB_SIZE,
     "MIN_FREE_BYTES": MIN_FREE_BYTES,
+    "DB_SIZE_SECONDS": DB_SIZE_SECONDS,
+    "BACKUP_SECONDS": BACKUP_SECONDS,
     "SNIPPET_IDLE_SECONDS": SNIPPET_IDLE_SECONDS,
     "KILL_WAIT": KILL_WAIT,
     "SNIPPET_MARKER": SNIPPET_MARKER,
@@ -1754,6 +1922,7 @@ SHIPPED_CONSTANTS = {
     "DRAIN_SECONDS": DRAIN_SECONDS,
     "DRAIN_INTERVAL": DRAIN_INTERVAL,
     "SHELL": SHELL,
+    "BOOTSTRAP": BOOTSTRAP,
     "APPLY_OPS": APPLY_OPS,
     "INTERRUPTED": INTERRUPTED,
     "LOCK_FILE": LOCK_FILE,
@@ -1861,6 +2030,9 @@ def main(argv=None):
     undrained = os.environ.get("PLANE_RENAME_ALLOW_UNDRAINED") or None
     if undrained not in (None, "1"):
         sys.exit("Invalid PLANE_RENAME_ALLOW_UNDRAINED (use 1)")
+    stale = os.environ.get("PLANE_RENAME_ALLOW_STALE_BINARIES") or None
+    if stale not in (None, "1"):
+        sys.exit("Invalid PLANE_RENAME_ALLOW_STALE_BINARIES (use 1)")
     idle = os.environ.get("PLANE_RENAME_SNIPPET_IDLE_SECONDS") or None
     if idle is not None:
         try:
@@ -1885,6 +2057,8 @@ def main(argv=None):
             payload[key] = value
     if undrained:
         payload["allow_undrained"] = True
+    if stale:
+        payload["allow_stale_binaries"] = True
     if idle:
         payload["snippet_idle_seconds"] = idle
     sys.exit(run_remote(host, REMOTE, payload, check=False, interrupted=LOCAL_INTERRUPTED))

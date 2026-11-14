@@ -76,7 +76,7 @@ def test_mixed_legacy_and_neutral_refused(applied):
 
 
 def test_neutral_host_unaffected(applied, host):
-    assert deploy("check", applied) == "Pages image and API health verified"
+    assert deploy("check", applied) == "Pages image and API health verified (digest " + DIGEST + ")"
     assert deploy("apply", host).startswith("Pages derived image applied")
     assert deploy("revert", host, later=10).startswith("Original API container restored")
 
@@ -133,4 +133,4 @@ def test_retired_legacy_labelled_reverted_container_stays_allowed(applied):
         running=False,
         RestartPolicy={"Name": "no"},
     )
-    assert deploy("check", applied) == "Pages image and API health verified"
+    assert deploy("check", applied) == "Pages image and API health verified (digest " + DIGEST + ")"
