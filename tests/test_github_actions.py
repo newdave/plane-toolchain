@@ -72,6 +72,14 @@ def test_env_maps_every_input(name):
     assert "inputs.github-token" in env["GH_TOKEN"]
 
 
+@pytest.mark.parametrize("name", ACTIONS)
+def test_action_enables_plane(name):
+    # Settings.from_env refuses to connect unless PLANE_ENABLED is exactly "true".
+    _, action = load(name)
+    cli = next(s for s in action["runs"]["steps"] if "github_evidence_cli" in s.get("run", ""))
+    assert cli["env"]["PLANE_ENABLED"] == "true"
+
+
 def test_gate_has_no_continue_on_error():
     assert "continue-on-error" not in load("plane-pr-gate")[0]
 

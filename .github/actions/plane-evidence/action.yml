@@ -96,6 +96,7 @@ runs:
       shell: bash
       env:
         ACTION_ROOT: ${{ github.action_path }}/../../..
+        PLANE_ENABLED: 'true'
         PLANE_API_KEY: ${{ inputs.plane-api-key }}
         PLANE_MCP_URL: ${{ inputs.mcp-url }}
         PLANE_WORKSPACE: ${{ inputs.workspace }}
