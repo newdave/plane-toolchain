@@ -1,0 +1,23 @@
+docs/decisions/0003-bounded-page-version-deletion.md
+  s_a03650451d84d5::t_ade63704b9697d 1-62
+docs/extensions.md
+  s_a03650451d84d5::t_8d8bc0687ac44e 38
+CHANGELOG.md
+  s_a03650451d84d5::t_f38194282884ae 13-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "24a65a0c62a5e4a1bd9c28957947c64a52d18062",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
