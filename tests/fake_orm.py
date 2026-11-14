@@ -164,6 +164,8 @@ class FakeOrm:
             key: Table(db, rows, cols, *rest[:1], log=self.log)
             for key, (db, cols, rows, *rest) in tables.items()
         }
+        if "email_log" in self.models:  # Plane's email log has no workspace column
+            self.models["email_log"].hidden.add("workspace_id")
         self.settings = SimpleNamespace(WEB_URL=web_url)
         self.restricted_slugs = set(restricted)
         self.cache = {}

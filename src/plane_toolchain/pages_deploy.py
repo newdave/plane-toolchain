@@ -215,8 +215,9 @@ def build_image(base, source, digest, docker):
     """Build the derived image tag for `digest` from `base` and `source`; return the tag.
 
     stdout is discarded. On failure the error carries the exit code and a bounded tail of
-    docker's stderr (last 5 lines, 200 characters each): the build context holds no runtime
-    configuration, so none can appear.
+    docker's stderr (last 5 lines, 200 characters each, with the base image reference, its
+    repository path and any `lookup <host>` DNS host redacted): the build context holds no
+    runtime configuration, so none can appear.
     """
     image = NEUTRAL_PAGES_IMAGE_PREFIX + digest[:16]
     try:
@@ -231,9 +232,18 @@ def build_image(base, source, digest, docker):
         )
     except subprocess.CalledProcessError as failure:
         text = (failure.stderr or b"").decode(errors="replace")
-        # Docker echoes the base image reference; keep the registry host out of the message.
-        for reference in (base, base.partition("@")[0], base.partition("/")[0]):
+        # Docker echoes the base image reference; keep the registry host and repository path out
+        # of the message, longest first so the shorter ones do not split a longer match.
+        repository = base.partition("@")[0]
+        for reference in (
+            base,
+            repository,
+            repository.partition("/")[2],
+            repository.partition("/")[0],
+        ):
             text = text.replace(reference, "<base image>") if reference else text
+        # A DNS failure names the host actually dialled, which may differ from the reference.
+        text = re.sub(r"\blookup \S+", "lookup <host>", text)
         lines = text.splitlines()
         tail = " | ".join(line.strip()[:200] for line in lines[-5:] if line.strip())
         raise ValueError(
@@ -272,24 +282,40 @@ def retained_note(name, docker):
     return note
 
 
+def kept_note(newest):
+    """`; kept newest reverted container: ...` for prune, or '' when there is none."""
+    return "; kept newest reverted container (revert recovery): " + newest if newest else ""
+
+
 def prune(name, docker, probe, confirm=False):
     """Remove (or, without `confirm`, list) stopped retired derived containers of `name`.
 
     Only a container that carries the Pages source label and is named exactly
     `<name>-pages-(reverted|failed)-<digits>[-<digits>...]` qualifies: never the live API, the
     rollback container, a running container, an `-aside` parking name or anything unlabelled
-    (an unlabelled one may be the upstream original).
+    (an unlabelled one may be the upstream original). The newest `-pages-reverted-` one is also
+    kept, labelled or not, and a container that vanishes before its inspect is skipped.
     """
     exact = re.compile(re.escape(name) + r"-pages-(reverted|failed)-\d+(-\d+)*")
     candidates = [n for n in retained_names(name, docker) if exact.fullmatch(n)]
+    # The newest parked `-pages-reverted-` container is revert recovery evidence: `finish_revert`
+    # reads the live restart policy from it and `interrupted_revert` takes its presence as proof
+    # a revert died. Removing it could strand a stopped API, so it is never a candidate.
+    reverted = [n for n in candidates if n.startswith(name + "-pages-reverted-")]
+    newest = reverted[-1] if reverted else None
     eligible, running = [], []
     for container in candidates:
-        held = json.loads(docker("inspect", container))[0]
+        if container == newest:
+            continue
+        try:
+            held = json.loads(docker("inspect", container))[0]
+        except subprocess.CalledProcessError:
+            continue  # Removed since the listing: nothing left to prune.
         if source_label(held) is None:
             continue
         (running if held["State"].get("Running") else eligible).append(container)
     if not eligible and not running:
-        return "No retired containers to prune"
+        return "No retired containers to prune" + kept_note(newest)
     parts = []
     if not confirm:
         parts.append("Dry run, nothing removed. Would remove: " + (", ".join(eligible) or "none"))
@@ -303,7 +329,7 @@ def prune(name, docker, probe, confirm=False):
         parts.append("kept running: " + ", ".join(running))
     if not confirm and eligible:
         parts.append("set PLANE_PAGES_PRUNE=yes to remove them")
-    return "; ".join(parts)
+    return "; ".join(parts) + kept_note(newest)
 
 
 def check(current, payload, health):
@@ -449,7 +475,7 @@ def revert(current, payload, backup, docker, probe, health, now):
                 restore_any(name, backup, reverted, probe, docker, policy)
                 raise error  # Recovery error stays as __context__.
         finally:
-            release_sigterm(mask)
+            release_sigterm(mask, error)
         raise
     return "Original API container restored; derived container retained stopped" + retained_note(
         name, docker
@@ -532,15 +558,19 @@ def apply(current, payload, backup, docker, probe, create, health, now):
     try:
         docker("stop", name)
         docker("rename", name, backup)
-    except BaseException:
-        probe("start", name)  # Never leave the live API stopped; its policy is unchanged.
+    except BaseException as error:
+        mask = hold_sigterm()  # A SIGTERM now waits until the API is started again.
+        try:
+            probe("start", name)  # Never leave the live API stopped; its policy is unchanged.
+        finally:
+            release_sigterm(mask, error)
         raise
     set_restart(probe, "no", backup)  # After the rename: a failed rename keeps the policy.
     try:
         create(name, body)
         docker("start", name)
         health(name)
-    except BaseException:
+    except BaseException as error:
         mask = hold_sigterm()  # A SIGTERM now waits until the rollback is done.
         try:
             if probe("inspect", name):
@@ -552,7 +582,7 @@ def apply(current, payload, backup, docker, probe, create, health, now):
             set_restart(probe, policy, name)
             docker("start", name)
         finally:
-            release_sigterm(mask)
+            release_sigterm(mask, error)
         raise
     return (
         "Pages derived image applied; API healthy; original container retained for rollback"
@@ -637,6 +667,7 @@ REMOTE = program(
         release_sigterm,
         retained_names,
         retained_note,
+        kept_note,
         prune,
     ]
     + [

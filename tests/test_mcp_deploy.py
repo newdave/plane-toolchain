@@ -1041,6 +1041,17 @@ def test_revert_killed_mid_write_then_apply_and_revert_both_recover(root, monkey
     assert "reverting" not in json.loads((root / "plane-toolchain-ce-receipt.json").read_text())
 
 
+def test_idempotent_revert_clears_a_stale_reverting_marker(root):
+    deploy("apply", root, mcp_host())
+    final = (root / "plane-toolchain-ce-receipt.json").read_text()
+    # A revert killed after the rewrite but before the marker was cleared.
+    (root / "server.py").write_bytes(ORIGINAL)
+    marked = dict(json.loads(final), reverting=True)
+    (root / "plane-toolchain-ce-receipt.json").write_text(json.dumps(marked))
+    assert deploy("revert", root, mcp_host()) == "Original MCP entry point already restored"
+    assert (root / "plane-toolchain-ce-receipt.json").read_text() == final
+
+
 RELEASED = b"print('shipped in a past release')\n"
 
 

@@ -168,6 +168,28 @@ def test_kill_script_sweep_stops_only_its_directory_and_refuses_foreign_runs(
     assert (tmp_path / "4004").exists() and (tmp_path / "4005").exists()
 
 
+def test_kill_script_sweep_ignores_check_snippets(tmp_path, monkeypatch, capsys):
+    fake_proc(tmp_path, 4001, [b"PLANE_RENAME_RUN=check:a"])
+    fake_proc(tmp_path, 4002, [b"PLANE_RENAME_RUN=h1:b"])
+    monkeypatch.setattr(os, "kill", lambda pid, sig: shutil.rmtree(tmp_path / str(pid)))
+    assert run_killer(tmp_path, "h1:", monkeypatch) == 0
+    assert [p.name for p in tmp_path.iterdir()] == ["4001"]
+    assert run_killer(tmp_path, "check:a", monkeypatch) == 0  # its own run still stops it
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_kill_script_sweep_refuses_an_old_format_marker_and_names_the_pids(
+    tmp_path, monkeypatch, capsys
+):
+    fake_proc(tmp_path, 4001, [b"PLANE_RENAME_RUN=oldtoken"])
+    fake_proc(tmp_path, 4002, [b"PLANE_RENAME_RUN=h1:b"])
+    fake_proc(tmp_path, 4003, [b"PLANE_RENAME_RUN=h2:live"])
+    monkeypatch.setattr(os, "kill", lambda pid, sig: shutil.rmtree(tmp_path / str(pid)))
+    assert run_killer(tmp_path, "h1:", monkeypatch) == 3  # kills nothing, even its own
+    assert capsys.readouterr().out.strip() == "legacy 4001"
+    assert {p.name for p in tmp_path.iterdir()} == {"4001", "4002", "4003"}
+
+
 def test_kill_script_escalates_to_sigkill_and_reports_a_survivor(tmp_path, monkeypatch, capsys):
     fake_proc(tmp_path, 4001, [b"PLANE_RENAME_RUN=abc"])
     sent = []

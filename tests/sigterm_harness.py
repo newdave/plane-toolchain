@@ -4,6 +4,9 @@ Used by the SIGTERM tests: the program blocks in its health wait (the first `tim
 writes a marker file, then really sleeps), the test sends SIGTERM, and this script reports the
 host state the program's own rollback left behind.
 
+With `block_call` (docker argv prefix) the program blocks in that docker call instead, so the
+signal can land inside a rollback that has no health wait.
+
 usage: sigterm_harness.py <config.json>   (kind, directory, marker; plus the payload)
 """
 
@@ -38,14 +41,24 @@ real_sleep = time.sleep
 blocked = []
 
 
+def block():
+    blocked.append(True)
+    pathlib.Path(config["marker"]).write_text("waiting")
+    real_sleep(config.get("block", 60))
+
+
 def sleep(seconds):
-    if not blocked:
-        blocked.append(True)
-        pathlib.Path(config["marker"]).write_text("waiting")
-        real_sleep(config.get("block", 60))
+    if not blocked and "block_call" not in config:
+        block()
 
 
-subprocess.run = fake.subprocess_run
+def run(argv, **kw):
+    if not blocked and argv[1:][: len(config.get("block_call", []))] == config.get("block_call"):
+        block()
+    return fake.subprocess_run(argv, **kw)
+
+
+subprocess.run = run
 time.sleep = sleep
 http.client.HTTPConnection = fake.http_connection()
 sys.stdin = io.StringIO(json.dumps(config["payload"]))

@@ -258,6 +258,10 @@ def probe_models(args, orm, emit, convert=None):
                 mismatch(key, field, "kind", expected=kind, found=found["kind"])
             elif kind in wanted_db and found["db_type"] != wanted_db[kind]:
                 mismatch(key, field, "db_type", expected=wanted_db[kind], found=found["db_type"])
+        # ASSUMPTION (see UNOWNED): these models have no workspace column; one would scope them.
+        for field in ("workspace", "workspace_id") if key in UNOWNED else ():
+            if orm.describe(key, field) is not None:
+                mismatch(key, field, "unexpected")
     emit({"event": "summary", "ok": not bad, "step": "probe"})
     return not bad
 

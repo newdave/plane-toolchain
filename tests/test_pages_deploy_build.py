@@ -143,3 +143,17 @@ def test_build_failure_hides_the_base_image_registry(host):
     with pytest.raises(ValueError, match="Image build failed") as error:
         deploy("apply", host)
     assert "registry.example" not in str(error.value) and "<base image>" in str(error.value)
+
+
+def test_build_failure_hides_the_repository_path_and_the_dns_host(host):
+    host.error_output = (
+        b"ERROR: pull access denied for plane-backend, repository does not exist\n"
+        b"dial tcp: lookup registry-1.example.net on 10.0.0.2:53: no such host\n"
+    )
+    host.fail.append("build")
+    host.images["sha256:base"] = ["registry.example/plane-backend@sha256:abc"]
+    with pytest.raises(ValueError, match="Image build failed") as error:
+        deploy("apply", host)
+    message = str(error.value)
+    assert "plane-backend" not in message and "registry-1.example.net" not in message
+    assert "<base image>" in message and "lookup <host>" in message

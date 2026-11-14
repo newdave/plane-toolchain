@@ -81,6 +81,23 @@ def test_probe_checks_table_names_and_the_unfiltered_manager():
     assert ("comment", "", "manager") in found
 
 
+def test_probe_passes_when_email_log_has_no_workspace_column():
+    from support_workspace_rename_backend import make_orm
+
+    ok, events = probe(make_orm())
+    assert ok and not mismatches(events)
+
+
+def test_probe_reports_a_workspace_column_on_email_log():
+    from support_workspace_rename_backend import make_orm
+
+    orm = make_orm()
+    orm.models["email_log"].hidden.discard("workspace_id")
+    ok, events = probe(orm)
+    assert not ok
+    assert set(mismatches(events)) == {("email_log", "workspace_id", "unexpected")}
+
+
 def test_probe_emits_names_only_never_row_content():
     from support_workspace_rename_backend import PRIVATE, make_orm
 
@@ -215,6 +232,14 @@ def test_api_container_that_is_a_service_container_is_refused_before_anything(ho
     assert not host.shell.requests
 
 
+def test_api_container_with_a_service_containers_id_is_refused_under_another_name(host):
+    host.fake.add("api-alias")  # a different name for the same container
+    host.fake.containers["api-alias"]["id"] = host.fake.containers["plane-api"]["id"]
+    with pytest.raises(RuntimeError, match=r"Refused: the API container is also .* service"):
+        host.deploy(api="api-alias", services={"PLANE_WORKER_CONTAINER": "plane-api"})
+    assert not mutating(host.fake)
+
+
 def test_api_container_in_the_stop_list_via_an_override_is_refused(host):
     host.fake.add("custom-worker")
     with pytest.raises(RuntimeError, match=r"Refused: the API container is also"):
@@ -347,7 +372,7 @@ def test_stopped_workers_cannot_drain_so_the_gate_fails_fast_with_accurate_words
 
 
 def test_marker_carries_the_receipt_directory_id(host, tmp_path):
-    snippet_call(host)
+    snippet_call(host, "step_slug")
     argv = next(c for c in host.fake.calls if "manage.py" in c)
     assert argv[3].split("=", 1)[1].startswith(wr.run_id(host.directory) + ":")
     assert wr.run_id(host.directory) != wr.run_id(tmp_path / "elsewhere")
@@ -361,6 +386,26 @@ def test_sweep_refuses_and_kills_nothing_when_another_directory_has_a_live_run(h
     ):
         host.deploy()
     assert host.fake.procs == ["0123456789ab:live-run-elsewhere"]
+    assert not mutating(host.fake)
+
+
+def test_check_marker_is_not_a_directory_marker(host):
+    snippet_call(host)
+    argv = next(c for c in host.fake.calls if "manage.py" in c)
+    assert argv[3].split("=", 1)[1].startswith("check:")
+
+
+def test_sweep_ignores_a_concurrent_check_snippet(host):
+    host.fake.procs = ["check:0123456789abcdef"]  # another directory's read-only check
+    assert host.deploy().startswith("Rename complete")
+    assert host.fake.procs == ["check:0123456789abcdef"]
+
+
+def test_sweep_refuses_an_old_format_marker_naming_the_pid_and_kill_command(host):
+    host.fake.procs = ["0123456789abcdef"]  # no ":", from before the directory id
+    with pytest.raises(RuntimeError, match=r"Refused: .*older-format.*pid 4001.*kill 4001"):
+        host.deploy()
+    assert host.fake.procs == ["0123456789abcdef"]
     assert not mutating(host.fake)
 
 

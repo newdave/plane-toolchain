@@ -52,7 +52,10 @@ STUCK = "snippet process could not be confirmed stopped"
 # /proc, the processes whose environment has SNIPPET_MARKER=<value> with value starting with
 # <match>. A <match> ending in ":" is a sweep of one receipt directory's id: processes marked
 # by any other directory are "foreign" and, if any exist, nothing is killed and it prints
-# "foreign" (exit 2). Otherwise SIGTERM then SIGKILL; prints "gone" (exit 0) or "alive" (1).
+# "foreign" (exit 2). A sweep ignores read-only `check` snippets (value starting "check:"), and
+# a legacy value (no ":", from before the directory id) cannot be attributed: nothing is killed
+# and it prints "legacy <pid>,<pid>" (exit 3). Otherwise SIGTERM then SIGKILL; prints "gone"
+# (exit 0) or "alive" (1).
 KILLER = """\
 import os, signal, sys, time
 match, wait = sys.argv[1].encode(), float(sys.argv[2])
@@ -60,7 +63,7 @@ root = sys.argv[3] if len(sys.argv) > 3 else "/proc"
 sweep = match.endswith(b":")
 prefix = b"PLANE_RENAME_RUN="
 def marked():
-    mine, foreign = [], []
+    mine, foreign, legacy = [], [], []
     for name in os.listdir(root):
         if not name.isdigit() or int(name) == os.getpid():
             continue
@@ -71,12 +74,21 @@ def marked():
             continue
         for item in items:
             if item.startswith(prefix):
-                (mine if item[len(prefix):].startswith(match) else foreign).append(int(name))
+                value = item[len(prefix):]
+                if value.startswith(match):
+                    mine.append(int(name))
+                elif sweep and value.startswith(b"check:"):
+                    pass
+                else:
+                    (foreign if b":" in value else legacy).append(int(name))
                 break
-    return mine, foreign
+    return mine, foreign, legacy
 sig = signal.SIGTERM
 for _ in range(int(wait * 2) + 1):
-    pids, others = marked()
+    pids, others, old = marked()
+    if sweep and old:
+        print("legacy " + ",".join(map(str, old)))
+        sys.exit(3)
     if sweep and others:
         print("foreign")
         sys.exit(2)
@@ -633,7 +645,8 @@ def run_id(directory):
 
 def run_killer(api, match, popen):
     """Run the kill script in the API container for `match` (a full marker value, or a
-    directory id ending in ":" to sweep); return "gone", "alive", "foreign" or "" (unknown).
+    directory id ending in ":" to sweep); return "gone", "alive", "foreign", "legacy <pids>"
+    or "" (unknown).
 
     The script's wait is bounded by KILL_WAIT: past it the client is killed and the result is
     unknown."""
@@ -647,9 +660,10 @@ def run_killer(api, match, popen):
         timer = threading.Timer(KILL_WAIT, process.kill)
         timer.daemon = True
         timer.start()
-        word = process.stdout.read(64).strip().decode()
+        text = process.stdout.read(256).strip().decode()
         code = process.wait()
-        return word if code == {"gone": 0, "alive": 1, "foreign": 2}.get(word) else ""
+        word = text.split(" ")[0]
+        return text if code == {"gone": 0, "alive": 1, "foreign": 2, "legacy": 3}.get(word) else ""
     except Exception:  # noqa: BLE001 - an unconfirmed stop is reported, never guessed
         if process is not None:
             process.kill()
@@ -682,7 +696,8 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None):
     """
     request = json.dumps({"op": op, "args": args}, sort_keys=True)
     source = "RENAME_REQUEST = __import__('json').loads(" + repr(request) + ")\n" + snippet
-    token = run_id(directory) + ":" + os.urandom(8).hex()
+    # A check only reads and takes no lock, so its marker is not a directory's: a sweep ignores it.
+    token = ("check" if op == "check" else run_id(directory)) + ":" + os.urandom(8).hex()
     process = popen(
         ["docker", "exec", "-i", "-e", SNIPPET_MARKER + "=" + token, api, *SHELL],
         stdin=subprocess.PIPE,
@@ -822,21 +837,29 @@ def snippet_ok(api, snippet, op, args, directory, popen, uid=None):
 
 
 def inspect_services(names, api, docker):
-    """Refuse unless every service container exists. Messages name the service, not the host."""
+    """Refuse unless every service container exists; return {service: container id}.
+
+    Messages name the service, not the host."""
+    ids = {}
     for key, name in sorted({**names, "api": api}.items()):
         try:
-            docker("inspect", name)
+            ids[key] = json.loads(docker("inspect", name))[0].get("Id")
         except subprocess.CalledProcessError:
             raise RuntimeError("container not found for service " + key) from None
+    return ids
 
 
-def refuse_api_service(names, api):
+def refuse_api_service(names, api, ids=None):
     """Refuse when the API container is also one of the service containers.
+
+    By name, and by container id when `ids` (from inspect_services) is given: one container can
+    answer to two names (a name and an id, say).
 
     Stopping (or restarting) a service would then take the API container down with it, and the
     snippet runs in the API container. The names come from PLANE_*_CONTAINER, so a wrong
     override can cause it."""
-    if api in names.values():
+    same_id = ids and ids.get("api") and any(ids.get("api") == ids[key] for key in names)
+    if api in names.values() or same_id:
         raise RuntimeError(
             "the API container is also a service container; give the API container and each "
             "service its own name (PLANE_API_CONTAINER, PLANE_*_CONTAINER)"
@@ -849,7 +872,8 @@ def sweep_orphans(api, popen, operation, directory):
     The run lock (per receipt directory) means no other apply or revert on this directory is
     live, so its marked processes are orphans. A marked process of a different directory is a
     live run elsewhere on this instance: refuse, never kill it. `check` takes no lock and never
-    sweeps (it could be a live run's snippet)."""
+    sweeps (it could be a live run's snippet). A sweep ignores `check` snippets (read-only) and
+    refuses, naming the pids, on an old-format marker with no directory id."""
     if operation not in ("apply", "revert"):
         return
     word = run_killer(api, run_id(directory) + ":", popen)
@@ -857,6 +881,13 @@ def sweep_orphans(api, popen, operation, directory):
         raise RuntimeError(
             "another rename run is active on this instance (a snippet marked by a different "
             "receipt directory is running in the API container)"
+        )
+    if word.startswith("legacy "):
+        pids = word.split(" ", 1)[1]
+        raise RuntimeError(
+            "an older-format snippet process is running in the API container (pid " + pids + "); "
+            "it cannot be tied to a receipt directory. If no rename is running, stop it with "
+            f"`docker exec {api} kill {pids.replace(',', ' ')}` and rerun"
         )
     if word != "gone":
         raise RuntimeError(
@@ -1091,7 +1122,8 @@ def run_slug_state(run, workspace_id):
 def run_preflight(run, operation):
     """The read-only checks every operation starts with; `operation` picks the sweep."""
     refuse_api_service(run["names"], run["api"])
-    inspect_services(run["names"], run["api"], run["docker"])
+    ids = inspect_services(run["names"], run["api"], run["docker"])
+    refuse_api_service(run["names"], run["api"], ids)
     sweep_orphans(run["api"], run["popen"], operation, run["directory"])
 
 
