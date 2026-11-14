@@ -20,7 +20,7 @@ def test_server_payloads_match_existing_deployment_receipts():
         # PTC-92: digest changed (update refuses an empty body; access refuses bool).
         # PTC-97: digest changed (ce_page runs every SDK call in a thread).
         # PTC-111: digest changed (tool bodies are module-level functions; one SDK thread helper).
-        "ce_tools.py": "4747e0c3e3d2fbb1a6f359260f674ff0f9dde282752d786a33148e9235c2fcd7",
+        "ce_tools.py": "a360fc1f6964f396700cfbfdddff09ae6c705f00cc439673b666bc420a78853d",
         # PTC-19: digest changed (client messages from a fixed table; CodeQL stack-trace alerts).
         # PTC-44: digest changed (page update route, force_close via Redis); see docs/extensions.md.
         # PTC-29: digest changed (comment and docstring wording only).

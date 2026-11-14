@@ -34,12 +34,12 @@ class FakeServer:
         pass
 
 
-def capture(main):
-    """Run main() against stubs; return {name: {description, parameters, returns}}."""
+def register(main, context=lambda: None):
+    """Run main() against stubs; return the FakeServer holding the registered tools."""
     server = FakeServer()
     stubs = {
         "plane.models.work_items": types.SimpleNamespace(CreateWorkItemRelation=object),
-        "plane_mcp.client": types.SimpleNamespace(get_plane_client_context=lambda: None),
+        "plane_mcp.client": types.SimpleNamespace(get_plane_client_context=context),
         "plane_mcp.server": types.SimpleNamespace(get_header_mcp=lambda: server),
     }
     saved = {k: sys.modules.get(k) for k in stubs}
@@ -52,6 +52,12 @@ def capture(main):
                 sys.modules.pop(key, None)
             else:
                 sys.modules[key] = old
+    return server
+
+
+def capture(main):
+    """Run main() against stubs; return {name: {description, parameters, returns}}."""
+    server = register(main)
     surface: dict[str, Any] = {}
     for name, (description, fn) in server.tools.items():
         surface[name] = {

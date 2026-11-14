@@ -355,7 +355,7 @@ def main():
         duplicate/relates_to groups. create sets direction from workitem_id's perspective.
         All operations retain official MCP API-key authentication and backend permissions.
         """
-        client, workspace = get_plane_client_context()
+        client, workspace = await sdk_call(get_plane_client_context)
         return await run_relation_action(
             client,
             workspace,
@@ -384,7 +384,7 @@ def main():
         Sends a plain PATCH to intake-issues/<id>/ with the caller's API key; CE allows it
         for project admins only. Returns the reread intake record.
         """
-        client, workspace = get_plane_client_context()
+        client, workspace = await sdk_call(get_plane_client_context)
         return await run_intake_action(
             client, workspace, action, project_id, workitem_id, status, snoozed_till, duplicate_to
         )
@@ -400,7 +400,7 @@ def main():
         expected_updated_at: str = "",
         force: bool = False,
     ) -> dict | list:
-        client, workspace = get_plane_client_context()
+        client, workspace = await sdk_call(get_plane_client_context)
         return await run_ce_page(
             client,
             workspace,

@@ -230,3 +230,32 @@ def test_ce_tools_imports_without_plane_mcp_and_stays_self_contained():
         elif isinstance(node, ast.ImportFrom):
             top.add(node.module.split(".")[0])
     assert top == {"asyncio", "hashlib", "os", "re", "typing", "uuid"}
+
+
+def test_wrappers_resolve_the_client_context_through_sdk_call(monkeypatch):
+    from support_ce_tools_surface import register
+
+    resolved = []
+    client = _page_client([])
+
+    def context():
+        resolved.append("context")
+        return client, "ws"
+
+    calls = []
+
+    async def spy(function, *args):
+        calls.append(function)
+        return await asyncio.to_thread(function, *args)
+
+    monkeypatch.setattr(ce_tools, "sdk_call", spy)
+    tools = register(ce_tools.main, context).tools
+    assert asyncio.run(tools["ce_page"][1](action="retrieve", project_id=A, page_id=B))
+    assert context in calls and resolved == ["context"]
+    calls.clear()
+    with pytest.raises(ValueError):
+        asyncio.run(tools["ce_intake"][1](action="nope", project_id=A, workitem_id=B, status=1))
+    assert context in calls
+    calls.clear()
+    asyncio.run(tools["ce_workitem_relation"][1](action="list_definitions"))
+    assert context in calls
