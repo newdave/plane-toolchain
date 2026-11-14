@@ -1324,6 +1324,211 @@ def run_steps(run, order, step, effect, recover, settle=None):
         step = target
 
 
+def apply_stop(run):
+    run_stop(run)
+
+
+def apply_backup(run):
+    directory, uid, names = run["directory"], run["uid"], run["names"]
+    dump = directory / "backup.dump"
+    if run["backup_action"] == "adopt" and os.path.lexists(dump):
+        set_receipt_field(directory, "backup_sha256", sha256_file(dump), uid)
+        say("Adopted backup.dump with no recorded SHA-256 (crash after the dump)")
+    elif os.path.lexists(dump):
+        say("Backup already taken; SHA-256 matches")
+    else:
+        backup_database(
+            names["db"],
+            directory,
+            run["popen"],
+            run["crash"],
+            uid,
+            hide=(*names.values(), run["api"]),
+        )
+        say("Database backed up")
+
+
+def apply_slug(run):
+    args = {"old": run["old"], "new": run["new"]}
+    workspace_id = run["workspace_id"]
+    if workspace_id:
+        args["workspace_id"] = workspace_id
+    summary = run_call(run, "step_slug", args)
+    renamed = summary.get("workspace_id")
+    journalled = journal_workspace(load_journal(run["directory"], run["uid"]))
+    if not renamed or journalled != renamed or workspace_id not in (None, renamed):
+        raise RuntimeError("slug step workspace does not match the journal")
+    run["workspace_id"] = renamed
+
+
+def apply_rows(run):
+    args = {
+        "old": run["old"],
+        "new": run["new"],
+        "workspace_id": run["workspace_id"],
+        **run["options"],
+    }
+    run_call(run, "step_rows", args)
+
+
+def apply_cache(run):
+    run_call(run, "flush_cache", {})
+
+
+def apply_start(run):
+    run_start(run)
+
+
+def apply_health(run):
+    run_health(run, run["old"], run["new"], run["workspace_id"])
+
+
+def snippet_stuck(at, reason):
+    """A snippet process that could not be confirmed stopped; never returns."""
+    raise RuntimeError(
+        f"Rename stopped at {at}: {reason}. Services were not restarted and the receipt was "
+        "not reset. Stop the snippet process in the API container by hand (its environment "
+        "has PLANE_RENAME_RUN), then rerun apply to resume or run revert."
+    )
+
+
+def pre_slug_failure(run, step, target, reason):
+    """Failure policy before the slug change: restart services, reset the receipt.
+
+    Never returns."""
+    notes = []
+    run_start_noting(run, notes)
+    try:
+        reset_receipt(run["directory"], run["clock"], run["uid"], run["crash"])
+    except Exception as problem:  # noqa: BLE001
+        notes.append("receipt reset failed: " + reason_of(problem))
+    restarted = "Services restarted" if not notes else "Services not all restarted"
+    raise RuntimeError(
+        f"Rename failed before the slug change ({target}): {reason}. {restarted}; no data "
+        "changed. The receipt is back at pending and the backup was set aside, so the next "
+        "apply stops services and takes a fresh backup. Fix the cause and rerun apply."
+        + warnings_text(notes)
+    )
+
+
+def post_slug_failure(run, step, target, reason):
+    """Failure policy after the slug change: services and receipt stay as they are.
+
+    Nothing is rolled back. Never returns."""
+    if target == "complete":
+        raise RuntimeError(
+            f"Rename health check failed: {reason}. Receipt left at started; services "
+            "are running. Investigate, then rerun apply to recheck, or run revert."
+        )
+    if target == "started":
+        state = "Some services did not start"
+    elif drain_state(reason) is not None:
+        state = drain_state(reason)
+    elif target == step:  # stopping services again on resume failed
+        state = "Some services may still be running; stop them by hand"
+    else:
+        state = "Services stay stopped"
+    moving = "" if target == step else f" (moving to {target})"
+    raise RuntimeError(
+        f"Rename stopped at {step}{moving}: {reason}. {state}. Rerun apply to resume, "
+        "or run revert; nothing is rolled back automatically."
+    )
+
+
+def slug_unclear(run, step, target, reason):
+    """Failure policy for step_slug: probe read-only, then continue, reset or stop.
+
+    Returns only when NEW is held by the journalled workspace; the receipt is then advanced."""
+    directory, uid = run["directory"], run["uid"]
+    journalled = journal_workspace(load_journal(directory, uid))
+    state = run_slug_state(run, journalled)
+    if state == "original":
+        pre_slug_failure(run, step, target, reason)
+    if state != "renamed":
+        raise RuntimeError(
+            f"Rename slug step outcome unknown: {reason}. Services stay stopped; the "
+            "receipt is at backed_up. Check which workspace holds each slug, then rerun "
+            "apply or run revert."
+        ) from None
+    say("Slug step unclear, but NEW is held by the journalled workspace; continuing")
+    run["workspace_id"] = journalled
+    advance(directory, target, uid)
+
+
+def apply_steps():
+    """The apply step table: step -> (effect, failure policy).
+
+    A policy is called as policy(run, step, target, reason), `step` being the last step
+    reached. It raises, except slug_unclear, which returns once it has advanced the receipt.
+    Steps before the slug change reset; steps after it leave the receipt and the services."""
+    return {
+        "stopped": (apply_stop, pre_slug_failure),
+        "backed_up": (apply_backup, pre_slug_failure),
+        "slug_done": (apply_slug, slug_unclear),
+        "rows_done": (apply_rows, post_slug_failure),
+        "cache_done": (apply_cache, post_slug_failure),
+        "started": (apply_start, post_slug_failure),
+        "complete": (apply_health, post_slug_failure),
+    }
+
+
+def apply_recover(run, step, target, failure):
+    """run_steps' recovery for apply: a stuck snippet stops everything, else the step's policy."""
+    reason = reason_of(failure)
+    if is_stuck(reason):
+        snippet_stuck(step, reason)
+    apply_steps()[target][1](run, step, target, reason)
+
+
+def any_running(run):
+    for key in ("beat", "worker", "web", "space", "admin"):
+        state = json.loads(run["docker"]("inspect", run["names"][key]))[0].get("State") or {}
+        if state.get("Running"):
+            return True
+    return False
+
+
+def slug_reached(step):
+    """True when `step` is slug_done or later in the apply order."""
+    order = step_order("apply")
+    return step in order and order.index(step) >= order.index("slug_done")
+
+
+def resume_stop(run, step, slug_committed):
+    """On resume between stopped and cache_done: stop the services again; return the step.
+
+    Services that ran again since a kill, before the slug change, void the backup: the receipt
+    is reset and the step is pending."""
+    if not slug_committed and not slug_reached(step) and any_running(run):
+        say("Services ran again since the kill; setting the backup aside for a fresh one")
+        reset_receipt(run["directory"], run["clock"], run["uid"], run["crash"])
+        run["workspace_id"], run["backup_action"] = None, None
+        return "pending"
+    say("Making sure services are stopped before resuming")
+    run_stop(run)
+    return step
+
+
+def resume_failed(run, step, reason):
+    """Failure policy for the stop on resume; never returns."""
+    if is_stuck(reason):
+        snippet_stuck(step, reason)
+    if slug_reached(step):
+        post_slug_failure(run, step, step, reason)
+    workspace_id = run["workspace_id"]
+    if workspace_id is not None:  # a slug step may have committed: never guess
+        state = run_slug_state(run, workspace_id)
+        if state == "renamed":
+            post_slug_failure(run, step, step, reason)
+        if state != "original":
+            raise RuntimeError(
+                f"Rename resume failed at {step}: {reason}; slug state unknown. Services "
+                "were left as they are and nothing was reset. Check which workspace holds "
+                "each slug and which services run, then rerun apply or run revert."
+            ) from None
+    pre_slug_failure(run, step, step, reason)
+
+
 def run_apply(data, seams):
     """Run `check` (read-only), `apply` or `revert` (both resumable) for one workspace rename.
 
@@ -1350,7 +1555,7 @@ def run_apply(data, seams):
     run = run_context(data, seams, ("check", "apply"))
     operation, old, new = run["operation"], run["old"], run["new"]
     directory, uid, names = run["directory"], run["uid"], run["names"]
-    docker, clock, crash = run["docker"], run["clock"], run["crash"]
+    docker = run["docker"]
     order = step_order("apply")
 
     def at_or_past(step, mark):
@@ -1415,154 +1620,149 @@ def run_apply(data, seams):
     if step != "pending":
         say("Resuming the rename from step " + step)
 
-    def effect(target):
-        nonlocal workspace_id
-        if target == "stopped":
-            run_stop(run)
-        elif target == "backed_up":
-            dump = directory / "backup.dump"
-            if backup_action == "adopt" and os.path.lexists(dump):
-                set_receipt_field(directory, "backup_sha256", sha256_file(dump), uid)
-                say("Adopted backup.dump with no recorded SHA-256 (crash after the dump)")
-            elif os.path.lexists(dump):
-                say("Backup already taken; SHA-256 matches")
-            else:
-                backup_database(
-                    names["db"],
-                    directory,
-                    run["popen"],
-                    crash,
-                    uid,
-                    hide=(*names.values(), run["api"]),
-                )
-                say("Database backed up")
-        elif target == "slug_done":
-            args = {"old": old, "new": new}
-            if workspace_id:
-                args["workspace_id"] = workspace_id
-            summary = run_call(run, "step_slug", args)
-            renamed = summary.get("workspace_id")
-            journalled = journal_workspace(load_journal(directory, uid))
-            if not renamed or journalled != renamed or workspace_id not in (None, renamed):
-                raise RuntimeError("slug step workspace does not match the journal")
-            workspace_id = renamed
-        elif target == "rows_done":
-            args = {"old": old, "new": new, "workspace_id": workspace_id, **run["options"]}
-            run_call(run, "step_rows", args)
-        elif target == "cache_done":
-            run_call(run, "flush_cache", {})
-        elif target == "started":
-            run_start(run)
-        elif target == "complete":
-            run_health(run, old, new, workspace_id)
-
-    def pre_slug_failure(target, reason):
-        """Restart services and reset the receipt; never returns."""
-        notes = []
-        run_start_noting(run, notes)
-        try:
-            reset_receipt(directory, clock, uid, crash)
-        except Exception as problem:  # noqa: BLE001
-            notes.append("receipt reset failed: " + reason_of(problem))
-        restarted = "Services restarted" if not notes else "Services not all restarted"
-        raise RuntimeError(
-            f"Rename failed before the slug change ({target}): {reason}. {restarted}; no data "
-            "changed. The receipt is back at pending and the backup was set aside, so the next "
-            "apply stops services and takes a fresh backup. Fix the cause and rerun apply."
-            + warnings_text(notes)
-        )
-
-    def snippet_stuck(at, reason):
-        raise RuntimeError(
-            f"Rename stopped at {at}: {reason}. Services were not restarted and the receipt was "
-            "not reset. Stop the snippet process in the API container by hand (its environment "
-            "has PLANE_RENAME_RUN), then rerun apply to resume or run revert."
-        )
-
-    def post_slug_failure(step, target, reason):
-        if target == "complete":
-            raise RuntimeError(
-                f"Rename health check failed: {reason}. Receipt left at started; services "
-                "are running. Investigate, then rerun apply to recheck, or run revert."
-            )
-        if target == "started":
-            state = "Some services did not start"
-        elif drain_state(reason) is not None:
-            state = drain_state(reason)
-        elif target == step:  # stopping services again on resume failed
-            state = "Some services may still be running; stop them by hand"
-        else:
-            state = "Services stay stopped"
-        moving = "" if target == step else f" (moving to {target})"
-        raise RuntimeError(
-            f"Rename stopped at {step}{moving}: {reason}. {state}. Rerun apply to resume, "
-            "or run revert; nothing is rolled back automatically."
-        )
-
-    def any_running():
-        for key in ("beat", "worker", "web", "space", "admin"):
-            state = json.loads(docker("inspect", names[key]))[0].get("State") or {}
-            if state.get("Running"):
-                return True
-        return False
-
+    run["workspace_id"], run["backup_action"] = workspace_id, backup_action
     try:
         if backup_action == "rotate":
             finish_rotation(directory, uid)
         if at_or_past(step, "stopped") and not at_or_past(step, "started"):
-            # A service running again since the kill may have changed data after the backup.
-            if not at_or_past(step, "slug_done") and not slug_committed and any_running():
-                say("Services ran again since the kill; setting the backup aside for a fresh one")
-                reset_receipt(directory, clock, uid, crash)
-                step, workspace_id, backup_action = "pending", None, None
-            else:
-                say("Making sure services are stopped before resuming")
-                run_stop(run)
+            step = resume_stop(run, step, slug_committed)
     except Exception as failure:  # noqa: BLE001
-        reason = reason_of(failure)
-        if is_stuck(reason):
-            snippet_stuck(step, reason)
-        if at_or_past(step, "slug_done"):
-            post_slug_failure(step, step, reason)
-        if workspace_id is not None:  # a slug step may have committed: never guess
-            state = run_slug_state(run, workspace_id)
-            if state == "renamed":
-                post_slug_failure(step, step, reason)
-            if state != "original":
-                raise RuntimeError(
-                    f"Rename resume failed at {step}: {reason}; slug state unknown. Services "
-                    "were left as they are and nothing was reset. Check which workspace holds "
-                    "each slug and which services run, then rerun apply or run revert."
-                ) from None
-        pre_slug_failure(step, reason)
+        resume_failed(run, step, reason_of(failure))
 
-    def recover(step, target, failure):
-        nonlocal workspace_id
-        reason = reason_of(failure)
-        if is_stuck(reason):
-            snippet_stuck(step, reason)
-        if target in ("stopped", "backed_up"):
-            pre_slug_failure(target, reason)
-        if target != "slug_done":
-            post_slug_failure(step, target, reason)
-        # step_slug's outcome is unclear (no summary, non-zero exit, mismatch, or a
-        # failed advance): probe it read-only before deciding anything.
-        journalled = journal_workspace(load_journal(directory, uid))
-        state = run_slug_state(run, journalled)
-        if state == "original":
-            pre_slug_failure(target, reason)
-        if state != "renamed":
-            raise RuntimeError(
-                f"Rename slug step outcome unknown: {reason}. Services stay stopped; the "
-                "receipt is at backed_up. Check which workspace holds each slug, then rerun "
-                "apply or run revert."
-            ) from None
-        say("Slug step unclear, but NEW is held by the journalled workspace; continuing")
-        workspace_id = journalled
-        advance(directory, target, uid)
-
-    run_steps(run, order, step, effect, recover)
+    run_steps(
+        run,
+        order,
+        step,
+        lambda target: apply_steps()[target][0](run),
+        lambda step, target, failure: apply_recover(run, step, target, failure),
+    )
     return f"Rename complete: {old} is now {new}"
+
+
+def revert_mark(run):
+    set_receipt_field(run["directory"], "reverted_from", run["origin"], run["uid"])
+
+
+def revert_restore_rows(run):
+    directory, uid, crash = run["directory"], run["uid"], run["crash"]
+    set_receipt_field(directory, "restore_started", True, uid)
+    crash("before_restore")
+    args = {
+        "old": run["old"],
+        "new": run["new"],
+        "journal": run["records"],
+        "workspace_id": run["workspace_id"],
+    }
+    summary, events = run_snippet(
+        run["api"],
+        run["snippet"],
+        "restore",
+        args,
+        directory,
+        run["popen"],
+        uid,
+        run["names"].values(),
+    )
+    report("restore", summary, events)
+    crash("after_restore")
+    if summary is None:
+        raise RuntimeError(no_summary("restore", events))
+    skipped = summary.get("skipped", 0) if summary.get("partial") else 0
+    if not skipped and summary.get("ok") is not True:
+        raise RuntimeError("restore failed")
+    try:
+        set_receipt_field(directory, "restore_partial", skipped, uid)
+    except Exception as problem:  # noqa: BLE001 - a partial restore must still finish
+        if not skipped:
+            raise
+        run["notes"].append(
+            "could not record restore_partial in the receipt: " + reason_of(problem)
+        )
+    run["partial"] = skipped or None
+
+
+def revert_verify(run):
+    if run["workspace_id"]:
+        run_health(run, run["new"], run["old"], run["workspace_id"])
+    else:  # nothing journalled: OLD must be live and NEW free
+        run_call(run, "check", {"old": run["old"], "new": run["new"]})
+
+
+def revert_restore(run):
+    say("Stopping services for the restore")
+    run_stop(run)
+    if run["restore_needed"]:
+        revert_restore_rows(run)
+    run_call(run, "flush_cache", {})
+
+
+def revert_start(run):
+    run_start(run)
+
+
+def revert_steps():
+    """The revert step table: step -> (effect, what a failure leaves behind).
+
+    revert_failure turns the second item into the operator message."""
+    return {
+        "reverting": (
+            revert_mark,
+            "Nothing was changed by the revert; services were left as they are",
+        ),
+        "restored": (
+            revert_restore,
+            "Services stay stopped (some may still run if stopping failed). The restore is "
+            "all-or-nothing and safe to repeat",
+        ),
+        "started": (revert_start, "The data is restored, but some services did not start"),
+        "reverted": (revert_verify, "Services are running; the receipt is left at started"),
+    }
+
+
+def revert_failure(target, reason):
+    """Failure policy for every revert step; never returns."""
+    if is_stuck(reason):
+        raise RuntimeError(
+            f"Revert stopped at {target}: {reason}. Services were not restarted and the "
+            "receipt was not changed. Stop the snippet process in the API container by hand "
+            "(its environment has PLANE_RENAME_RUN), then rerun revert."
+        )
+    state = drain_state(reason)
+    if state is None:
+        state = revert_steps()[target][1]
+    raise RuntimeError(
+        f"Revert stopped at {target}: {reason}. {state}. Fix the cause and rerun revert. "
+        "The journal and backup.dump are kept; restoring backup.dump by hand is the last "
+        "resort."
+    )
+
+
+def revert_settle(run):
+    """After a partial restore: restart services and recheck; never returns then."""
+    partial = run["partial"]
+    if not partial:
+        return
+    notes = run["notes"]
+    run_start_noting(run, notes)
+    try:
+        revert_verify(run)
+    except Exception as problem:  # noqa: BLE001
+        notes.append("health check failed: " + reason_of(problem))
+    run["finished"] = True
+    raise RuntimeError(
+        f"Revert incomplete: the restore was partial ({partial} rows skipped, listed above "
+        "by id); this is not a full revert. The slug and every other journalled row are "
+        "restored and services were started. The skipped rows changed after the rename and "
+        "were not overwritten. Review them, then rerun revert to recheck (it stops services "
+        "first). Restoring backup.dump by hand is the last resort and loses later edits."
+        + warnings_text(notes)
+    )
+
+
+def revert_recover(run, step, target, failure):
+    if run["finished"]:  # the report from revert_settle
+        raise failure
+    revert_failure(target, reason_of(failure))
 
 
 # --- T8: revert from the receipt -------------------------------------------------------------
@@ -1584,9 +1784,8 @@ def run_revert(data, seams):
     """
     run = run_context(data, seams)
     old, new, directory = run["old"], run["new"], run["directory"]
-    uid, crash = run["uid"], run["crash"]
+    uid = run["uid"]
     applied, order = step_order("apply"), step_order("revert")
-    partial, finished, notes = None, False, []
 
     # Preflight: read-only. It never creates the receipt directory.
     try:
@@ -1638,108 +1837,23 @@ def run_revert(data, seams):
     if phase == "revert":
         say("Resuming the revert from step " + step)
 
-    def restore():
-        nonlocal partial
-        set_receipt_field(directory, "restore_started", True, uid)
-        crash("before_restore")
-        args = {"old": old, "new": new, "journal": records, "workspace_id": workspace_id}
-        summary, events = run_snippet(
-            run["api"],
-            run["snippet"],
-            "restore",
-            args,
-            directory,
-            run["popen"],
-            uid,
-            run["names"].values(),
-        )
-        report("restore", summary, events)
-        crash("after_restore")
-        if summary is None:
-            raise RuntimeError(no_summary("restore", events))
-        skipped = summary.get("skipped", 0) if summary.get("partial") else 0
-        if not skipped and summary.get("ok") is not True:
-            raise RuntimeError("restore failed")
-        try:
-            set_receipt_field(directory, "restore_partial", skipped, uid)
-        except Exception as problem:  # noqa: BLE001 - a partial restore must still finish
-            if not skipped:
-                raise
-            notes.append("could not record restore_partial in the receipt: " + reason_of(problem))
-        partial = skipped or None
-
-    def verify():
-        if workspace_id:
-            run_health(run, new, old, workspace_id)
-        else:  # nothing journalled: OLD must be live and NEW free
-            run_call(run, "check", {"old": old, "new": new})
-
-    def effect(target):
-        if target == "reverting":
-            set_receipt_field(directory, "reverted_from", origin, uid)
-        elif target == "restored":
-            say("Stopping services for the restore")
-            run_stop(run)
-            if restore_needed:
-                restore()
-            run_call(run, "flush_cache", {})
-        elif target == "started":
-            run_start(run)
-        elif target == "reverted":
-            verify()
-
-    def finish_partial():
-        """After a partial restore: restart services and recheck; never returns then."""
-        nonlocal finished
-        if not partial:
-            return
-        run_start_noting(run, notes)
-        try:
-            verify()
-        except Exception as problem:  # noqa: BLE001
-            notes.append("health check failed: " + reason_of(problem))
-        finished = True
-        raise RuntimeError(
-            f"Revert incomplete: the restore was partial ({partial} rows skipped, listed above "
-            "by id); this is not a full revert. The slug and every other journalled row are "
-            "restored and services were started. The skipped rows changed after the rename and "
-            "were not overwritten. Review them, then rerun revert to recheck (it stops services "
-            "first). Restoring backup.dump by hand is the last resort and loses later edits."
-            + warnings_text(notes)
-        )
-
-    def failed(target, reason):
-        if is_stuck(reason):
-            raise RuntimeError(
-                f"Revert stopped at {target}: {reason}. Services were not restarted and the "
-                "receipt was not changed. Stop the snippet process in the API container by hand "
-                "(its environment has PLANE_RENAME_RUN), then rerun revert."
-            )
-        if drain_state(reason) is not None:
-            state = drain_state(reason)
-        elif target == "reverting":
-            state = "Nothing was changed by the revert; services were left as they are"
-        elif target == "restored":
-            state = (
-                "Services stay stopped (some may still run if stopping failed). The restore is "
-                "all-or-nothing and safe to repeat"
-            )
-        elif target == "started":
-            state = "The data is restored, but some services did not start"
-        else:
-            state = "Services are running; the receipt is left at started"
-        raise RuntimeError(
-            f"Revert stopped at {target}: {reason}. {state}. Fix the cause and rerun revert. "
-            "The journal and backup.dump are kept; restoring backup.dump by hand is the last "
-            "resort."
-        )
-
-    def recover(step, target, failure):
-        if finished:  # the report from finish_partial
-            raise failure
-        failed(target, reason_of(failure))
-
-    run_steps(run, order, None if phase == "apply" else step, effect, recover, finish_partial)
+    run.update(
+        records=records,
+        workspace_id=workspace_id,
+        origin=origin,
+        restore_needed=restore_needed,
+        partial=None,
+        finished=False,
+        notes=[],
+    )
+    run_steps(
+        run,
+        order,
+        None if phase == "apply" else step,
+        lambda target: revert_steps()[target][0](run),
+        lambda step, target, failure: revert_recover(run, step, target, failure),
+        lambda: revert_settle(run),
+    )
     return f"Revert complete: {new} is back to {old}"
 
 
@@ -1899,6 +2013,32 @@ SHIPPED = (
     run_start,
     run_start_noting,
     run_steps,
+    apply_stop,
+    apply_backup,
+    apply_slug,
+    apply_rows,
+    apply_cache,
+    apply_start,
+    apply_health,
+    snippet_stuck,
+    pre_slug_failure,
+    post_slug_failure,
+    slug_unclear,
+    apply_steps,
+    apply_recover,
+    any_running,
+    slug_reached,
+    resume_stop,
+    resume_failed,
+    revert_mark,
+    revert_restore_rows,
+    revert_verify,
+    revert_restore,
+    revert_start,
+    revert_steps,
+    revert_failure,
+    revert_settle,
+    revert_recover,
     run_revert,
     revert,
     run_apply,

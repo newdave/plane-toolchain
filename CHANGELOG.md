@@ -20,6 +20,10 @@ All notable changes to this project are documented here. The format follows
 - Pages (PTC-113): `apply` and `revert` share one swap recovery, `recover_swap` (SIGTERM held, undo, then `recover_original` or `restore_any` as the fallback), and apply's retire step uses `sigterm_held`; the inline copies are gone. Behaviour, messages and SIGTERM semantics are unchanged. The shipped Pages remote program text changes (new shipped functions); the derived image source and its digest do not.
 - The MCP cursor pagination helper `paginated` moves from `plane_toolchain.github_evidence` to `plane_toolchain.connection` (PTC-118) as the single shared implementation. `github_evidence.paginated` still resolves to it. The CLI readback loop is unchanged: it stops early on a match and tolerates a missing cursor.
 
+### Changed
+
+- Rename (PTC-113): `run_apply` and `run_revert` run from step tables (`apply_steps`, `revert_steps`) of module-level effects and failure policies (`pre_slug_failure`, `post_slug_failure`, `slug_unclear`, `revert_failure`) in place of nested closures, and each policy has an isolated test. Behaviour, messages and receipt semantics are unchanged. The shipped rename remote program text changes (new shipped functions); the backend snippet and its payload digest do not.
+
 ### Security
 
 - The mise `uv` pin moves from 0.9.3 to 0.13.4, past GHSA-hq85-5cpj-mr62 (critical: bundled CA store), GHSA-4gg8-gxpx-9rph, GHSA-pjjw-68hj-v9mw, GHSA-pqhf-p39g-3x64 and GHSA-w476-p2h3-79g9. Dependabot does not scan `mise.toml`; the example workflow pin was already bumped in #63 (PTC-84).
