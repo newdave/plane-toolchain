@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- The mise `uv` pin moves from 0.9.3 to 0.13.4, past GHSA-hq85-5cpj-mr62 (critical: bundled CA store), GHSA-4gg8-gxpx-9rph, GHSA-pjjw-68hj-v9mw, GHSA-pqhf-p39g-3x64 and GHSA-w476-p2h3-79g9. Dependabot does not scan `mise.toml`; the example workflow pin was already bumped in #63 (PTC-84).
+
 ### Fixed
 
 - Deploy helper follow-ups to PR #61 (PTC-82): an idempotent MCP `revert` clears a stale `reverting` marker from the receipt; Pages `prune` never removes the newest `<api>-pages-reverted-<digits>` container (the evidence and restart policy a killed revert needs to recover) and skips a container that vanishes between its listing and inspect; a failed Pages build redacts the repository path and any `lookup <host>` DNS host from the stderr tail; a rollback failure is reported on stderr before a deferred SIGTERM exits 143, and the Pages apply restart of the live API after a failed retire is held against SIGTERM too. Real-process tests cover SIGTERM during a failure-triggered Pages rollback. Not changed: the few bytecodes between entering an `except` and `hold_sigterm()` cannot be closed in Python without blocking SIGTERM during the whole health wait, and docker children keep the blocked mask during a rollback on purpose.
