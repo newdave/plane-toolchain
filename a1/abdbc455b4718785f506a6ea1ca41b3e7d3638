@@ -1,0 +1,23 @@
+CHANGELOG.md
+  s_b5f7bae03de657::t_13e930228e8ba5 9-10
+pyproject.toml
+  s_b5f7bae03de657::t_cc61dc58bdd557 7
+uv.lock
+  s_b5f7bae03de657::t_91140fbb97e588 471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "a1abdbc455b4718785f506a6ea1ca41b3e7d3638",
+  "prompts": {},
+  "sessions": {
+    "s_b5f7bae03de657": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a90ce56a-90c6-4dad-bdcd-20de85a2106b",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
