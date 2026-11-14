@@ -735,8 +735,18 @@ def apply(current, payload, backup, docker, probe, create, health, now):
         try:
             if not retired:
                 # Never leave the live API stopped; its policy is unchanged.
-                if answer(probe, "start", name) is None:
+                started = answer(probe, "start", name)
+                if started is None:
                     recovery_incomplete("not created", name + " (start timed out, state unknown)")
+                elif not started:
+                    # A retire rename that took effect and timed out leaves the original under
+                    # the backup name, so the start of `name` fails: name where it really is.
+                    held = answer(probe, "inspect", backup)
+                    if held is None:
+                        original = name + " or " + backup + " (state unknown)"
+                    else:
+                        original = (backup if held else name) + " (stopped)"
+                    recovery_incomplete("not created", original)
             else:
                 try:
                     if probe("inspect", name):

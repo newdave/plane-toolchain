@@ -564,6 +564,17 @@ def test_hung_probe_in_the_apply_rollback_still_raises_the_original_error(
     assert "Rollback incomplete" in err and "start timed out" in err
 
 
+def test_retire_rename_that_took_effect_but_timed_out_and_failed_start_is_named(
+    host, monkeypatch, capsys
+):
+    hang_after(host, ("stop", "api"), ("rename", "api", BACKUP), nth=1, effect=True)
+    with pytest.raises(RuntimeError):
+        remote("apply", host, monkeypatch)
+    assert "api" not in host.containers and not host.containers[BACKUP]["running"]
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and f"original {BACKUP} (stopped)" in err
+
+
 # PTC-96 fix round 3: the recovery message names where the derived container went, and an
 # original found under `name` after a timeout is neither stopped nor misreported.
 
