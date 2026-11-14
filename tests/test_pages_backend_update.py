@@ -121,6 +121,8 @@ def test_update_without_force_is_refused_before_any_side_effect():
         {"expected_updated_at": "yesterday"},
         {"expected_updated_at": "2026-11-13T01:02:03"},
         {"description_html": 5},
+        {"description_html": ""},
+        {"description_html": " \n\t "},
         {"force": "yes"},
         {"name": "rename"},
     ],
