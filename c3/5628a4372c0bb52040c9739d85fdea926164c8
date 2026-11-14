@@ -1,0 +1,29 @@
+tests/test_workspace_rename_hardening_gates.py
+  s_a03650451d84d5::t_1e06c14ffb7786 639-658
+tests/test_workspace_rename_hardening_lock_backup.py
+  s_a03650451d84d5::t_505bfe690f6417 166-182
+src/plane_toolchain/workspace_rename.py
+  s_a03650451d84d5::t_505bfe690f6417 550-557
+  s_a03650451d84d5::t_04fc5dcf01930c 1512-1519,1533-1543,1671-1672
+  s_a03650451d84d5::t_1e06c14ffb7786 772,786,812-822,831,844,900,968,970,1145,1156-1158,1167-1169,1210-1217,1243,1278,1299,1708,1949,2050
+tests/test_workspace_rename_deploy_kill_resume.py
+  s_a03650451d84d5::t_2b40fad5bba65e 244-245,256-259,264-266
+  s_a03650451d84d5::t_72aa2c9269556f 246-254,260-263,267
+  s_a03650451d84d5::t_e3f8bb46b4e781 255
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "c35628a4372c0bb52040c9739d85fdea926164c8",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
