@@ -393,55 +393,63 @@ def restore_any(name, backup, reverted, probe, docker, policy):
                 pass
 
 
-def recover_original(name, backup, probe, docker, policy, now):
+def recover_original(name, backup, probe, docker, policy, now, parked=None):
     """Best effort after a failed apply rollback; never start the derived container.
 
     `restore_any` starts whatever holds `name`, which is right for revert but here could be the
     failed derived container. A container is started as `name` only when a successful inspect
     shows it is unlabelled (the original). A Pages-labelled one is stopped and moved aside; an
-    unknown or stuck state leaves things stopped and says where each container is.
+    unknown or stuck state leaves things stopped where possible and says where each container
+    is. `parked` is the name the rollback already moved the derived container to, if it did.
     """
 
     def incomplete(derived, original):
         say(
-            "Rollback incomplete: the derived container is "
+            "Rollback incomplete: derived container "
             + derived
-            + " and the original is "
+            + "; original "
             + original
-            + "; both are left stopped. Run apply again to reconcile, or inspect them.",
+            + ". Run apply again to reconcile, or inspect them.",
             sys.stderr,
         )
 
+    # Where the derived container is, when known; every container named stopped was stopped.
+    derived = parked + " (stopped)" if parked else None
     try:
         if name not in listed_names(name, docker):
             holder = None
         else:
             holder = json.loads(docker("inspect", name))[0]
     except Exception:
-        incomplete("unknown (could not inspect " + name + ")", "unknown, maybe " + backup)
+        # Whatever holds `name` is the derived container or unknown: stop it, never start it.
+        held = name + (
+            " (stopped)" if probe("stop", name) else " (stop failed, may still be running)"
+        )
+        incomplete(
+            derived or "unknown, possibly " + held, "unknown, possibly " + backup + " or " + held
+        )
         return
     if holder is not None and source_label(holder) is None:
         set_restart(probe, policy, name)  # The original already holds the name.
         if not probe("start", name):
-            incomplete("unknown", name + " (stopped)")
+            incomplete(derived or "not under " + name, name + " (stopped)")
         return
     if holder is not None:
         if not probe("stop", name):
-            incomplete(name + " (stop failed, may be running)", backup)
+            incomplete(name + " (stop failed, may still be running)", backup + " (stopped)")
             return
         failed = failed_name(name, probe, now)
         if not probe("rename", name, failed):
-            incomplete(name + " (stopped)", backup)
+            incomplete(name + " (stopped)", backup + " (stopped)")
             return
+        derived = failed + " (stopped)"
         set_restart(probe, "no", failed)
-    else:
-        failed = "gone"
     if not probe("rename", backup, name):
-        incomplete(failed if failed != "gone" else "absent", backup)
+        incomplete(derived or "absent", backup + " (stopped)")
         return
     set_restart(probe, policy, name)
     if not probe("start", name):
-        incomplete(failed if failed != "gone" else "absent", name + " (stopped)")
+        incomplete(derived or "absent", name + " (stopped)")
 
 
 def promotion_policy(held, name, docker, probe):
@@ -624,6 +632,7 @@ def apply(current, payload, backup, docker, probe, create, health, now):
     body = derive(current, payload, docker)
     policy = restart_arg(current)  # Read before retiring; restored when promoted back.
     retired = False  # The original now sits under its backup name.
+    parked = None  # Where the rollback moved a derived container, once it did.
     try:
         # SIGTERM waits across the retire: a signal between the rename and `retired` or the
         # policy update would otherwise leave the API stopped under the backup name.
@@ -655,12 +664,13 @@ def apply(current, payload, backup, docker, probe, create, health, now):
                             raise subprocess.CalledProcessError(1, ["docker", "stop", name])
                         failed = failed_name(name, probe, now)
                         docker("rename", name, failed)
+                        parked = failed
                         set_restart(probe, "no", failed)
                     docker("rename", backup, name)
                     set_restart(probe, policy, name)
                     docker("start", name)
                 except Exception:
-                    recover_original(name, backup, probe, docker, policy, now)
+                    recover_original(name, backup, probe, docker, policy, now, parked)
                     raise error  # Recovery error stays as __context__.
         finally:
             release_sigterm(mask, error)
