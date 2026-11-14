@@ -166,19 +166,29 @@ def test_every_planned_path_is_an_allowed_receipt_path(tmp_path, claude, preappr
     assert planned <= installer["PLANNED"]
 
 
-def test_old_format_receipt_still_reverts(tmp_path):
+# The receipt `scripts/install_project.py` wrote at v0.4.0 (captured from that tag over
+# `seed_project`): no `before` fingerprints, which a later release added. Templates are unchanged
+# since, so the installed files are what apply writes now.
+V040_RECEIPT = {
+    "version": 1,
+    "directories": [".plane", ".codex"],
+    "entries": {
+        ".plane/plane.sh": {"kind": "shim", "created": True},
+        ".plane/.gitignore": {"kind": "gitignore", "created": True},
+        "AGENTS.md": {"kind": "block", "created": False},
+        "CLAUDE.md": {"kind": "include", "created": True},
+        ".mcp.json": {"kind": "mcp-json", "created": False},
+        ".claude/settings.json": {"kind": "settings-json", "created": False, "approval": "added"},
+        ".codex/config.toml": {"kind": "codex-toml", "created": True},
+        ".codex/hooks.json": {"kind": "hooks-json", "created": True},
+    },
+}
+
+
+def test_v040_receipt_still_reverts(tmp_path):
     seed_project(tmp_path)
     apply(tmp_path)
-    path = tmp_path / ".plane/install.json"
-    old = {
-        "version": 1,
-        "directories": json.loads(path.read_text()).get("directories", []),
-        "entries": {
-            rel: {"kind": entry["kind"], "created": entry["created"]}
-            for rel, entry in json.loads(path.read_text())["entries"].items()
-        },
-    }
-    path.write_text(json.dumps(old, indent=2) + "\n")
+    (tmp_path / ".plane/install.json").write_text(json.dumps(V040_RECEIPT, indent=2) + "\n")
     revert(tmp_path)
     (tmp_path / ".plane/local.env").unlink()
     (tmp_path / ".plane/.gitignore").unlink(missing_ok=True)

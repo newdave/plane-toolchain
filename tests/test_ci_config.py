@@ -24,6 +24,9 @@ def test_ci_runs_mise_check_and_only_cancels_pull_requests():
     assert list(ci["jobs"]) == ["check"]
     steps = [s.get("run", "") for s in ci["jobs"]["check"]["steps"]]
     assert "mise run check" in steps
+    # check imports the locked environment and the tools/mcp-remote lockfile that setup installs.
+    assert "mise run setup" in steps
+    assert steps.index("mise run setup") < steps.index("mise run check")
     assert not any(
         c.startswith(("uv run", "pytest", "ruff")) for s in steps for c in s.splitlines()
     )
