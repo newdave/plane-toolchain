@@ -522,7 +522,7 @@ def test_hung_inspect_in_recover_original_is_rollback_incomplete(host, monkeypat
     host.created_healthy = False
     failed = f"api-pages-failed-{NOW}"
     host.fail.append(("rename", "api", failed))  # the rollback's move aside fails: recovery
-    hang_after(host, ("start", "api"), ("inspect", failed), nth=2)  # recovery's failed_name
+    hang_after(host, ("start", "api"), ("inspect", failed), nth=2)  # recovery's unused_name
     with pytest.raises(ValueError, match="API health check failed"):
         remote("apply", host, monkeypatch)
     assert ("hung", "inspect", failed) in host.calls

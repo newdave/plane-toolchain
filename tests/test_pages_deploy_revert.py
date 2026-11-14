@@ -40,6 +40,7 @@ def test_revert_restores_original_and_retains_derived_stopped(applied, monkeypat
         *LOOKUP,
         HELD,
         ("inspect", BACKUP),
+        ("inspect", reverted),  # name collision check
         ("stop", "api"),
         ("rename", "api", reverted),
         ("update", "--restart=no", reverted),

@@ -515,7 +515,7 @@ def recover_original_steps(name, backup, probe, docker, policy, now, where):
         if not probe("stop", name):
             incomplete(name + " (stop failed, may still be running)", backup + " (stopped)")
             return
-        failed = failed_name(name, probe, now)
+        failed = unused_name(name + "-pages-failed-", probe, now)
         where["derived"] = "unknown, possibly " + name + " or " + failed + " (stopped)"
         if not probe("rename", name, failed):
             incomplete(name + " (stopped)", backup + " (stopped)")
@@ -538,8 +538,9 @@ def promotion_policy(held, name, docker, probe):
     except subprocess.CalledProcessError:
         listing = b""
     parked = sorted(n for n in listing.decode().split() if n.startswith(prefix))
-    # Only the newest plain `<prefix><digits>` is the live derived; older ones may be stale.
-    plain = [n for n in parked if n[len(prefix) :].isdigit()]
+    # Only the newest plain `<prefix><digits>[-<digits>...]` is the live derived; older ones may
+    # be stale. A `-1` suffix marks a second revert in the same second; `-aside` is not plain.
+    plain = [n for n in parked if re.fullmatch(r"\d+(-\d+)*", n[len(prefix) :])]
     policy = None
     if plain:
         candidate = restart_arg(json.loads(docker("inspect", plain[-1]))[0])
@@ -599,7 +600,7 @@ def revert(current, payload, backup, docker, probe, health, now):
     # Any source label marks our derived container, including one built from older source.
     if source_label(current) is None:
         raise ValueError("API changed; refusing rollback")
-    reverted = name + "-pages-reverted-" + str(int(now()))
+    reverted = unused_name(name + "-pages-reverted-", probe, now)
     policy = restart_arg(current)  # Live (derived) policy; the backup's own inspect shows `no`.
     done = []  # Completed swap steps, so recovery undoes only what happened.
     try:
@@ -636,12 +637,17 @@ def revert(current, payload, backup, docker, probe, health, now):
     )
 
 
-def failed_name(name, probe, now):
-    """Unused `-pages-failed-<ts>` name; one run can retire two containers in the same second."""
-    failed = name + "-pages-failed-" + str(int(now()))
-    while probe("inspect", failed):
-        failed += "-1"
-    return failed
+def unused_name(prefix, probe, now):
+    """Unused `<prefix><ts>` name, with `-1` appended until free.
+
+    One run can retire two containers in the same second, and two reverts can share one. The
+    suffixed names still match `<digits>(-<digits>)*` and sort after the plain one, so prune
+    (newest last) and `promotion_policy` read them as newer.
+    """
+    candidate = prefix + str(int(now()))
+    while probe("inspect", candidate):
+        candidate += "-1"
+    return candidate
 
 
 def held_policy(held):
@@ -672,7 +678,7 @@ def reconcile(current, name, backup, docker, probe, health, now):
     elif source_label(current) is not None and not current["State"].get("Running"):
         # Derived created but never started: retire it as a failed apply.
         policy = restart_arg(current)  # Copied from the original before its retirement.
-        failed = failed_name(name, probe, now)
+        failed = unused_name(name + "-pages-failed-", probe, now)
         docker("rename", name, failed)
         set_restart(probe, "no", failed)
     else:
@@ -752,7 +758,7 @@ def apply(current, payload, backup, docker, probe, create, health, now):
                     if probe("inspect", name):
                         if not probe("stop", name):  # Never rename a running derived aside.
                             raise subprocess.CalledProcessError(1, ["docker", "stop", name])
-                        failed = failed_name(name, probe, now)
+                        failed = unused_name(name + "-pages-failed-", probe, now)
                         # The rename can take effect and then time out: say both names.
                         parked = "unknown, possibly " + name + " or " + failed + " (stopped)"
                         docker("rename", name, failed)
@@ -883,7 +889,7 @@ REMOTE = program(
         interrupted_revert,
         start_restored,
         revert,
-        failed_name,
+        unused_name,
         reconcile,
         derive,
         apply,
