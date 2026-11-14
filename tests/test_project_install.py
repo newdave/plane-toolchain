@@ -168,7 +168,7 @@ def test_every_planned_path_is_an_allowed_receipt_path(tmp_path, claude, preappr
 
 # The receipt `scripts/install_project.py` wrote at v0.4.0 (captured from that tag over
 # `seed_project`): no `before` fingerprints, which a later release added. Templates are unchanged
-# since, so the installed files are what apply writes now.
+# since, except for the later plane-tasks skill, so the files are what apply writes now.
 V040_RECEIPT = {
     "version": 1,
     "directories": [".plane", ".codex"],
@@ -188,6 +188,9 @@ V040_RECEIPT = {
 def test_v040_receipt_still_reverts(tmp_path):
     seed_project(tmp_path)
     apply(tmp_path)
+    # The plane-tasks skill came after v0.4.0, so that install did not have it.
+    shutil.rmtree(tmp_path / ".claude/skills")
+    shutil.rmtree(tmp_path / ".agents")
     (tmp_path / ".plane/install.json").write_text(json.dumps(V040_RECEIPT, indent=2) + "\n")
     revert(tmp_path)
     (tmp_path / ".plane/local.env").unlink()
