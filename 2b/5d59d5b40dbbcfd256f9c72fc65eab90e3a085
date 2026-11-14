@@ -1,0 +1,28 @@
+src/plane_toolchain/ce_tools.py
+  s_a03650451d84d5::t_9cea0017cf69bb 438
+  s_a03650451d84d5::t_51c0656c375501 54-61
+  s_a03650451d84d5::t_b4d7fc77137396 14
+  s_a03650451d84d5::t_c827add806d55b 74-75
+  s_a03650451d84d5::t_ddc0750a0773ac 147-153
+tests/test_ce_tools_functions.py
+  s_a03650451d84d5::t_a632a5cdf1a900 100-133
+  s_a03650451d84d5::t_f600b4092a820d 266
+tests/test_legacy_payloads.py
+  s_a03650451d84d5::t_413a772c5c1f47 23-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "2b5d59d5b40dbbcfd256f9c72fc65eab90e3a085",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
