@@ -116,8 +116,8 @@ class Table:
         self.pages = []
         self.fail_update = False
         # Schema probe: any field the snippet names exists unless hidden, typed by its name
-        # (see FIELD_RULES) unless `types` overrides it; `no_manager` drops the unfiltered manager.
-        self.hidden, self.types, self.no_manager = set(), {}, False
+        # (see FIELD_RULES) unless `types` overrides it.
+        self.hidden, self.types = set(), {}
         self.log = [] if log is None else log
         self.objects = Manager(self, False)
         self.all_objects = Manager(self, True)
@@ -176,9 +176,6 @@ class FakeOrm:
 
     def table_name(self, key):
         return self.models[key].db_table
-
-    def has_manager(self, key):
-        return not self.models[key].no_manager
 
     def text_columns(self):
         return [
@@ -263,8 +260,6 @@ def django_modules(orm, live, api):
         meta = SimpleNamespace(
             db_table=table.db_table, concrete_fields=concrete, get_field=get_field
         )
-        if table.no_manager:
-            return SimpleNamespace(_meta=meta)
         manager = table.all_objects
         return SimpleNamespace(all_objects=manager, _base_manager=manager, _meta=meta)
 
