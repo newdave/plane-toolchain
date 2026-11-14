@@ -14,6 +14,7 @@ from typing import Any
 from plane_toolchain import cli_commands, session
 from plane_toolchain.cli_commands import ReadbackError, UsageError
 from plane_toolchain.connection import ToolError, connection
+from plane_toolchain.ids import RELATION_TYPES
 from plane_toolchain.session import ROOT
 from plane_toolchain.settings import Settings
 
@@ -30,14 +31,6 @@ WRITES = {
     ("relation", "plan"),
 }
 NOISY_LOGGERS = ("mcp", "httpx", "httpx2", "httpcore")
-RELATION_TYPES = [
-    "blocking",
-    "blocked_by",
-    "start_before",
-    "start_after",
-    "finish_before",
-    "finish_after",
-]
 PRIORITIES = ["urgent", "high", "medium", "low", "none"]
 
 

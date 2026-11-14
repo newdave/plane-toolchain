@@ -12,7 +12,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from plane_toolchain.cli_commands import IDENTIFIER, ReadbackError, UsageError, canonical
+from plane_toolchain.cli_commands import ReadbackError, UsageError
+from plane_toolchain.ids import IDENTIFIER, canonical
 
 Call = Callable[[str, dict], Awaitable[Any]]
 Plan = list[tuple[str, str]]
