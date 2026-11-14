@@ -1,0 +1,27 @@
+tests/test_owner_mcp_mounts.py
+  s_a03650451d84d5::t_44250416649bd9 12
+  s_a03650451d84d5::t_3721eb4479807d 105,116-134
+scripts/plane_mcp_mounts.py
+  s_a03650451d84d5::t_3721eb4479807d 6-8,45,80-81
+  s_a03650451d84d5::t_44250416649bd9 1-5,9-44,46-79,82-88
+mise.toml
+  s_a03650451d84d5::t_44250416649bd9 88
+docs/extensions.md
+  s_a03650451d84d5::t_3721eb4479807d 83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "a603b3694808780f2469dc2764d70e863497aaa8",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
