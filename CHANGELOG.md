@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-14
+
 ### Added
 
 - `plane-tasks` agent skill and a workflow guide (PTC-116). The project installer now writes `templates/project/skills/plane-tasks/SKILL.md` to `.claude/skills/plane-tasks/SKILL.md` and `.agents/skills/plane-tasks/SKILL.md` and records both in `.plane/install.json` (kind `skill`), so revert removes them (and the directories it created) when unchanged; CRLF copies are accepted. It covers the task lifecycle, `awaiting-decision`, blocked-by rules, `ce_intake` with the issue ID, `ce_page` update limits, planning destinations, task description layout and the `Plane-Tasks:` PR field. `docs/agent-workflow.md` is the longer reference. Existing installs get the skill by revert then apply.
@@ -19,14 +21,12 @@ All notable changes to this project are documented here. The format follows
 - Docs (PTC-115): the Pages health wait is checked after an attempt, so its worst case is about 160 seconds, not 120. The "Saltbox route" gets a line on when to repeat it, and the PTC-92 entry below points to it.
 - Rename (PTC-115): the exception class reported for a failed snippet is read from the last 64 KiB of its stderr, not 4 KiB, so a deep traceback still names it.
 - `workspace_rename.py` (PTC-110): split into `workspace_rename_receipt`, `_docker`, `_snippet`, `_run`, `_apply` and `_revert`, each with a `SHIPPED` tuple; `workspace_rename` keeps the CLI, the lock and `deploy`, and re-exports every name. The shipped host program has the same functions, constants and entry (only function order differs). Part functions are rebound to the `workspace_rename` namespace, so patching a name there still reaches every caller.
+- MCP deploy: `RELEASED_ENTRY_POINT_DIGESTS` gains the v0.5.1 `ce_tools.py` digest, so apply and revert recognise an entry point written by this release even under a stale receipt.
 
 ### Fixed
 
 - Pages deploy (PTC-115): the `No such` match after a timed-out Docker call ignores letter case, so a lower-case daemon message still reads as an absent container.
 - MCP deploy (PTC-115): a `docker restart` timeout during the rollback is reported on stderr and the health check still runs, so the "still unhealthy after rollback" message is no longer replaced by the timeout.
-
-### Fixed
-
 - Small validation gaps (PTC-109). `ce_tools.py`: `ce_intake` decide refuses a `snoozed_till` that is not an ISO 8601 date or datetime; `relation_result` reports a malformed relation group or row as a `ValueError` instead of a `TypeError`; `FASTMCP_PORT` must be an integer from 1 to 65535. Tool names, descriptions and schemas are unchanged. The file text changed, so the deployed entry-point digest changes again: the owner must redeploy (together with PTC-111). `plane ... --per-page` must be a positive integer and is capped at 100. The project installer rejects control characters in the toolchain path it writes to `local.env`. The workflow examples installer reports the real file count instead of "three". Workspace rename: the `snippet_idle_seconds` override now lives in the run, not in a module global that `run_locked` mutated; the free-space check allows for the journal as well as the dump; and a resume that cannot read the services' state (`docker inspect` failed) refuses and keeps the backup instead of rotating it.
 
 ### Tests
