@@ -7,14 +7,16 @@ failure prints a fixed, secret-free cause; no URL, header or body is echoed.
 
 import asyncio
 import json
+import os
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
 import httpx2
 from plane_toolchain import github_evidence as ge
-from plane_toolchain.connection import ToolError
+from plane_toolchain.connection import ToolError, connection
 
 
 class Failure(Exception):
@@ -305,3 +307,196 @@ def classify(error: BaseException) -> str:
     if code and operation:
         return f"Plane {operation} failed (HTTP {code})"
     return "Unexpected " + type(error).__name__
+
+
+GATE_TITLE = "Plane task references"
+EVIDENCE_TITLE = "Plane evidence"
+
+
+def annotate(
+    level: Literal["notice", "warning", "error"],
+    message: str,
+    out=None,
+    *,
+    title: str = EVIDENCE_TITLE,
+) -> None:
+    """Write a workflow command; the message is escaped so it cannot inject another."""
+    text = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::{level} title={title}::{text}", file=out or sys.stdout, flush=True)
+
+
+def summarise(line: str, env: Mapping[str, str]) -> None:
+    """Append one line to the job summary when the runner provides the file."""
+    path = env.get("GITHUB_STEP_SUMMARY")
+    if path:
+        with open(path, "a", encoding="utf-8") as summary:
+            summary.write(line.replace("\r", " ").replace("\n", " ") + "\n")
+
+
+def _event(config: Inputs) -> dict:
+    with open(config.event_path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+async def _resolve(config: Inputs, call, selected: list[tuple[ge.Update, list[str]]]):
+    """Preflight, then resolve every reference before anything is written."""
+    await preflight(call, config.project)
+    rows = await ge.paginated(call, "workitem", {"action": "list", "project_id": config.project})
+    tasks = ge.directory_entries(rows, config.task_source, config.refs.pattern)
+    return ge.resolved_updates(selected, tasks)
+
+
+async def _publish(config: Inputs, call, resolved) -> int:
+    created = 0
+    for item, key, content in resolved:
+        created += await ge.publish(
+            call, config.project, item, key, content, source=config.comment_source
+        )
+    return created
+
+
+async def run_gate(
+    config: Inputs, github: GitHub, connect, env: Mapping[str, str] | None = None
+) -> int:
+    """The pull_request_target gate; it fails closed on any error."""
+    env = os.environ if env is None else env
+    pr = None
+    try:
+        if config.event_name != "pull_request_target":
+            raise Failure("Plane gate runs only on pull_request_target")
+        event = _event(config)
+        action = event["action"]
+        if action not in ge.PR_ACTIONS:
+            annotate(
+                "notice", f"Plane gate skipped: action {action} is not gated", title=GATE_TITLE
+            )
+            return 0
+        pr = github.pull(int(event["number"]))
+        before = ((event.get("changes") or {}).get("body") or {}).get("from")
+        if action == "edited" and before is None:
+            annotate("notice", "Plane gate skipped: the edit left the body alone", title=GATE_TITLE)
+            return 0
+        sha = pr["head"]["sha"]
+        text = ge.description(pr)
+        github.post_status(sha, "pending", text)
+        update = ge.pr_update(event, pr, config.repository)
+        body = pr.get("body") or ""
+        files = github.files(pr["number"]) if ge.needs_files(body, config.maintenance) else []
+        ids = ge.required_references(pr, files, config.repository, config.refs, config.maintenance)
+        if ids:
+            if not config.key:
+                raise Failure("PLANE_API_KEY unavailable")
+            async with connect() as raw:
+                call = retrying(raw)
+                resolved = await _resolve(config, call, [(update, ids)])
+                # An edit that kept the gate fields already has its comment.
+                unchanged = action == "edited" and not ge.gate_fields_changed(
+                    before, body, config.refs, config.maintenance
+                )
+                if not unchanged:
+                    await _publish(config, call, resolved)
+        github.post_status(sha, "success", text)
+        summarise(f"Plane task references: passed for PR #{pr['number']}", env)
+        return 0
+    except Exception as error:
+        message = classify(error)
+        if pr is not None:
+            try:
+                github.post_status(pr["head"]["sha"], "failure", ge.description(pr))
+            except Exception as status_error:
+                message += "; " + classify(status_error)
+        annotate("error", message, title=GATE_TITLE)
+        summarise(f"Plane task references: failed. {message}", env)
+        return 1
+
+
+async def run_evidence(
+    config: Inputs, github: GitHub, connect, env: Mapping[str, str] | None = None
+) -> int:
+    """Record one run's checks on the Plane tasks its PRs name; never the gate."""
+    env = os.environ if env is None else env
+    if not config.key:
+        annotate("notice", "Plane evidence skipped: no PLANE_API_KEY")
+        return 0
+    try:
+        name = config.event_name
+        if name == "pull_request":
+            head = _event(config)["pull_request"]["head"]
+            if (head.get("repo") or {}).get("full_name") != config.repository:
+                raise Failure("Plane evidence refuses pull requests from forks")
+            sha = head["sha"]
+        elif name == "push":
+            default = _event(config)["repository"]["default_branch"]
+            if config.ref != f"refs/heads/{default}":
+                raise Failure("Plane evidence on push runs only for the default branch")
+            sha = config.sha
+        elif name == "pull_request_target":
+            raise Failure("Plane evidence refuses pull_request_target")
+        else:
+            raise Failure("Plane evidence supports only pull_request and push events")
+        prs = ge.matching_prs(github.pulls_for_commit(sha), config.repository, sha)
+        wanted = []
+        ids_by_number = {}
+        for pr in prs:
+            body = pr.get("body") or ""
+            files = github.files(pr["number"]) if ge.needs_files(body, config.maintenance) else []
+            ids = ge.optional_references(
+                pr, files, config.repository, config.refs, config.maintenance
+            )
+            if ids:
+                wanted.append(pr)
+                ids_by_number[pr["number"]] = ids
+            else:
+                annotate("notice", f"Plane evidence skipped PR #{pr['number']}: no task reference")
+        if not wanted:
+            annotate("notice", "Plane evidence skipped: no pull request names a Plane task")
+            return 0
+        updates = ge.run_updates(
+            wanted,
+            config.repository,
+            sha,
+            label=config.label,
+            conclusion=config.conclusion,
+            run_id=config.run_id,
+            attempt=config.attempt,
+            run_url=f"{config.server_url}/{config.repository}/actions/runs/{config.run_id}",
+        )
+        selected = [(update, ids_by_number[update.pr["number"]]) for update in updates]
+        async with connect() as raw:
+            call = retrying(raw)
+            resolved = await _resolve(config, call, selected)
+            created = await _publish(config, call, resolved)
+        line = f"{config.label}: recorded {created} of {len(resolved)} Plane comments"
+        annotate("notice", line)
+        summarise("Plane evidence: " + line, env)
+        return 0
+    except Exception as error:
+        message = classify(error)
+        annotate("warning", message)
+        summarise(f"Plane evidence: not recorded. {message}", env)
+        return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) != 1 or argv[0] not in {"gate", "evidence"}:
+        print("usage: github_evidence_cli (gate|evidence)", file=sys.stderr)
+        return 2
+    mode = argv[0]
+    try:
+        config = inputs(os.environ, mode)
+        github = GitHub(config.token, config.repository, config.api_url)
+    except ValueError as error:
+        message = classify(error)
+        if mode == "gate":
+            annotate("error", message, title=GATE_TITLE)
+        else:
+            annotate("warning", message)
+        summarise(f"Plane {mode}: not run. {message}", os.environ)
+        return 1
+    run = run_gate if mode == "gate" else run_evidence
+    return asyncio.run(run(config, github, lambda: connection(os.environ)))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
