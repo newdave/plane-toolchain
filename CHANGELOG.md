@@ -8,10 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `plane-tasks` agent skill and a workflow guide (PTC-116). The project installer now writes `templates/project/skills/plane-tasks/SKILL.md` to `.claude/skills/plane-tasks/SKILL.md` and `.agents/skills/plane-tasks/SKILL.md` and records both in `.plane/install.json` (kind `skill`), so revert removes them (and the directories it created) when unchanged; CRLF copies are accepted. It covers the task lifecycle, `awaiting-decision`, blocked-by rules, `ce_intake` with the issue ID, `ce_page` update limits, planning destinations, task description layout and the `Plane-Tasks:` PR field. `docs/agent-workflow.md` is the longer reference. Existing installs get the skill by revert then apply.
 - `PLANE_SSH_TIMEOUT` (PTC-115): seconds for the local SSH session limit of every remote deploy and rename operation, replacing the 6 hour default, so a long workspace rename keeps its local output. It must be a positive number; anything else stops the task before it connects. See `docs/extensions.md`.
 
 ### Changed
 
+- `plane_toolchain.ids` (PTC-112): UUID, task identifier and relation-type helpers now live in one module used by `cli`, `cli_commands`, `relation_plan` and `settings`, and `task list` and `comment list` share one paging helper. Behaviour is unchanged. `ce_tools.py` ships alone as the MCP server and is untouched; `tests/test_ids.py` pins its local copies to `ids.py`.
 - Pages deploy (PTC-115): a failed start in a rollback no longer reports the container as `(stopped)` (it says `start failed, state not verified`), and a rollback that finds no container under the API name says the derived container is `not created` instead of `not under <api>`. The revert recovery (`restore_any`) reports `Rollback incomplete` when its start or rename fails and no API is running, where it used to return silently. An apply rollback whose own inspect of the API name fails (other than `No such`) stops that name, best effort, before moving the original back.
 - Docs (PTC-115): the Pages health wait is checked after an attempt, so its worst case is about 160 seconds, not 120. The "Saltbox route" gets a line on when to repeat it, and the PTC-92 entry below points to it.
 - Rename (PTC-115): the exception class reported for a failed snippet is read from the last 64 KiB of its stderr, not 4 KiB, so a deep traceback still names it.
@@ -23,6 +25,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Tests
 
+- Review gaps (PTC-114): a test that the `plane-prompt.zsh` status cache expires after 30 seconds with no input change. The other seven reviewed cases (tampered installer receipt, bare-URL matcher, Pages rollback failure, SIGTERM mid-swap, empty page body, late Live store after the lock, `label` without `PLANE_API_URL`) already had tests; they are named in the PR. The three fake Docker builders under `tests/support_workspace_rename_*` are now one `make_fake_docker`.
 - PTC-115: failure injection covers a Docker call that reports failure but took effect; a real-pipe test for a snippet process that is SIGKILLed mid-line; CI runs `mise run setup` before `mise run check`; the update late-store retrieve runs off the event loop; the old installer receipt test uses the literal v0.4.0 receipt.
 
 ## [0.5.0] - 2026-11-14

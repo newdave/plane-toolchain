@@ -31,12 +31,17 @@ ALL = [
 ]
 
 
-@pytest.fixture
-def fake():
+def make_fake_docker():
+    """The one fake Docker (its docker and popen seams) holding every workspace-rename container."""
     fake = FakeDocker()
     for name in [*ALL, "plane-api"]:
         fake.add(name)
     return fake
+
+
+@pytest.fixture
+def fake():
+    return make_fake_docker()
 
 
 class Clock:
@@ -178,9 +183,7 @@ class Host:
     """One fake host: Docker, the API container's manage.py shell over a FakeOrm, a receipt dir."""
 
     def __init__(self, tmp_path):
-        self.fake = FakeDocker()
-        for name in [*ALL, "plane-api"]:
-            self.fake.add(name)
+        self.fake = make_fake_docker()
         self.orm = rename_orm()
         self.orm.cache["session:x"] = "kept until flush"
         self.shell = ManageShell(self.orm)
