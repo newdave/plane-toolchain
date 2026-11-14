@@ -382,15 +382,16 @@ def sigterm_held(action):
         release_sigterm(mask, failure)
 
 
-def recover_swap(error, undo, fallback=None):
+def recover_swap(mask, error, undo, fallback=None):
     """The recovery half shared by apply and revert: undo a failed swap with SIGTERM held.
 
-    Call it inside the `except BaseException as error` of the swap, then re-raise. `undo`
+    Call it inside the `except BaseException as error` of the swap, then re-raise. The first
+    statement of that handler is `mask = hold_sigterm()`, so nothing, not even building the
+    `undo` and `fallback` callables, runs unprotected; this releases `mask`. `undo`
     puts the containers back. When `undo` raises an Exception and a `fallback` is given, the
     fallback (apply: recover_original; revert: restore_any) runs and `error` is raised, with
     the recovery error as its __context__. A SIGTERM that arrives meanwhile waits until the
     recovery is done (release_sigterm reports `error` first)."""
-    mask = hold_sigterm()
     try:
         if fallback is None:
             undo()
@@ -665,7 +666,9 @@ def revert(current, payload, backup, docker, probe, health, now):
         docker("start", name)
         health(name, pages=False)
     except BaseException as error:
+        mask = hold_sigterm()  # First, so a SIGTERM now waits until the recovery is done.
         recover_swap(
+            mask,
             error,
             lambda: undo_revert(name, backup, reverted, done, policy, docker, probe),
             lambda: restore_any(name, backup, reverted, probe, docker, policy),
@@ -807,7 +810,9 @@ def apply(current, payload, backup, docker, probe, create, health, now):
         docker("start", name)
         health(name)
     except BaseException as error:
+        mask = hold_sigterm()  # First, so a SIGTERM now waits until the rollback is done.
         recover_swap(
+            mask,
             error,
             lambda: undo_apply(name, backup, policy, docker, probe, now, swap),
             # Only a retired original has a fallback; a failed first stop just propagates.
