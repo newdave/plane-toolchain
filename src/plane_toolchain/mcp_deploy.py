@@ -304,12 +304,19 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         rewrite(target, current)
         restore_receipt()
         try:
-            docker("restart", data["container"], check=False, stdout=subprocess.DEVNULL)
-        except RuntimeError as timeout:  # docker() names the command only, never a container
-            # Say it, then still ask for health: the restart may have taken effect, and a
-            # caller reports "still unhealthy" too, so neither cause hides the other.
-            say(str(timeout), sys.stderr)
-        return wait_healthy(probe, sleep)
+            docker("restart", data["container"], stdout=subprocess.DEVNULL)
+            restarted = True
+        except (RuntimeError, subprocess.CalledProcessError) as failure:
+            # RuntimeError is a timeout; docker() names the command only, never a container.
+            say(
+                str(failure) if isinstance(failure, RuntimeError) else "docker restart failed",
+                sys.stderr,
+            )
+            restarted = False
+        # A restart that timed out or failed has an unknown outcome, so it never reports the
+        # previous entry point as restored: health is still awaited (callers say "still
+        # unhealthy"), but the answer is False.
+        return wait_healthy(probe, sleep) and restarted
 
     if operation == "apply":
         # Pending receipt first: a kill during restart or health wait stays recoverable, since

@@ -1239,3 +1239,23 @@ def test_rollback_restart_timeout_after_an_interrupt_keeps_both_causes(root, cap
     err = capsys.readouterr().err
     assert "MCP still unhealthy after rollback" in err
     assert "docker restart timed out after 300 s" in err
+
+
+def test_rollback_restart_timeout_is_never_reported_as_restored_even_when_healthy(root, capsys):
+    # PTC-115 review: after a timed-out restart MCP may look healthy, but the outcome is unknown.
+    fake = mcp_host()  # healthy throughout
+    timing_out_restarts(fake, {1, 2})  # the apply restart, then the rollback restart
+    with pytest.raises(RuntimeError, match="timed out"):
+        deploy("apply", root, fake)
+    err = capsys.readouterr().err
+    assert "docker restart timed out after 300 s" in err
+    assert "MCP still unhealthy after rollback" in err
+    assert (root / "server.py").read_bytes() == ORIGINAL
+
+
+def test_rollback_restart_failure_is_never_reported_as_restored_even_when_healthy(root, capsys):
+    fake = mcp_host()
+    fake.fail += ["restart", "restart"]  # the apply restart, then the rollback restart
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy("apply", root, fake)
+    assert "MCP still unhealthy after rollback" in capsys.readouterr().err
