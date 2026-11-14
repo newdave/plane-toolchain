@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import os
 import re
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -50,6 +51,14 @@ def bind_host(env):
     return host
 
 
+def bind_port(env):
+    """Port from FASTMCP_PORT: an integer 1..65535, default 8211."""
+    raw = env.get("FASTMCP_PORT", "").strip() or "8211"
+    if not re.fullmatch(r"[0-9]{1,5}", raw) or not 1 <= int(raw) <= 65535:
+        raise ValueError("FASTMCP_PORT must be an integer from 1 to 65535")
+    return int(raw)
+
+
 def relation_result(response):
     """Translate CE issue IDs into the MCP dependency response contract.
 
@@ -62,6 +71,8 @@ def relation_result(response):
     data = response if isinstance(response, dict) else response.model_dump()
     groups = {}
     for kind, rows in data.items():
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise ValueError("Malformed relation group")
         groups[kind] = [
             {"id": row.get("issue_id"), "project_id": row.get("project_id")} for row in rows
         ]
@@ -133,6 +144,13 @@ def intake_decide_body(status, snoozed_till, duplicate_to):
         raise ValueError("status 0 (snoozed) requires snoozed_till")
     if status != 0 and snoozed_till:
         raise ValueError("snoozed_till is only valid with status 0")
+    if status == 0:
+        try:
+            if not isinstance(snoozed_till, str):
+                raise ValueError
+            datetime.fromisoformat(snoozed_till.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("snoozed_till must be an ISO 8601 date or datetime") from None
     if status == 2 and not duplicate_to:
         raise ValueError("status 2 (duplicate) requires duplicate_to")
     if status != 2 and duplicate_to:
@@ -417,7 +435,7 @@ def main():
     server.run(
         transport="streamable-http",
         host=bind_host(os.environ),
-        port=int(os.environ.get("FASTMCP_PORT", "8211")),
+        port=bind_port(os.environ),
         path="/http/api-key/mcp",
         stateless_http=True,
     )

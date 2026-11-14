@@ -97,6 +97,40 @@ def test_run_intake_action_decides_and_rejects_other_actions():
         asyncio.run(ce_tools.run_intake_action(client, "ws", "decide", A, B, 1, "", ""))
 
 
+@pytest.mark.parametrize("bad", ["tomorrow", "2026-13-01", "2026-01-01T25:00", "12"])
+def test_intake_decide_body_rejects_non_iso_snoozed_till(bad):
+    with pytest.raises(ValueError, match="ISO"):
+        ce_tools.intake_decide_body(0, bad, "")
+
+
+@pytest.mark.parametrize(
+    "good", ["2026-12-01", "2026-12-01T09:30:00Z", "2026-12-01T09:30:00+10:00"]
+)
+def test_intake_decide_body_accepts_iso_snoozed_till(good):
+    assert ce_tools.intake_decide_body(0, good, "") == {"status": 0, "snoozed_till": good}
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [{"blocking": "oops"}, {"blocking": None}, {"blocking": ["row"]}, {"blocking": [None]}],
+)
+def test_relation_result_reports_malformed_data_as_value_error(reply):
+    with pytest.raises(ValueError, match="relation"):
+        ce_tools.relation_result(reply)
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "65536", "-1", "80.5"])
+def test_bind_port_rejects_bad_values(bad):
+    with pytest.raises(ValueError, match="FASTMCP_PORT"):
+        ce_tools.bind_port({"FASTMCP_PORT": bad})
+
+
+def test_bind_port_default_and_valid():
+    assert ce_tools.bind_port({}) == 8211
+    assert ce_tools.bind_port({"FASTMCP_PORT": " "}) == 8211
+    assert ce_tools.bind_port({"FASTMCP_PORT": "65535"}) == 65535
+
+
 def _page_client(log, patch_reply=None, reread_html="<p>new</p>"):
     def record(name, reply):
         def call(*args):
@@ -229,7 +263,7 @@ def test_ce_tools_imports_without_plane_mcp_and_stays_self_contained():
             top |= {a.name.split(".")[0] for a in node.names}
         elif isinstance(node, ast.ImportFrom):
             top.add(node.module.split(".")[0])
-    assert top == {"asyncio", "hashlib", "os", "re", "typing", "uuid"}
+    assert top == {"asyncio", "datetime", "hashlib", "os", "re", "typing", "uuid"}
 
 
 def test_wrappers_resolve_the_client_context_through_sdk_call(monkeypatch):
