@@ -11,6 +11,7 @@ from pathlib import Path
 # Installed projects point at their own root; this checkout is the default.
 ROOT = Path(os.environ.get("PLANE_CONFIG_ROOT") or Path(__file__).resolve().parents[2])
 # Non-secret connection values only. PLANE_API_KEY is never read from checkout files.
+URL = "PLANE_MCP_URL"
 CONNECTION = ("PLANE_MCP_URL", "PLANE_WORKSPACE", "PLANE_PROJECT")
 
 
@@ -75,6 +76,19 @@ def local_layers(root: Path) -> list[Path]:
     return [legacy]
 
 
+def tracked(path: Path) -> bool:
+    """Return True when git tracks the file; False outside git or without git."""
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv
+            ["git", "ls-files", "--error-unmatch", "--", path.name],  # noqa: S607
+            cwd=path.parent,
+            capture_output=True,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
 def literal(root: Path, names: tuple[str, ...]) -> dict[str, str]:
     """Read KEY=value lines from checkout config files; later files win.
 
@@ -87,7 +101,14 @@ def literal(root: Path, names: tuple[str, ...]) -> dict[str, str]:
         paths = (*shared_file(main_checkout(root), ".plane/local.env"), root / ".plane/local.env")
     for path in paths:
         if path.is_file():
-            values.update(assignments(path.read_text(), names))
+            found = assignments(path.read_text(), names)
+            # The URL receives the API key, so a file a commit can change never supplies it.
+            # config/defaults.env is tracked by definition; other layers are asked of git.
+            if any(name == URL for name, _ in found) and (
+                path == root / "config/defaults.env" or tracked(path)
+            ):
+                found = [(name, value) for name, value in found if name != URL]
+            values.update(found)
     return values
 
 
