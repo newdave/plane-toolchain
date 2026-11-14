@@ -5,8 +5,10 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from fake_docker import FakeDocker, run_program
@@ -1048,3 +1050,76 @@ def test_idempotent_revert_clears_a_stale_reverting_marker(root):
     (root / "plane-toolchain-ce-receipt.json").write_text(json.dumps(marked))
     assert deploy("revert", root, mcp_host()) == "Original MCP entry point already restored"
     assert (root / "plane-toolchain-ce-receipt.json").read_text() == final
+
+
+RELEASED = b"print('shipped in a past release')\n"
+
+
+@pytest.fixture
+def stale_receipt(root, monkeypatch):
+    """Receipt names an older install, but server.py holds content shipped in a past release."""
+    monkeypatch.setattr(
+        mcp_deploy,
+        "RELEASED_ENTRY_POINT_DIGESTS",
+        (*mcp_deploy.RELEASED_ENTRY_POINT_DIGESTS, sha(RELEASED)),
+    )
+    fake = mcp_host()
+    deploy("apply", root, fake, source="print('older ce tools')\n")
+    (root / "server.py").write_bytes(RELEASED)
+    return fake
+
+
+def test_apply_accepts_released_content_under_stale_receipt(root, stale_receipt):
+    backup = root / "server.py.before-plane-toolchain-ce"
+    assert deploy("apply", root, stale_receipt).startswith("MCP entry point apply verified")
+    assert (root / "server.py").read_bytes() == DESIRED.encode()
+    assert backup.read_bytes() == ORIGINAL
+    receipt = json.loads((root / "plane-toolchain-ce-receipt.json").read_text())
+    assert receipt == {"installed": sha(DESIRED.encode()), "original": sha(ORIGINAL)}
+
+
+def test_revert_accepts_released_content_under_stale_receipt(root, stale_receipt):
+    assert deploy("revert", root, stale_receipt).startswith("MCP entry point revert verified")
+    assert (root / "server.py").read_bytes() == ORIGINAL
+
+
+def test_stale_receipt_still_refuses_foreign_content(root, stale_receipt):
+    (root / "server.py").write_bytes(RELEASED + b"# host edit\n")
+    with pytest.raises(ValueError, match="preserve it and reconcile"):
+        deploy("apply", root, stale_receipt)
+    with pytest.raises(ValueError, match="refusing overwrite"):
+        deploy("revert", root, stale_receipt)
+    assert (root / "server.py").read_bytes() == RELEASED + b"# host edit\n"
+
+
+def test_check_ignores_released_digests(root, stale_receipt):
+    with pytest.raises(ValueError, match="differs"):
+        deploy("check", root, stale_receipt)
+
+
+def test_remote_program_ships_released_digests():
+    for digest in mcp_deploy.RELEASED_ENTRY_POINT_DIGESTS:
+        assert digest in mcp_deploy.REMOTE
+
+
+def test_released_digests_cover_every_tag():
+    git = shutil.which("git")
+    repo = Path(__file__).resolve().parents[1]
+    tags = subprocess.run(  # noqa: S603 - fixed git argv
+        [git or "git", "-C", str(repo), "tag", "--list", "v*"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.split()
+    if not git or not tags:
+        pytest.skip("git tags unavailable")
+    for tag in tags:
+        shown = subprocess.run(  # noqa: S603 - fixed git argv
+            [git, "-C", str(repo), "show", f"{tag}:src/plane_toolchain/ce_tools.py"],
+            capture_output=True,
+            check=False,
+        )
+        assert shown.returncode == 0
+        assert sha(shown.stdout) in mcp_deploy.RELEASED_ENTRY_POINT_DIGESTS, (
+            f"append the ce_tools.py digest of {tag} to RELEASED_ENTRY_POINT_DIGESTS"
+        )

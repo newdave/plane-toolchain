@@ -80,7 +80,7 @@ The owner should run `mise run owner:plane-workspace-rename:check` once against 
 
 - `EmailNotificationLog` exists (table `email_notification_logs`) and has no workspace column. The snippet attributes a row to the old workspace when its `data` names `workspace_slug` with the old slug. A reused old slug or a nested key could match unrelated logs, so prefer the top-level key.
 - `Description.workspace_id` exists (table `descriptions`), and comments link to a `Description` row.
-- The comment columns `comment_html`, `comment_json`, `comment_stripped` and `comment_binary` exist as the snippet expects.
+- The comment columns `comment_html`, `comment_json` and `comment_stripped` exist as the snippet expects. Plane CE v1.4.3 has no `comment_binary` column (PTC-83).
 - Whether Live's convert route returns `description_stripped`. Restore guards work items and Pages on `description_html` only.
 - Description rows rewritten in the slug step are not rebuilt through Live, so their `description_binary` stays stale (counted as `not_rebuilt` in the summary). If such rows back editor content, a later editor save can bring the old slug back. Decide before apply whether that is acceptable.
 - The API listens on port 8000 inside its container and `/api/instances/` answers 200 there. The health check fails on any other status, redirects included. Set `PLANE_API_URL` if the port differs.

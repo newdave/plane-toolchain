@@ -179,3 +179,77 @@ def test_late_store_wait_is_capped_and_invalid_hint_rejected():
     result["late_store_check"]["seconds"] = "12"
     with pytest.raises(ValueError):
         _confirm(result, [], [])
+
+
+class FakeIntake:
+    def __init__(self, status=-2, apply=True):
+        self.calls, self.status, self.apply = [], status, apply
+
+    def _get(self, path):
+        self.calls.append(("GET", path))
+        return {"status": self.status, "issue": "x"}
+
+    def _patch(self, path, body):
+        self.calls.append(("PATCH", path, body))
+        if self.apply:
+            self.status = body["status"]
+
+
+def test_intake_decide_body_validates_status_and_companions():
+    from uuid import uuid4
+
+    from plane_toolchain.ce_tools import intake_decide_body
+
+    dup = uuid4()
+    assert intake_decide_body(1, "", "") == {"status": 1}
+    assert intake_decide_body(-1, "", "") == {"status": -1}
+    assert intake_decide_body(0, "2026-12-01T00:00:00Z", "") == {
+        "status": 0,
+        "snoozed_till": "2026-12-01T00:00:00Z",
+    }
+    assert intake_decide_body(2, "", str(dup).upper()) == {"status": 2, "duplicate_to": str(dup)}
+    for args in (
+        (3, "", ""),
+        (True, "", ""),
+        (0, "", ""),
+        (2, "", ""),
+        (1, "2026-12-01", ""),
+        (1, "", str(dup)),
+        (2, "", "nope"),
+    ):
+        with pytest.raises(ValueError):
+            intake_decide_body(*args)
+
+
+def test_intake_decide_patches_detail_path_without_status_suffix_and_rereads():
+    from uuid import uuid4
+
+    from plane_toolchain.ce_tools import decide_intake
+
+    project, item = uuid4(), uuid4()
+    fake = FakeIntake()
+    record = decide_intake(fake, "ws", str(project).upper(), str(item), 1, "", "")
+    path = f"ws/projects/{project}/intake-issues/{item}"
+    assert fake.calls == [("GET", path), ("PATCH", path, {"status": 1}), ("GET", path)]
+    assert not path.endswith("/status")
+    assert record["status"] == 1
+
+
+def test_intake_decide_fails_when_backend_ignores_the_status():
+    from uuid import uuid4
+
+    from plane_toolchain.ce_tools import decide_intake
+
+    with pytest.raises(RuntimeError, match="not changed"):
+        decide_intake(FakeIntake(apply=False), "ws", str(uuid4()), str(uuid4()), -1, "", "")
+
+
+def test_intake_decide_invalid_input_makes_no_request():
+    from plane_toolchain.ce_tools import decide_intake
+
+    fake = FakeIntake()
+    with pytest.raises(ValueError):
+        decide_intake(fake, "ws", "bad", "bad", 1, "", "")
+    with pytest.raises(ValueError):
+        decide_intake(fake, "ws", "bad", "bad", 0, "", "")
+    assert fake.calls == []

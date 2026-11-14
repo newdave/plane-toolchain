@@ -16,7 +16,8 @@ def test_server_payloads_match_existing_deployment_receipts():
         # PTC-70: digest changed (update tool description mentions late_store_check).
         # PTC-71: digest changed (relation_result docstring: cross-project ids).
         # PTC-70: digest changed again (async ce_page update confirms the late store itself).
-        "ce_tools.py": "03902b5cd9c390c9b9fb07c75e4cd16ae7055ad02b86106ed8d798f98efef08c",
+        # ce_intake tool added (decide via the routed detail PATCH); see docs/extensions.md.
+        "ce_tools.py": "c0093a9f090704486570c0b3116decd524c3a13288ac47a2ba3adc7686b813d6",
         # PTC-19: digest changed (client messages from a fixed table; CodeQL stack-trace alerts).
         # PTC-44: digest changed (page update route, force_close via Redis); see docs/extensions.md.
         # PTC-29: digest changed (comment and docstring wording only).

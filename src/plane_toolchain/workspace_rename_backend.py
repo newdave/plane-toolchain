@@ -50,7 +50,9 @@ DERIVED_COLUMNS = {
     "issues": REBUILD_FIELDS,
     "pages": REBUILD_FIELDS,
     "descriptions": REBUILD_FIELDS,
-    "issue_comments": ("comment_json", "comment_stripped", "comment_binary"),
+    # IssueComment has no comment_binary in Plane CE v1.4.3: its editor binary lives on the
+    # linked Description row.
+    "issue_comments": ("comment_json", "comment_stripped"),
 }
 MAX_IDS = 50
 UNOWNED = ("email_log",)  # models without a workspace column
@@ -79,7 +81,7 @@ SLUG_STEP = (
 ROW_STEP = (("issues", "issue", "rich"), ("pages", "page", "document"))
 ROW_FIELDS = ("description_html", *REBUILD_FIELDS)
 # Journalled as base64 text; journal_values decodes them back to bytes.
-BINARY_COLUMNS = ("description_binary", "comment_binary")
+BINARY_COLUMNS = ("description_binary",)
 PAGE_SIZE = 200
 PROGRESS_EVERY = 500  # rows scanned between `progress` events (they re-arm the host's deadline)
 

@@ -10,6 +10,19 @@ All notable changes to this project are documented here. The format follows
 
 - Deploy helper follow-ups to PR #61 (PTC-82): an idempotent MCP `revert` clears a stale `reverting` marker from the receipt; Pages `prune` never removes the newest `<api>-pages-reverted-<digits>` container (the evidence and restart policy a killed revert needs to recover) and skips a container that vanishes between its listing and inspect; a failed Pages build redacts the repository path and any `lookup <host>` DNS host from the stderr tail; a rollback failure is reported on stderr before a deferred SIGTERM exits 143, and the Pages apply restart of the live API after a failed retire is held against SIGTERM too. Real-process tests cover SIGTERM during a failure-triggered Pages rollback. Not changed: the few bytecodes between entering an `except` and `hold_sigterm()` cannot be closed in Python without blocking SIGTERM during the whole health wait, and docker children keep the blocked mask during a rollback on purpose.
 - Workspace rename (PTC-82): the orphan sweep ignores read-only `check` snippets (now marked `check:<token>`) instead of refusing or killing them, and an old-format marker makes it refuse with the pid and the kill command instead of an unexplained refusal. The API-container clash check also compares container ids, not only names. `check` probes that `EmailNotificationLog` has no workspace column.
+- MCP apply and revert no longer refuse a host entry point whose receipt is stale but whose content is exactly a `ce_tools.py` shipped in a past release (for example after another deploy wrote `server.py` without updating the receipt). Foreign content is still refused; `check` is unchanged. Releases append their digest to `RELEASED_ENTRY_POINT_DIGESTS`.
+
+## [0.4.0] - 2026-11-14
+
+### Added
+
+- `ce_intake` MCP tool (`decide`): reject, snooze, accept or mark an intake record duplicate through Plane CE's routed `PATCH intake-issues/<id>/`, because the official intake update calls `.../status`, which CE v1.4.3 does not route. Rereads the record and fails if CE ignored the change (non-admin callers). The `ce_tools.py` payload digest changes: redeploy needed.
+
+## [0.3.2] - 2026-11-14
+
+### Fixed
+
+- Workspace rename: the model probe no longer expects an `IssueComment.comment_binary` column, which Plane CE v1.4.3 does not have; the live read-only `check` refused with `Model mismatch: comment.comment_binary (missing)` (PTC-83).
 
 ## [0.3.1] - 2026-11-14
 

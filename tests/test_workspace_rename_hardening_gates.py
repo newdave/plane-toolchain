@@ -17,6 +17,15 @@ def test_probe_passes_when_every_assumption_holds():
     assert ok and events == [{"event": "summary", "ok": True, "step": "probe"}]
 
 
+def test_probe_passes_without_a_comment_binary_column():
+    from support_workspace_rename_backend import make_orm
+
+    orm = make_orm()
+    orm.models["comment"].hidden.add("comment_binary")  # IssueComment in Plane CE v1.4.3
+    ok, events = probe(orm)
+    assert ok and events == [{"event": "summary", "ok": True, "step": "probe"}]
+
+
 def test_probe_names_a_missing_field():
     from support_workspace_rename_backend import make_orm
 
