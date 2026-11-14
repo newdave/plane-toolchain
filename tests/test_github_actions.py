@@ -82,3 +82,9 @@ def test_no_private_identity(name):
     assert "terrain" not in text.lower()
     assert "newdave.com" not in text
     assert not re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", text)
+
+
+def test_docs_link_adr_0002():
+    adr = "docs/decisions/0002-github-pr-gate-and-evidence-events.md"
+    assert adr in (ROOT / "docs/github-actions.md").read_text()
+    assert "pull_request_target" in (ROOT / adr).read_text()
