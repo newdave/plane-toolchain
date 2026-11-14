@@ -57,3 +57,9 @@ def test_main_exit_codes(tmp_path):
     good.write_text("x\n\nCo-authored-by: Jane <j@example.com>\n")
     assert check.main([str(bad)]) == 1
     assert check.main([str(good)]) == 0
+
+
+def test_violations_finds_trailer_in_multiline_message():
+    msg = "feat: x (PTC-1)\n\nbody\n\nCo-authored-by: Claude <noreply@anthropic.com>\n"
+    assert check.violations(msg) == ["Co-authored-by: Claude <noreply@anthropic.com>"]
+    assert check.violations("feat: x\n\nCo-authored-by: Human <h@example.com>\n") == []

@@ -80,8 +80,14 @@ Provide non-secret destination settings through an authorised local environment:
 
 | Helper | Required variables |
 | --- | --- |
-| MCP entry point | `PLANE_MCP_SSH`, absolute `PLANE_MCP_DIRECTORY`; optional `PLANE_MCP_CONTAINER` (default `plane-mcp`) |
+| MCP entry point | `PLANE_MCP_SSH`, absolute `PLANE_MCP_DIRECTORY`; optional `PLANE_MCP_CONTAINER` (default `plane-mcp`; the mounts check below requires it set explicitly) |
 | Pages backend | `PLANE_MCP_SSH`, `PLANE_API_CONTAINER`, `PLANE_LIVE_URL` reachable from the backend container |
+
+To find the host directory for `PLANE_MCP_DIRECTORY`, list the MCP container's bind mounts. This is read-only: it runs one `docker inspect --format` over SSH that reads `.Mounts` only (no environment, no labels) and changes nothing on the host. It needs `PLANE_MCP_SSH` and `PLANE_MCP_CONTAINER` (both required here, no default) and prints `source`, `destination` and `mode` (`ro` or `rw`) for each bind mount. Pick the source that holds the MCP entry point. The SSH call times out after 60 seconds.
+
+```sh
+mise run owner:plane-mcp-mounts:check
+```
 
 After reviewing the destination, use the paired tasks:
 
