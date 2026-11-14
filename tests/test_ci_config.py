@@ -58,3 +58,11 @@ def test_renovate_actions_digests_do_not_automerge():
     # Later rules win in Renovate: the override must follow the generic automerge rule.
     generic = next(i for i, r in enumerate(rules) if "digest" in r.get("matchUpdateTypes", []))
     assert idx > generic
+
+
+def test_lint_ci_covers_actions():
+    import tomllib
+
+    mise = tomllib.loads((ROOT / "mise.toml").read_text())
+    runs = mise["tasks"]["lint:ci"]["run"]
+    assert "zizmor --offline .github/workflows .github/actions examples/github/*.yml" in runs

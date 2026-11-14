@@ -23,7 +23,7 @@ env = { VIRTUAL_ENV = false }
 [tasks."lint:ci"]
 run = [
   "actionlint .github/workflows/*.yml examples/github/*.yml",
-  "zizmor --offline .github/workflows examples/github/*.yml",
+  "zizmor --offline .github/workflows .github/actions examples/github/*.yml",
   "shellcheck scripts/*.sh templates/project/*.sh",
   "zsh -n scripts/plane-prompt.zsh",
 ]
