@@ -39,9 +39,15 @@ case "$PLANE_ENABLED" in
   *) exit 1 ;;
 esac
 # Non-secret values from ignored config/local.env; exported values take precedence.
-while IFS= read -r -d '' entry; do
-  export "${entry%%=*}=${entry#*=}"
-done < <(python3 src/plane_toolchain/session.py connection)
+# Capture first: a process substitution would hide the exit status (pipefail is set). Values
+# are single-line, so NUL separators become newlines, as bash strings cannot hold NUL.
+if ! entries="$(python3 src/plane_toolchain/session.py connection | tr '\0' '\n')"; then
+  echo "plane: could not read the connection settings" >&2
+  exit 1
+fi
+while IFS= read -r entry; do
+  [[ -z "$entry" ]] || export "${entry%%=*}=${entry#*=}"
+done < <(printf '%s\n' "$entries")
 # Optional SOPS-encrypted key file (ignored by *.enc.env). Only PLANE_API_KEY is exported.
 # Installed projects (PLANE_CONFIG_ROOT, set by .plane/plane.sh) keep theirs under .plane/.
 secrets="$(pick config/plane.enc.env)"
