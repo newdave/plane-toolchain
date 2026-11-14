@@ -1194,3 +1194,48 @@ def test_non_object_receipt_raises_readable_error(root, text):
     (root / "plane-toolchain-ce-receipt.json").write_text(text)
     with pytest.raises(ValueError, match="Receipt unreadable; reconcile"):
         deploy("apply", root, mcp_host())
+
+
+def timing_out_restarts(fake, which):
+    """fake.docker, but the `which` restart (1-based) raises the shipped timeout error."""
+    real, seen = fake.docker, []
+
+    def docker(*args, **kw):
+        if args[:1] == ("restart",):
+            seen.append(args)
+            if len(seen) in which:
+                raise RuntimeError("docker restart timed out after 300 s")
+        return real(*args, **kw)
+
+    fake.docker = docker
+
+
+def test_rollback_restart_timeout_keeps_both_causes_when_still_unhealthy(root, capsys):
+    # PTC-115: the timeout replaced "still unhealthy"; the operator needs both facts.
+    fake = mcp_host()
+    fake.containers["plane-mcp"]["health"] = "starting"
+    timing_out_restarts(fake, {2})  # the rollback restart
+    with pytest.raises(RuntimeError, match="did not become healthy") as error:
+        deploy("apply", root, fake)
+    assert "still unhealthy" in str(error.value)
+    assert "docker restart timed out after 300 s" in capsys.readouterr().err
+    assert (root / "server.py").read_bytes() == ORIGINAL
+
+
+def test_rollback_restart_timeout_after_an_interrupt_keeps_both_causes(root, capsys):
+    fake = mcp_host()
+    fake.containers["plane-mcp"]["health"] = "starting"
+    timing_out_restarts(fake, {2})
+    calls = []
+
+    def sleep(seconds):
+        calls.append(seconds)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+
+    data = dict(operation="apply", directory=str(root), container="plane-mcp", source=V1)
+    with pytest.raises(KeyboardInterrupt):
+        mcp_deploy.deploy(data, fake.docker, lambda path: False, sleep=sleep)
+    err = capsys.readouterr().err
+    assert "MCP still unhealthy after rollback" in err
+    assert "docker restart timed out after 300 s" in err

@@ -303,7 +303,12 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         """
         rewrite(target, current)
         restore_receipt()
-        docker("restart", data["container"], check=False, stdout=subprocess.DEVNULL)
+        try:
+            docker("restart", data["container"], check=False, stdout=subprocess.DEVNULL)
+        except RuntimeError as timeout:  # docker() names the command only, never a container
+            # Say it, then still ask for health: the restart may have taken effect, and a
+            # caller reports "still unhealthy" too, so neither cause hides the other.
+            say(str(timeout), sys.stderr)
         return wait_healthy(probe, sleep)
 
     if operation == "apply":
