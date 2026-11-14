@@ -25,7 +25,7 @@ Plane stores every relation and asset key against the workspace UUID, so only th
 Apply writes a receipt directory on the host (default `~/.local/state/plane-toolchain/workspace-rename` of the SSH user, mode 0700, files 0600):
 
 - `receipt.json`: the step, phase and rotation record.
-- `records.jsonl`: the journal, one line per rewritten row with its original values, written before the row changes. A kill mid-append can leave a torn last line; the next append repairs it first, so it never corrupts the record that follows.
+- `records.jsonl`: the journal, one line per rewritten row with its original values, written and fsynced before the row changes: the snippet waits for the host's acknowledgement of each line before the write it covers. A kill mid-append can leave a torn last line; the next append repairs it first, so it never corrupts the record that follows.
 - `run.lock`: the lock file that keeps two runs apart.
 - `backup.dump`: a `pg_dump -Fc` of the Plane database, with its SHA-256 in the receipt.
 
@@ -47,6 +47,7 @@ The receipt directory holds copies of workspace content. Keep it owner-only, nev
 | `PLANE_RENAME_RECEIPT_DIR` | Optional absolute path for the receipt directory on the host. |
 | `PLANE_RENAME_SNIPPET_IDLE_SECONDS` | Optional. Seconds a snippet may print nothing before it is treated as hung (default 900, up to 86400). |
 | `PLANE_RENAME_ALLOW_UNDRAINED` | Optional. Set to `1` to continue when jobs are still queued after the 60 second drain (see [Apply](#apply)). Any other value is refused. |
+| `PLANE_RENAME_ALLOW_STALE_BINARIES` | Optional. Set to `1` to accept Description rows whose stored editor binary keeps the old slug (see [Check](#check)). Any other value is refused. |
 | `PLANE_API_URL` | Optional API base URL, as seen inside the API container, for the health probe (default `http://127.0.0.1:8000`). |
 | `PLANE_DB_CONTAINER` | Optional, default `plane-db`. |
 | `PLANE_REDIS_CONTAINER` | Optional, default `plane-redis`. |
@@ -78,11 +79,13 @@ The code is tested against fakes, not a real Plane. Verify these against a Plane
 
 The owner should run `mise run owner:plane-workspace-rename:check` once against the real v1.4.3 deployment (or a copy) and record the result: the probe has only been run against fakes.
 
+- The snippet runs as `python manage.py shell -c <bootstrap>`, which reads a length line and then the program from stdin and leaves stdin open for the journal acknowledgements. A passing `check` shows that `shell -c` runs it; the acknowledgement path itself first runs in apply's slug step, whose transaction rolls back if an acknowledgement does not arrive.
+
 - `EmailNotificationLog` exists (table `email_notification_logs`) and has no workspace column. The snippet attributes a row to the old workspace when its `data` names `workspace_slug` with the old slug. A reused old slug or a nested key could match unrelated logs, so prefer the top-level key.
 - `Description.workspace_id` exists (table `descriptions`), and comments link to a `Description` row.
 - The comment columns `comment_html`, `comment_json` and `comment_stripped` exist as the snippet expects. Plane CE v1.4.3 has no `comment_binary` column (PTC-83).
 - Whether Live's convert route returns `description_stripped`. Restore guards work items and Pages on `description_html` only.
-- Description rows rewritten in the slug step are not rebuilt through Live, so their `description_binary` stays stale (counted as `not_rebuilt` in the summary). If such rows back editor content, a later editor save can bring the old slug back. Decide before apply whether that is acceptable.
+- Description rows rewritten in the slug step are not rebuilt through Live, so a stored `description_binary` keeps the old slug. If such rows back editor content, a later editor save can bring the old slug back. `check` lists them (`Not rebuilt: N in descriptions.description_binary`) and refuses, and so does apply, unless `PLANE_RENAME_ALLOW_STALE_BINARIES=1` accepts them. Rows with no stored binary are not counted.
 - The API listens on port 8000 inside its container and `/api/instances/` answers 200 there. The health check fails on any other status, redirects included. Set `PLANE_API_URL` if the port differs.
 - The RabbitMQ vhost the queue drain probes. It runs `rabbitmqctl list_queues` on `${RABBITMQ_DEFAULT_VHOST:-/}` inside `PLANE_MQ_CONTAINER` and needs a queue named `celery` there. If none is listed, stopping services fails with `celery queue not found; drain not verified`.
 - The Redis cache database. `cache.clear()` on django_redis issues `FLUSHDB` and wipes the whole Redis database. Confirm that Plane's cache database index is not shared with anything else (rate limits, a broker or result backend, other applications).
@@ -114,7 +117,9 @@ What each refusal means:
 | `found <files> without a receipt` | A journal or backup (current or rotated) from an earlier rename is present. Move it or the directory aside. Do not delete it. |
 | `backup.dump is missing`, `backup.dump does not match the recorded SHA-256`, `backup.dump has no recorded SHA-256`, `receipt is past the backup but has no backup SHA-256` | The backup and the receipt disagree. Investigate before resuming. |
 | `journal has a corrupt line`, `journal has no workspace record`, `journal names more than one workspace` | The journal is damaged or mixed. Stop and consider revert or the last resort. |
+| `Description editor binaries not rebuilt: N; ...` | N Description rows that the slug step rewrites keep a stored editor binary with the old slug. Decide whether that is acceptable (see [Verify before any live run](#verify-before-any-live-run)); set `PLANE_RENAME_ALLOW_STALE_BINARIES=1` to accept it and continue. |
 | `workspace_id_missing`, `live_url_missing`, `slug_not_renamed` | The step ran out of order or without its inputs. Rerun from `check`. |
+| `<op> gave no summary (exited with code <n>: <class>; stderr: <tail>)` | The Django snippet crashed before it reported, for example an import error after a Plane upgrade. `<class>` is the exception class from the traceback and `<tail>` the last stderr lines, with quoted text and container names redacted. Fix the cause and rerun. |
 
 If a receipt for the same rename exists, check says which step it is at and that apply resumes from there.
 
@@ -178,6 +183,8 @@ Snippet errors such as `convert_failed`, `row_changed` (a row changed after it w
 
 Each snippet runs in the API container with a per-run `PLANE_RENAME_RUN=<token>` in its environment. Stopping the local `docker exec` client does not stop that Python process, so after any abort the tool runs a small stdlib script in the container (`python -c`, reading `/proc`) that sends SIGTERM and then SIGKILL to the marked processes and confirms none is left. Only then does the failure continue to the usual handling (restart and reset before the slug change, or stay stopped after it).
 
+Docker calls have timeouts too (see the deploy helpers in [extensions](extensions.md)): `docker stop`, `start`, `restart`, `inspect` and the queue probe fail after 5 minutes with `docker <command> timed out after 300 s`, handled like any other failure of that step. The streamed `pg_dump` and its `pg_restore` read-back each have 2 hours (`backup failed: pg_dump timed out after 7200 s`, `backup refused: pg_restore did not finish reading the dump in 7200 s`); the database size query has 2 minutes, after which the free-space check uses its 64 MiB minimum.
+
 - A snippet that prints nothing for 15 minutes is treated as hung and stopped: `<op> timed out after 900 s without output; the snippet process was stopped in the API container`. The timer restarts on every output line, and the scans in `check` print a `progress` line every 500 rows, so a long step that keeps answering is never cut off. Set `PLANE_RENAME_SNIPPET_IDLE_SECONDS` (seconds, up to 86400) to change the 900.
 - `snippet process could not be confirmed stopped` means the kill could not be confirmed. Services are not restarted and the receipt is not reset. Find and stop the process by hand in the API container (its environment holds `PLANE_RENAME_RUN`), then rerun apply or revert.
 - Each marker carries an id of the receipt directory (`PLANE_RENAME_RUN=<dir id>:<token>`). Apply and revert sweep first: any process marked by this directory's id, left by an earlier killed run, is stopped before the preflight. A marked process of a different directory is a live run elsewhere on the instance: the run refuses with `another rename run is active on this instance` and kills nothing. The run also refuses (`could not confirm that no earlier snippet is running`) if that cannot be confirmed. `check` never sweeps, because it takes no lock and could meet a live run's snippet. A `check` snippet is marked `PLANE_RENAME_RUN=check:<token>` instead, and a sweep ignores such processes (they only read), so a concurrent `check` neither makes a sweep refuse nor gets killed. A snippet with an old-format marker (no `:`, from before the directory id) cannot be tied to a directory: the sweep kills nothing and refuses with `an older-format snippet process is running ... (pid <pids>)` and the `docker exec <api> kill <pids>` command to run once you know no rename is running.
@@ -205,11 +212,11 @@ Apply and check refuse until the receipt directory is archived. After `Revert co
 
 ## Known risks
 
-- Journal durability: the snippet prints each journal line before it writes the row, and the host then fsyncs it. If the host program is killed with SIGKILL between the print and the fsync during `rows_done`, a row can be rewritten without a journal entry. Only the `pg_dump` backup recovers that row.
+- Journal durability: the snippet prints each journal line, then waits for the host to fsync it and answer `ack` on the snippet's stdin before it writes the row. If the host program is killed between the print and the ack, the snippet's stdin ends, it writes nothing more (the slug step rolls back; the row step stops before that row) and the orphan sweep of the next run stops it if it is still waiting.
 - JSON null and SQL NULL both read back as null. A JSON-null original is restored as SQL NULL. Check whether Plane has such rows in the rewritten columns.
 - `WEB_URL` decides which absolute links count as this instance. If it changes between apply and revert, the restore guard sees rows as changed and skips them (a partial restore).
 - Rebuilt editor documents: Live rebuilds the editor document from the new HTML and can drop details the HTML does not carry. Revert restores the stored originals and does not reconvert. Restore guards work items and Pages on `description_html` only.
-- Stale `description_binary` on Description rows (see the verification list).
+- Stale `description_binary` on Description rows, accepted with `PLANE_RENAME_ALLOW_STALE_BINARIES=1` (see the verification list).
 - Stale bookmarks, emails already sent and invite links to the old slug break. Plane CE has no redirect.
 - A new workspace can later take the old slug and capture stale external links.
 - The receipt directory holds copies of content. Keep it private.

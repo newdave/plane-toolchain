@@ -32,7 +32,9 @@ def test_check_reports_planned_rewrites_per_record_and_field():
     assert "rebuild" not in plans[("notifications", "n1", "data")]
     summary = events[-1]
     assert summary["event"] == "summary" and summary["ok"] and summary["planned"] == 7
-    assert summary["rebuild"] == 4
+    assert summary["rebuild"] == 2  # work items and Pages only: step_slug calls no Live
+    assert "rebuild" not in plans[("descriptions", "d1", "description_html")]
+    assert summary["not_rebuilt"] == 0  # the fixture's Description rows hold no binary
 
 
 def test_check_includes_deleted_and_archived_rows():
@@ -181,6 +183,7 @@ def test_check_never_emits_row_content():
         "planned",
         "truncated",
         "unfixed",
+        "not_rebuilt",
         "reason",
         "detail",
     }
@@ -230,3 +233,70 @@ def test_snippet_source_has_no_disk_writes_or_prints_of_config():
     uses = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "settings"]
     assert all(isinstance(n.value, ast.Name) and n.value.id == "orm" for n in uses)
     assert pathlib.Path(backend.__file__).read_text().count("print(") == 1
+
+
+def test_check_reports_bare_url_followed_by_punctuation_as_unfixed():
+    # PTC-91: a URL ending in prose punctuation was missed by the matcher and by check.
+    rows = [
+        {
+            "id": "v1",
+            "description_html": "see https://plane.example.com/old-slug, then",
+            "deleted_at": None,
+        },
+        {
+            "id": "v2",
+            "description_html": "(https://plane.example.com/old-slug)",
+            "deleted_at": None,
+        },
+    ]
+    orm = make_orm(version=("issue_versions", {"description_html": "text"}, rows))
+    ok, events = run_check(orm)
+    event = next(e for e in events if e["event"] == "unfixed" and e["table"] == "issue_versions")
+    assert event["count"] == 2 and event["ids"] == ["v1", "v2"]
+
+
+def test_check_counts_description_binaries_step_slug_leaves_stale():
+    # PTC-93: step_slug rewrites Description rows without Live, so a stored binary keeps OLD.
+    orm = make_orm()
+    rows = orm.models["description"].rows
+    rows[0]["description_binary"] = b"\x00stale"
+    rows[1]["description_binary"] = b"\x00stale"  # a deleted comment's row: rewritten too
+    rows.append(
+        {
+            "id": "d3",
+            "workspace_id": "w1",
+            "description_html": "<p>no link</p>",
+            "description_json": {"href": URL},  # step_slug rewrites the JSON alone
+            "description_stripped": None,
+            "description_binary": b"\x00stale",
+            "deleted_at": None,
+        }
+    )
+    rows.append(
+        {
+            "id": "d4",
+            "workspace_id": "w1",
+            "description_html": "<p>no link</p>",
+            "description_json": {},
+            "description_stripped": None,
+            "description_binary": b"\x00untouched",
+            "deleted_at": None,
+        }
+    )
+    ok, events = run_check(orm)
+    assert ok
+    stale = [e for e in events if e["event"] == "not_rebuilt"]
+    assert stale == [
+        {
+            "event": "not_rebuilt",
+            "table": "descriptions",
+            "column": "description_binary",
+            "count": 3,
+            "ids": ["d1", "d2", "d3"],
+        }
+    ]
+    assert events[-1]["not_rebuilt"] == 3
+    slug_events = []
+    args = {"old": "old-slug", "new": "new-slug"}
+    assert backend.run("step_slug", args, orm, slug_events.append, None)
+    assert slug_events[-1]["not_rebuilt"] == 3  # comments hold no binary in Plane CE v1.4.3

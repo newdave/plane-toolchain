@@ -2,6 +2,7 @@
 
 import ast
 import base64
+import io
 import builtins
 import inspect
 import json
@@ -315,7 +316,7 @@ def test_snippet_main_emits_sorted_json_lines_and_passes_convert():
     slug_args = {"old": "old-slug", "new": "new-slug"}
     rows_args = {**slug_args, "workspace_id": "w1"}
     for op, args in (("step_slug", slug_args), ("step_rows", rows_args)):
-        ns["_main"]({"op": op, "args": args}, lambda: orm, factory, lines.append)
+        ns["_main"]({"op": op, "args": args}, lambda: orm, factory, lines.append, None, list)
     assert all(line == json.dumps(json.loads(line), sort_keys=True) for line in lines)
     summaries = [json.loads(x) for x in lines if json.loads(x)["event"] == "summary"]
     assert [s["ok"] for s in summaries] == [True, True] and summaries[-1]["rewritten"] == 2
@@ -325,11 +326,10 @@ def test_snippet_main_emits_sorted_json_lines_and_passes_convert():
 @pytest.mark.parametrize(
     "inject,detail",
     [
-        (delete_on_reread, "IndexError"),
         (fail_db_update, "RuntimeError"),
         (str_binary, "JournalValueError"),
     ],
-    ids=["concurrent_delete", "db_error", "str_binary"],
+    ids=["db_error", "str_binary"],
 )
 def test_step_rows_reports_unexpected_errors_with_summary(inject, detail):
     orm = make_orm()
@@ -375,3 +375,97 @@ def test_snippet_functions_reference_only_defined_globals():
 
     walk(table)
     assert not missing, f"snippet functions use undefined globals: {missing}"
+
+
+def test_step_rows_row_deleted_after_the_page_read_is_row_changed_and_unwritten():
+    orm = make_orm()
+    run_op("step_slug", orm)
+    delete_on_reread(orm)
+    ok, events = run_op("step_rows", orm, FakeLive())
+    assert not ok
+    assert {"event": "error", "reason": "row_changed", "table": "issues", "id": "i1"} in events
+
+
+def test_step_rows_reads_each_row_once_and_journals_that_read():
+    # PTC-94: `original` was a second query after the page read; now the page read is journalled.
+    orm = make_orm()
+    run_op("step_slug", orm)
+    before = {r["id"]: dict(r) for r in orm.models["issue"].rows}
+    manager = orm.models["issue"].all_objects
+    real, lookups = manager.filter, []
+    manager.filter = lambda **kw: lookups.append(sorted(kw)) or real(**kw)
+    _, events = run_op("step_rows", orm, FakeLive())
+    assert ["pk"] not in lookups  # no re-read by pk alone
+    record = next(r for r in journal(events) if r.get("table") == "issues")
+    assert set(record["fields"]) == set(backend.ROW_FIELDS)
+    original = before[record["id"]]
+    fields = backend.journal_values(record)
+    assert fields == {c: original[c] for c in backend.ROW_FIELDS}
+
+
+def run_main(orm, op, ack, convert=None):
+    """Run the snippet tail's _main for one request, logging output lines and acks in orm.log."""
+    ns = snippet_namespace()
+    args = {"old": "old-slug", "new": "new-slug"}
+    if op == "step_rows":
+        args["workspace_id"] = "w1"
+
+    def out(line):
+        orm.log.append(("out", json.loads(line)))
+
+    ns["_main"]({"op": op, "args": args}, lambda: orm, lambda a: convert, out, None, ack)
+    return [entry[1] for entry in orm.log if entry[0] == "out"]
+
+
+@pytest.mark.parametrize("op", ["step_slug", "step_rows"])
+def test_each_journal_line_is_acked_before_any_write(op):
+    orm = make_orm()
+    if op == "step_rows":
+        run_main(orm, "step_slug", lambda: orm.log.append(("ack",)))
+        del orm.log[:]
+    run_main(orm, op, lambda: orm.log.append(("ack",)), FakeLive())
+    kinds = [
+        "journal" if e[0] == "out" and e[1]["event"] == "journal" else e[0]
+        for e in orm.log
+        if e[0] in ("ack", "update") or (e[0] == "out" and e[1]["event"] == "journal")
+    ]
+    assert kinds.count("journal") == kinds.count("ack") > 0
+    for index, kind in enumerate(kinds):
+        if kind == "journal":
+            assert kinds[index + 1] == "ack", kinds
+
+
+def test_unacked_journal_line_writes_nothing(monkeypatch):
+    # The host never acks (it died): stdin ends, the read fails, and the row is not written.
+    orm = make_orm()
+    before = orm.snapshot()
+    ns = snippet_namespace()
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(b"")))
+    out = []
+    ns["_main"](
+        {"op": "step_slug", "args": {"old": "old-slug", "new": "new-slug"}},
+        lambda: orm,
+        lambda a: None,
+        out.append,
+        None,
+        ns["_read_ack"],
+    )
+    assert orm.snapshot() == before
+    events = [json.loads(line) for line in out]
+    assert events[-2] == {"event": "error", "reason": "write_failed", "detail": "JournalNotAcked"}
+    run_main(orm, "step_slug", lambda: None)  # acked: the slug step commits
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(b"nope\n")))
+    out.clear()
+    ns["_main"](
+        {"op": "step_rows", "args": {"old": "old-slug", "new": "new-slug", "workspace_id": "w1"}},
+        lambda: orm,
+        lambda a: FakeLive(),
+        out.append,
+        None,
+        ns["_read_ack"],
+    )
+    events = [json.loads(line) for line in out]
+    assert {"event": "error", "reason": "row_failed", "table": "issues", "id": "i1"}.items() <= (
+        next(e for e in events if e["event"] == "error").items()
+    )
+    assert row(orm, "issue", "i1")["description_html"] == before["issue"][0]["description_html"]

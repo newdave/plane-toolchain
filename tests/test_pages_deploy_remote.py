@@ -1,7 +1,6 @@
 """Pages deploy: remote program, entry points, seams, health probes."""
 
 import ast
-import hashlib
 import inspect
 import json
 import shlex
@@ -32,6 +31,8 @@ from support_pages_deploy import (
     remote,
     restart,
     run_health,
+    payload,
+    seams,
     running,
 )
 from support_pages_deploy import applied  # noqa: F401
@@ -63,7 +64,9 @@ def test_remote_finishes_apply_when_ssh_channel_is_gone(host, monkeypatch):
 
 def test_check_verifies_label_and_health(applied, monkeypatch, capsys):
     remote("check", applied, monkeypatch)
-    assert capsys.readouterr().out == "Pages image and API health verified\n"
+    assert (
+        capsys.readouterr().out == "Pages image and API health verified (digest " + DIGEST + ")\n"
+    )
     assert applied.calls == [*LOOKUP, HELD, HEALTH, PAGES]
 
 
@@ -118,7 +121,7 @@ def test_main_ships_fixed_program_and_source_digest_over_ssh(monkeypatch):
         container="plane-api_1",
         live_url="http://live:3000",
         source=source,
-        digest=hashlib.sha256(source.encode()).hexdigest(),
+        digest=pages_deploy.shipped_digest(source),
         replacement="import copy\n" + inspect.getsource(pages_deploy.replacement),
     )
 
@@ -197,7 +200,7 @@ def test_seam_apply_idempotent_and_refuses_existing_backup(applied, host):
 
 
 def test_seam_revert_success_and_check_label_mismatch(applied):
-    assert deploy("check", applied) == "Pages image and API health verified"
+    assert deploy("check", applied) == "Pages image and API health verified (digest " + DIGEST + ")"
     assert deploy("revert", applied).startswith("Original API container restored")
     assert_original_restored(applied)
     with pytest.raises(ValueError, match="does not match source"):
@@ -248,13 +251,12 @@ def test_healthy_needs_both_probes_in_one_attempt(host):
     assert len(calls) == 5
 
 
-def test_seam_apply_rollback_rename_failure_leaves_original_as_backup(host):
-    # Current behaviour: no further recovery when restoring the original fails.
+def test_seam_apply_rollback_rename_failure_still_restores_original(host):
+    # The recovery restores the original when the rollback itself fails (PTC-88).
     host.fail += ["start", ("rename", BACKUP, "api")]
     with pytest.raises(subprocess.CalledProcessError):
         deploy("apply", host)
-    assert not host.containers[BACKUP]["running"]
-    assert "api" not in host.containers
+    assert_original_restored(host)
     assert not host.containers[f"api-pages-failed-{NOW}"]["running"]
 
 
@@ -379,3 +381,35 @@ def test_shipped_pages_and_mcp_programs_define_every_global_they_use():
 
 def test_health_probe_exec_has_a_timeout_in_the_shipped_entry():
     assert "timeout=20" in pages_deploy.REMOTE
+
+
+@pytest.mark.parametrize("name", ["--help", "-x", "éapi", "api١", "a b", "a;b", "", "a/b"])
+def test_validate_container_name_rejects_unsafe_names(name):
+    with pytest.raises(ValueError, match="Invalid deployment destination"):
+        pages_deploy.validate_container_name(name)
+
+
+@pytest.mark.parametrize("name", ["api", "plane-api_1", "plane.api-1", "9lives"])
+def test_validate_container_name_accepts_docker_names(name):
+    assert pages_deploy.validate_container_name(name) == name
+
+
+@pytest.mark.parametrize("operation", ["apply", "check", "revert", "prune"])
+def test_remote_deploy_rejects_an_unsafe_container_before_any_docker_call(host, operation):
+    data = dict(payload(operation), container="--help")
+    with pytest.raises(ValueError, match="Invalid deployment destination"):
+        pages_deploy.deploy(data, now=lambda: NOW, **seams(host))
+    assert host.calls == []
+
+
+def test_remote_build_rejects_an_unsafe_worker_before_any_docker_call(host):
+    data = dict(payload("build"), worker="--help")
+    with pytest.raises(ValueError, match="Invalid deployment destination"):
+        pages_deploy.deploy(data, now=lambda: NOW, **seams(host))
+    assert host.calls == []
+
+
+def test_docker_create_url_encodes_the_name(sockets):
+    pages_deploy.docker_create("a b&c", {})
+    [conn] = sockets.instances
+    assert conn.sent.startswith(b"POST /containers/create?name=a%20b%26c ")

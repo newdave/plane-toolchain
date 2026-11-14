@@ -351,13 +351,17 @@ class ManageShell:
 
     Records each request (`requests`). Stdout is what the program printed; an exception that
     escapes the program exits 1, as the real shell would. `die_at = (op, n)` kills the next
-    run of `op` once, after its n-th journal line (exit 137, output so far delivered)."""
+    run of `op` once, after its n-th journal line (exit 137, output so far delivered).
+
+    The program runs before the host reads any output, so the host's acks cannot reach it:
+    stdin answers `ack` to every read instead, counted in `acks` (compare FakeDocker.acks)."""
 
     def __init__(self, orm, live=None, api_status=200):
         self.orm, self.live = orm, live or FakeLiveService()
         self.api = {"status": api_status}
         self.requests = []
         self.die_at = None
+        self.acks = 0
 
     def __call__(self, text):
         modules = django_modules(self.orm, self.live, self.api)
@@ -369,6 +373,15 @@ class ManageShell:
         if dying:
             self.die_at = None
         namespace = {"__name__": "__main__"}
+        shell = self
+
+        class Acks:
+            def readline(self):
+                shell.acks += 1
+                return b"ack\n"
+
+        stdin = sys.stdin
+        sys.stdin = SimpleNamespace(buffer=Acks())
         try:
             with contextlib.redirect_stdout(out):
                 exec(compile(text, "<manage.py shell>", "exec"), namespace)  # noqa: S102
@@ -377,6 +390,7 @@ class ManageShell:
         except Exception:  # noqa: BLE001 - the real shell exits non-zero
             return out.getvalue(), 1
         finally:
+            sys.stdin = stdin
             for name, module in saved.items():
                 if module is None:
                     sys.modules.pop(name, None)
