@@ -1,0 +1,25 @@
+README.md
+  s_a03650451d84d5::t_c5ca02f1f049d2 35
+docs/project-install.md
+  s_a03650451d84d5::t_c5ca02f1f049d2 26,31
+  s_a03650451d84d5::t_64f4fcf0dc60dc 32
+docs/agent-workflow.md
+  s_a03650451d84d5::t_c5ca02f1f049d2 52
+  s_a03650451d84d5::t_14115e52fa2c6b 1-51,53-109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "2763c883d2c513883d8dd745b993e5ba220e1c79",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
