@@ -1,0 +1,33 @@
+docs/agent-workflow.md
+  s_a03650451d84d5::t_b95754481da5eb 1-109
+scripts/install_project.py
+  s_a03650451d84d5::t_b95754481da5eb 50-52,130-140,315-316,385,421,754-766,768-769,771-772
+templates/project/skills/plane-tasks/SKILL.md
+  s_a03650451d84d5::t_b95754481da5eb 1-85
+tests/test_project_skill.py
+  s_a03650451d84d5::t_b95754481da5eb 1-184
+CHANGELOG.md
+  s_a03650451d84d5::t_b95754481da5eb 9
+  s_a03650451d84d5::t_6dcab4ec5d3731 10-12
+README.md
+  s_a03650451d84d5::t_b95754481da5eb 35
+docs/project-install.md
+  s_a03650451d84d5::t_b95754481da5eb 26,31
+  s_a03650451d84d5::t_ba908ef50b9adc 32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "a6197c5d511631b27ffd0d5d43e63119606e793e",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
