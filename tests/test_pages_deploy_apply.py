@@ -511,7 +511,10 @@ def test_apply_two_rollback_start_failures_leave_the_original_stopped_and_say_so
     assert host.containers["api"]["labels"] == {"owner": "kept"}
     assert BACKUP not in host.containers
     err = capsys.readouterr().err
-    assert "Rollback incomplete" in err and "original api (stopped)" in err
+    assert "Rollback incomplete" in err and "derived container not created" in err
+    # The failed start effect was not verified, so the line does not claim stopped.
+    assert "original api (start failed, state not verified)" in err
+    assert "not under" not in err and "original api (stopped)" not in err
 
 
 # PTC-96 fix round 2: a probe that times out raises RuntimeError. Inside a rollback or recovery
@@ -640,3 +643,27 @@ def test_inspect_daemon_error_after_a_timeout_is_unknown_not_absent(host, monkey
     err = capsys.readouterr().err
     assert "Rollback incomplete" in err and "absent" not in err
     assert f"original unknown, possibly {BACKUP} or api" in err
+
+
+# PTC-115: PTC-86 review follow-ups.
+
+
+def test_lower_case_no_such_after_a_timeout_reads_as_absent(host, monkeypatch, capsys):
+    host.no_such = b"error: no such container: "  # Docker's casing varies between versions
+    host.fail.append("start")  # the derived container's start fails: rollback
+    failed = f"api-pages-failed-{NOW}"
+    hang_after(host, ("start", "api"), ("rename", "api", failed), nth=1, effect=True)
+    hang_after(host, ("start", "api"), ("rename", BACKUP, "api"), nth=1)  # recovery's move
+    with pytest.raises(subprocess.CalledProcessError):
+        remote("apply", host, monkeypatch)
+    err = capsys.readouterr().err
+    assert f"original {BACKUP} (stopped)" in err and "unknown, possibly " + BACKUP not in err
+
+
+def test_apply_rollback_stops_the_name_when_its_own_inspect_fails(host):
+    host.created_healthy = False
+    fail_after_derived_start(host, "inspect", {1})  # the rollback's inspect of `api`
+    with pytest.raises(ValueError, match="API health check failed"):
+        deploy("apply", host)
+    inspected = host.calls.index(("inspect", "api"), host.calls.index(("start", "api")))
+    assert host.calls[inspected + 1] == ("stop", "api")  # best effort, before any rename

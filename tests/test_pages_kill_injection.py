@@ -115,3 +115,26 @@ def test_one_failing_call_leaves_one_running_api_and_the_next_run_converges(
         assert running(fake) == ["api"]
     else:
         assert_converged(fake, DERIVED_AFTER[OTHER[operation]])
+
+
+@pytest.mark.parametrize(
+    ("operation", "index"),
+    [(operation, index) for operation, count in CALLS.items() for index in range(count)],
+)
+def test_a_call_that_reports_failure_but_took_effect_leaves_one_running_api(
+    operation, index, monkeypatch
+):
+    fake = START[operation]()
+    state = fake.kill_at(index, "failed-took-effect")
+    try:
+        remote(operation, fake, monkeypatch)
+    except Exception:  # noqa: S110 - the failure is the point; the host state is what counts
+        pass
+    assert len(running(fake)) <= 1  # never two APIs, whatever the call did
+    del fake.execute, fake.create
+    policy_warned = state["failed"][0] == "update"
+    remote(operation, fake, monkeypatch)
+    if policy_warned:
+        assert running(fake) == ["api"]
+    else:
+        assert_converged(fake, DERIVED_AFTER[operation])
