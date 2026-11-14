@@ -45,6 +45,9 @@ class FakeDocker:
         # One-shot failures: a bare command, or a tuple matching the leading arguments,
         # e.g. "start" or ("rename", "api", "api-before-plane-toolchain-pages").
         self.fail = []
+        # One-shot hangs for subprocess_run, matched like `fail`: the call raises TimeoutExpired.
+        self.hang = []
+        self.timeouts = {}  # docker args -> timeout of the latest subprocess_run call
         self.streams = {}  # docker args -> (stdout, stderr) routing of the latest call
         self.builds = []
         self.tracked = False
@@ -59,12 +62,15 @@ class FakeDocker:
         self.pg_restore_code = 0
         self.pg_restore_out = b"; Archive created by pg_dump\n"
         self.pg_restore_stderr = b""
+        self.acks = 0  # `ack` lines the host wrote to a snippet's stdin
+        self.shell_stderr = b""  # what `manage.py shell` writes to a captured stderr
         self.restore_input = None  # the dump bytes `pg_restore -l` was fed on stdin
         # In-container snippet processes, by PLANE_RENAME_RUN token. A hung op never answers; a
         # snippet that outlives its killed client stays here until the kill script runs.
         # immortal: the kill script cannot stop them.
         self.procs = []
         self.hang_ops = set()
+        self.hang_exec = None  # a popen argv substring (e.g. "pg_dump") that hangs once
         self.snippet_outlives_client = False
         self.immortal = False
         self.kill_calls = []
@@ -74,6 +80,7 @@ class FakeDocker:
         self.queue_probes = []
         self.crash_label = None
         self.error_output = b""  # stderr attached to a failed call's CalledProcessError
+        self.call_stderr = b""  # the latest call's own stderr, used when error_output is unset
 
     def add(self, name, labels=None, running=True, healthy=True, hostname=None, **host_config):
         ident = self.new_id()
@@ -128,11 +135,13 @@ class FakeDocker:
     def execute(self, *args, input=None):
         """Return (returncode, stdout) for one docker CLI invocation."""
         self.calls.append(args)
+        self.call_stderr = b""
         command, rest = args[0], args[1:]
         if self.failing(args):
             return 1, b""
         if command == "inspect":
             if rest[0] not in self.containers:
+                self.call_stderr = b"Error: No such object: " + rest[0].encode() + b"\n"
                 return 1, b""
             return 0, json.dumps([self.document(rest[0])]).encode()
         if command == "ps":
@@ -221,6 +230,9 @@ class FakeDocker:
             return (1, b"alive\n") if alive else (0, b"gone\n")
         if "manage.py" in rest and "shell" in rest:
             assert self.on_manage_shell is not None, "no manage.py shell handler set"
+            if "-c" in rest:  # BOOTSTRAP: a length line, then exactly that many program bytes
+                length, _, body = (input or b"").partition(b"\n")
+                input = body[: int(length)]
             if self.snippet_outlives_client:
                 self.procs.append(env.get("PLANE_RENAME_RUN", ""))
             stdout, code = self.on_manage_shell((input or b"").decode())
@@ -303,8 +315,14 @@ class FakeDocker:
 
             def write(self, data):
                 assert not self.closed
-                self.data += data
+                if data == b"ack\n":  # a journal acknowledgement, after the program
+                    fake.acks += 1
+                else:
+                    self.data += data
                 return len(data)
+
+            def flush(self):
+                pass
 
             def close(self):
                 self.closed = True
@@ -321,6 +339,11 @@ class FakeDocker:
                 if self.result is None:
                     piped = bytes(self.stdin.data) if self.stdin is not None else None
                     text = (piped or b"").decode()
+                    if fake.hang_exec and fake.hang_exec in " ".join(argv):
+                        fake.calls.append(tuple(argv[1:]))
+                        fake.hang_exec = None  # one-shot
+                        self.result = (-9, Hung(self.dead))
+                        return self.result
                     if "manage.py" in argv and any(f'"op": "{op}"' in text for op in fake.hang_ops):
                         fake.calls.append(tuple(argv[1:]))
                         token = next(
@@ -336,9 +359,14 @@ class FakeDocker:
                     errors = kw.get("stderr")
                     if hasattr(errors, "write"):  # stderr captured to a file
                         joined = " ".join(argv)
-                        errors.write(
-                            fake.pg_dump_stderr if "pg_dump" in joined else fake.pg_restore_stderr
-                        )
+                        if "manage.py" in argv:
+                            errors.write(fake.shell_stderr)
+                        else:
+                            errors.write(
+                                fake.pg_dump_stderr
+                                if "pg_dump" in joined
+                                else fake.pg_restore_stderr
+                            )
                     self.result = (code, io.BytesIO(stdout))
                 return self.result
 
@@ -347,6 +375,8 @@ class FakeDocker:
                 return self.run()[1]
 
             def wait(self):
+                if isinstance(self.run()[1], Hung):  # a hung child exits only once killed
+                    self.dead.wait(10)
                 self.returncode = self.run()[0]
                 return self.returncode
 
@@ -368,7 +398,9 @@ class FakeDocker:
         self.streams[args] = (kw.get("stdout"), kw.get("stderr"))
         code, stdout = self.execute(*args, input=kw.get("input"))
         if code and kw.get("check", True):
-            raise subprocess.CalledProcessError(code, ["docker", *args], stderr=self.error_output)
+            raise subprocess.CalledProcessError(
+                code, ["docker", *args], stderr=self.error_output or self.call_stderr
+            )
         return stdout
 
     def probe(self, *args):
@@ -403,9 +435,17 @@ class FakeDocker:
         else:
             assert argv[0] == "docker"
             self.streams[tuple(argv[1:])] = (kw.get("stdout"), kw.get("stderr"))
+            self.timeouts[tuple(argv[1:])] = kw.get("timeout")
+            for entry in self.hang:
+                if entry == argv[1] or (isinstance(entry, tuple) and tuple(argv[1:]) == entry):
+                    self.hang.remove(entry)
+                    self.calls.append(tuple(argv[1:]))
+                    raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
             code, stdout = self.execute(*argv[1:], input=kw.get("input"))
         if code and kw.get("check"):
-            raise subprocess.CalledProcessError(code, argv, stderr=self.error_output)
+            raise subprocess.CalledProcessError(
+                code, argv, stderr=self.error_output or self.call_stderr
+            )
         return subprocess.CompletedProcess(argv, code, stdout if kw.get("capture_output") else None)
 
     def http_connection(self):

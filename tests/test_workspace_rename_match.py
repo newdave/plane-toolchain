@@ -68,6 +68,28 @@ def test_rewrite_terminators_slash_quotes_query_hash_end():
         assert n == 1
 
 
+@pytest.mark.parametrize("tail", [" next", "<br>", ")", ".", ",", ";", "\n", "&amp;"])
+def test_rewrite_bare_url_followed_by_whitespace_or_punctuation(tail):
+    # PTC-91: prose such as "(see https://host/acme)" or "https://host/acme, then" is rewritten.
+    src = f"(see https://plane.example.com/acme{tail}"
+    out, n = m.rewrite_html(src, "acme", "beta", HOSTS)
+    assert (out, n) == (f"(see https://plane.example.com/beta{tail}", 1)
+    assert m.scan_text(src, "acme", HOSTS)["url"] == 1
+
+
+def test_bare_url_prefix_collision_untouched_before_punctuation():
+    src = "https://plane.example.com/acme-two. https://plane.example.com/acme_2, /acmeX"
+    assert m.rewrite_html(src, "acme", "beta", HOSTS) == (src, 0)
+
+
+def test_json_href_followed_by_punctuation():
+    obj = {"href": "https://plane.example.com/acme."}
+    assert m.rewrite_json_slug(obj, "acme", "beta", HOSTS) == (
+        {"href": "https://plane.example.com/beta."},
+        1,
+    )
+
+
 def test_prefix_collision_untouched():
     src = (
         '<a href="/acme-two/x">x</a> <a href="/acme2">y</a> '
@@ -172,3 +194,28 @@ def test_json_leaves_unrelated_string_values():
 def test_scan_json_counts_forms_without_rewriting():
     assert m.scan_json(DOC, "acme", HOSTS) == {"url": 1, "href": 1, "embed": 1, "slug": 0}
     assert m.scan_json({"workspace_slug": "acme"}, "acme", HOSTS)["slug"] == 1
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "/acme.png",
+        "https://plane.example.com/acme.tar.gz",
+        "https://plane.example.com/acme.png",
+        "https://plane.example.com/acme._x",
+    ],
+)
+def test_dotted_file_names_on_own_host_untouched(href):
+    # PTC-91 review: a dot followed by a slug character continues a file name, not a slug.
+    src = f'<a href="{href}">x</a> {href}'
+    assert m.rewrite_html(src, "acme", "beta", HOSTS) == (src, 0)
+    assert m.rewrite_json_slug({"href": href}, "acme", "beta", HOSTS) == ({"href": href}, 0)
+
+
+@pytest.mark.parametrize("tail", [". next", ".", ".<br>", '."'])
+def test_sentence_dot_after_url_still_rewritten(tail):
+    src = f"https://plane.example.com/acme{tail}"
+    assert m.rewrite_html(src, "acme", "beta", HOSTS) == (
+        f"https://plane.example.com/beta{tail}",
+        1,
+    )

@@ -216,6 +216,38 @@ def test_revert_with_an_undrained_queue_refuses_unless_overridden(host):
     assert host.deploy("revert", allow_undrained=True).startswith("Revert complete")
 
 
+def stale_description(host):
+    host.orm.models["description"].rows[0]["description_binary"] = b"\x00stale-editor-state"
+
+
+def test_check_and_apply_refuse_stale_description_binaries_without_the_override(host, capsys):
+    # PTC-93: step_slug rewrites Description rows without Live, so their binary keeps OLD.
+    stale_description(host)
+    with pytest.raises(
+        RuntimeError, match=r"Refused: Description editor binaries not rebuilt: 1;"
+    ) as caught:
+        host.deploy("check")
+    assert "PLANE_RENAME_ALLOW_STALE_BINARIES=1" in str(caught.value)
+    assert "Not rebuilt: 1 in descriptions.description_binary" in capsys.readouterr().out
+    with pytest.raises(RuntimeError, match="PLANE_RENAME_ALLOW_STALE_BINARIES"):
+        host.deploy()
+    assert not mutating(host.fake)
+    assert "step_slug" not in host.ops()
+
+
+def test_check_and_apply_continue_past_stale_binaries_with_the_override(host, capsys):
+    stale_description(host)
+    assert host.deploy("check", allow_stale_binaries=True) == "Check passed: apply may run"
+    assert "Warning: Description editor binaries not rebuilt: 1;" in capsys.readouterr().out
+    assert host.deploy(allow_stale_binaries=True).startswith("Rename complete")
+    row = host.orm.models["description"].rows[0]
+    assert row["description_binary"] == b"\x00stale-editor-state"  # left as stored
+
+
+def test_check_without_stale_binaries_needs_no_override(host):
+    assert host.deploy("check") == "Check passed: apply may run"
+
+
 @pytest.mark.parametrize("operation", ["check", "apply", "revert"])
 @pytest.mark.parametrize(
     "api",
@@ -293,7 +325,12 @@ def test_cli_override_flag_and_api_container_check(monkeypatch):
         "PLANE_API_CONTAINER": "plane-api",
         "PLANE_LIVE_URL": "https://plane.example.com",
     }
-    for name in (*env, "PLANE_RENAME_ALLOW_UNDRAINED", *wr.SERVICE_VARIABLES):
+    for name in (
+        *env,
+        "PLANE_RENAME_ALLOW_UNDRAINED",
+        "PLANE_RENAME_ALLOW_STALE_BINARIES",
+        *wr.SERVICE_VARIABLES,
+    ):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
@@ -316,6 +353,13 @@ def test_cli_override_flag_and_api_container_check(monkeypatch):
     monkeypatch.setenv("PLANE_RENAME_ALLOW_UNDRAINED", "yes")
     assert run() == "Invalid PLANE_RENAME_ALLOW_UNDRAINED (use 1)"
     monkeypatch.delenv("PLANE_RENAME_ALLOW_UNDRAINED")
+    assert "allow_stale_binaries" not in json.loads(sent[-1])
+    monkeypatch.setenv("PLANE_RENAME_ALLOW_STALE_BINARIES", "1")
+    assert run() == 0
+    assert json.loads(sent[-1])["allow_stale_binaries"] is True
+    monkeypatch.setenv("PLANE_RENAME_ALLOW_STALE_BINARIES", "yes")
+    assert run() == "Invalid PLANE_RENAME_ALLOW_STALE_BINARIES (use 1)"
+    monkeypatch.delenv("PLANE_RENAME_ALLOW_STALE_BINARIES")
     count = len(sent)
     monkeypatch.setenv("PLANE_API_CONTAINER", "plane-worker")
     assert "API container" in run()

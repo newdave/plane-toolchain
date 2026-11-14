@@ -108,10 +108,19 @@ def restart_arg(container):
     return name + ":" + str(count) if name == "on-failure" and count else name
 
 
+def answer(probe, *args):
+    """`probe(*args)`, or None when Docker did not answer in time (the probe raised
+    RuntimeError). None is an unknown result: never read it as "absent" or as success."""
+    try:
+        return probe(*args)
+    except RuntimeError:
+        return None
+
+
 def set_restart(probe, policy, container):
-    """`docker update --restart`; say so on stderr when it fails, since a retained container
-    that keeps its old policy could start beside the live API."""
-    if not probe("update", "--restart=" + policy, container):
+    """`docker update --restart`; say so on stderr when it fails or times out, since a retained
+    container that keeps its old policy could start beside the live API."""
+    if not answer(probe, "update", "--restart=" + policy, container):
         say(
             "Restart policy update failed for " + container + "; check it with docker inspect",
             sys.stderr,
@@ -147,8 +156,9 @@ def healthy(name, probe, sleep, attempts=45, pages=True, budget=120, clock=time.
     )
     start = clock()
     for _ in range(attempts):
-        if probe("exec", name, "python", "-c", api) and (
-            not pages or probe("exec", name, "python", "-c", route)
+        # A probe that times out is not healthy yet; it is retried within the budget.
+        if answer(probe, "exec", name, "python", "-c", api) and (
+            not pages or answer(probe, "exec", name, "python", "-c", route)
         ):
             return
         if clock() - start >= budget:
@@ -337,7 +347,7 @@ def prune(name, docker, probe, confirm=False):
     if not confirm:
         parts.append("Dry run, nothing removed. Would remove: " + (", ".join(eligible) or "none"))
     else:
-        removed = [c for c in eligible if probe("rm", c)]
+        removed = [c for c in eligible if answer(probe, "rm", c)]  # a timeout: not removed
         stuck = [c for c in eligible if c not in removed]
         parts.append("Pruned: " + ", ".join(removed) if removed else "Nothing pruned")
         if stuck:
@@ -361,36 +371,54 @@ def restore_any(name, backup, reverted, probe, docker, policy):
 
     A retained container gets `--restart=no` only after its rename succeeds; a promoted one
     gets `policy`, the live deployment's policy read before any retirement (best effort).
+
+    A probe that times out leaves the state unknown: nothing more is started, `name` is stopped
+    (best effort) and "Rollback incomplete" names where the containers may be. Never raises a
+    timeout, so the caller still raises its original error.
     """
     aside = reverted + "-aside"
     try:
-        if probe("inspect", name):
+        restore_any_steps(name, backup, reverted, aside, probe, policy)
+    except RuntimeError:
+        say(
+            "Rollback incomplete: Docker did not answer in time; "
+            + settle_unknown(name, probe, docker)[1]
+            + "; the original and derived containers may be under "
+            + ", ".join((name, reverted, backup, aside))
+            + ". Inspect them, then run revert again.",
+            sys.stderr,
+        )
+    finally:
+        # Return a parked container to its former name: derived -> reverted, original -> backup.
+        if answer(probe, "inspect", aside):
+            try:
+                home = reverted if source_label(json.loads(docker("inspect", aside))[0]) else backup
+                if answer(probe, "inspect", home) is False:
+                    answer(probe, "rename", aside, home)
+            except Exception:  # noqa: S110 - best effort; the original error is re-raised
+                pass
+
+
+def restore_any_steps(name, backup, reverted, aside, probe, policy):
+    """restore_any's cascade; a probe timeout raises RuntimeError out of it."""
+    if probe("inspect", name):
+        set_restart(probe, policy, name)
+        if probe("start", name):
+            return
+        if not probe("rename", name, aside):
+            return
+        set_restart(probe, "no", aside)
+    for source in (reverted, backup):
+        if probe("inspect", source) and probe("rename", source, name):
             set_restart(probe, policy, name)
             if probe("start", name):
                 return
-            if not probe("rename", name, aside):
-                return
-            set_restart(probe, "no", aside)
-        for source in (reverted, backup):
-            if probe("inspect", source) and probe("rename", source, name):
-                set_restart(probe, policy, name)
-                if probe("start", name):
-                    return
-                if probe("rename", name, source):
-                    set_restart(probe, "no", source)
-        if probe("inspect", aside):
-            if probe("rename", aside, name):
-                set_restart(probe, policy, name)
-                probe("start", name)
-    finally:
-        # Return a parked container to its former name: derived -> reverted, original -> backup.
-        if probe("inspect", aside):
-            try:
-                home = reverted if source_label(json.loads(docker("inspect", aside))[0]) else backup
-                if not probe("inspect", home):
-                    probe("rename", aside, home)
-            except Exception:  # noqa: S110 - best effort; the original error is re-raised
-                pass
+            if probe("rename", name, source):
+                set_restart(probe, "no", source)
+    if probe("inspect", aside):
+        if probe("rename", aside, name):
+            set_restart(probe, policy, name)
+            probe("start", name)
 
 
 def recover_original(name, backup, probe, docker, policy, now, parked=None):
@@ -400,21 +428,68 @@ def recover_original(name, backup, probe, docker, policy, now, parked=None):
     failed derived container. A container is started as `name` only when a successful inspect
     shows it is unlabelled (the original). A Pages-labelled one is stopped and moved aside; an
     unknown or stuck state leaves things stopped where possible and says where each container
-    is. `parked` is the name the rollback already moved the derived container to, if it did.
+    is. `parked` says where the rollback moved the stopped derived container, when it tried:
+    `<name> (stopped)`, or `unknown, possibly ...` when that rename did not answer in time.
+    A probe that times out is such an unknown state; this never raises it, so the caller still
+    raises its original error.
     """
+    # Where the derived container is, kept current by the steps so a timeout can say it.
+    where = {"derived": parked}
+    try:
+        recover_original_steps(name, backup, probe, docker, policy, now, where)
+    except RuntimeError:
+        kind, held = settle_unknown(name, probe, docker)
+        if kind == "original":
+            recovery_incomplete(where["derived"] or "not under " + name, held)
+        elif kind == "absent":  # the original never left its backup name, and stays stopped
+            recovery_incomplete(where["derived"] or "unknown", backup + " (stopped)")
+        elif kind == "derived":
+            recovery_incomplete(held, "unknown, possibly " + backup)
+        else:
+            recovery_incomplete(
+                where["derived"] or "unknown, possibly " + held,
+                "unknown, possibly " + backup + " or " + held,
+            )
 
-    def incomplete(derived, original):
-        say(
-            "Rollback incomplete: derived container "
-            + derived
-            + "; original "
-            + original
-            + ". Run apply again to reconcile, or inspect them.",
-            sys.stderr,
-        )
 
-    # Where the derived container is, when known; every container named stopped was stopped.
-    derived = parked + " (stopped)" if parked else None
+def settle_unknown(name, probe, docker):
+    """After a timeout: inspect `name` once more; return (kind, text) for the message.
+
+    kind is "original" (unlabelled: left as it is, never stopped), "absent" (Docker said "No
+    such"), "derived" or "unknown" (the inspect failed or timed out too). A derived or unknown holder is stopped, best effort.
+    """
+    try:
+        held = json.loads(docker("inspect", name))[0]
+    except subprocess.CalledProcessError as error:
+        if b"No such" in (error.stderr or b""):  # Docker's answer for a missing container
+            return "absent", name + " (absent)"
+        held = None  # Any other daemon error says nothing about `name`
+    except Exception:
+        held = None
+    if held is not None and source_label(held) is None:
+        return "original", name + (" (running)" if held["State"].get("Running") else " (stopped)")
+    stopped = answer(probe, "stop", name)
+    text = name + (" (stopped)" if stopped else " (stop failed or timed out, may still be running)")
+    return ("derived" if held is not None else "unknown"), text
+
+
+def recovery_incomplete(derived, original):
+    say(
+        "Rollback incomplete: derived container "
+        + derived
+        + "; original "
+        + original
+        + ". Run apply again to reconcile, or inspect them.",
+        sys.stderr,
+    )
+
+
+def recover_original_steps(name, backup, probe, docker, policy, now, where):
+    """recover_original's steps; a probe timeout raises RuntimeError out of them. `where`
+    ["derived"] says where the derived container is, when known (every container named
+    stopped was stopped), and is updated before and after each move of it."""
+    incomplete = recovery_incomplete
+    derived = where["derived"]
     try:
         if name not in listed_names(name, docker):
             holder = None
@@ -423,7 +498,9 @@ def recover_original(name, backup, probe, docker, policy, now, parked=None):
     except Exception:
         # Whatever holds `name` is the derived container or unknown: stop it, never start it.
         held = name + (
-            " (stopped)" if probe("stop", name) else " (stop failed, may still be running)"
+            " (stopped)"
+            if answer(probe, "stop", name)
+            else " (stop failed or timed out, may still be running)"
         )
         incomplete(
             derived or "unknown, possibly " + held, "unknown, possibly " + backup + " or " + held
@@ -439,10 +516,11 @@ def recover_original(name, backup, probe, docker, policy, now, parked=None):
             incomplete(name + " (stop failed, may still be running)", backup + " (stopped)")
             return
         failed = failed_name(name, probe, now)
+        where["derived"] = "unknown, possibly " + name + " or " + failed + " (stopped)"
         if not probe("rename", name, failed):
             incomplete(name + " (stopped)", backup + " (stopped)")
             return
-        derived = failed + " (stopped)"
+        derived = where["derived"] = failed + " (stopped)"
         set_restart(probe, "no", failed)
     if not probe("rename", backup, name):
         incomplete(derived or "absent", backup + " (stopped)")
@@ -632,7 +710,7 @@ def apply(current, payload, backup, docker, probe, create, health, now):
     body = derive(current, payload, docker)
     policy = restart_arg(current)  # Read before retiring; restored when promoted back.
     retired = False  # The original now sits under its backup name.
-    parked = None  # Where the rollback moved a derived container, once it did.
+    parked = None  # Where the rollback moved the stopped derived container, once it tried.
     try:
         # SIGTERM waits across the retire: a signal between the rename and `retired` or the
         # policy update would otherwise leave the API stopped under the backup name.
@@ -656,15 +734,29 @@ def apply(current, payload, backup, docker, probe, create, health, now):
         mask = hold_sigterm()  # A SIGTERM now waits until the rollback is done.
         try:
             if not retired:
-                probe("start", name)  # Never leave the live API stopped; its policy is unchanged.
+                # Never leave the live API stopped; its policy is unchanged.
+                started = answer(probe, "start", name)
+                if started is None:
+                    recovery_incomplete("not created", name + " (start timed out, state unknown)")
+                elif not started:
+                    # A retire rename that took effect and timed out leaves the original under
+                    # the backup name, so the start of `name` fails: name where it really is.
+                    held = answer(probe, "inspect", backup)
+                    if held is None:
+                        original = name + " or " + backup + " (state unknown)"
+                    else:
+                        original = (backup if held else name) + " (stopped)"
+                    recovery_incomplete("not created", original)
             else:
                 try:
                     if probe("inspect", name):
                         if not probe("stop", name):  # Never rename a running derived aside.
                             raise subprocess.CalledProcessError(1, ["docker", "stop", name])
                         failed = failed_name(name, probe, now)
+                        # The rename can take effect and then time out: say both names.
+                        parked = "unknown, possibly " + name + " or " + failed + " (stopped)"
                         docker("rename", name, failed)
-                        parked = failed
+                        parked = failed + " (stopped)"
                         set_restart(probe, "no", failed)
                     docker("rename", backup, name)
                     set_restart(probe, policy, name)
@@ -704,7 +796,8 @@ def build(payload, docker):
 def deploy(payload, docker, probe, create, health, now):
     """Run one operation against the Docker host; return the operator message.
 
-    docker(*args, **kw) -> bytes raises on failure; probe(*args) -> bool never raises;
+    docker(*args, **kw) -> bytes raises on failure; probe(*args) -> bool is False only when
+    the command ran and failed, and raises only when Docker does not answer in time;
     create(name, body) raises unless created; health(name, pages=True) raises unless healthy
     (pages=False when the upstream original, which has no Pages route, is promoted).
     """
@@ -777,8 +870,13 @@ REMOTE = program(
     ]
     + [
         check,
+        answer,
         restore_any,
+        restore_any_steps,
         recover_original,
+        recovery_incomplete,
+        settle_unknown,
+        recover_original_steps,
         held_policy,
         promotion_policy,
         finish_revert,
