@@ -32,6 +32,7 @@ Follow [configuration](docs/configuration.md) before enabling remote access. Sta
 - [CE extension contract and deployment](docs/extensions.md)
 - [Workspace slug rename runbook](docs/workspace-rename.md)
 - [Installing into other projects](docs/project-install.md)
+- [Agent workflow guide](docs/agent-workflow.md)
 - [GitHub Actions integration](docs/github-actions.md)
 - [Plane CLI](docs/cli.md)
 - [Live CLI evaluation and recommendation](docs/cli-evaluation.md)
