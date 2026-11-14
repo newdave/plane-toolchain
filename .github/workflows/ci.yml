@@ -7,7 +7,7 @@ permissions:
   contents: read
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   check:
     runs-on: ubuntu-24.04
@@ -20,19 +20,14 @@ jobs:
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: 2026.11.5
-          install_args: python uv actionlint shellcheck aqua:zizmorcore/zizmor
+          install_args: python node uv actionlint shellcheck aqua:zizmorcore/zizmor
           cache: false
       - name: Install zsh for syntax check
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends zsh
           zsh --version | grep -q '^zsh 5\.9'
-      - name: Lint workflows and shell scripts
-        run: mise run lint:ci
       - name: Install locked dependencies
-        run: uv sync --locked
-      - name: Lint and test
-        run: |
-          uv run --locked ruff check .
-          uv run --locked ruff format --check .
-          uv run --locked pytest -q --cov --cov-report=term:skip-covered
+        run: mise run setup
+      - name: Check
+        run: mise run check
