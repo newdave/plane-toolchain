@@ -18,10 +18,10 @@ DEFAULT = "unless-stopped"  # the documented fallback (with a NOTE) when the liv
 WINDOWS = {
     ("apply", 7, "after"),
     ("apply", 8, "before"),
-    ("revert", 6, "after"),
-    ("revert", 7, "before"),
     ("revert", 7, "after"),
     ("revert", 8, "before"),
+    ("revert", 8, "after"),
+    ("revert", 9, "before"),
 }
 
 
@@ -41,7 +41,7 @@ def applied():
 START = {"apply": fresh, "revert": applied}
 OTHER = {"apply": "revert", "revert": "apply"}
 DERIVED_AFTER = {"apply": True, "revert": False}
-CALLS = {"apply": 13, "revert": 12}  # docker calls in one clean run; the tripwire below checks
+CALLS = {"apply": 13, "revert": 13}  # docker calls in one clean run; the tripwire below checks
 
 
 def assert_converged(fake, derived, policy=LIVE):

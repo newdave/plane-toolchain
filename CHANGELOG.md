@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `plane_toolchain.github_evidence` (PTC-120): core rules for GitHub PR gate and delivery evidence, with repository specifics passed as parameters. It parses the visible `Plane-Tasks` field (comments and fences ignored), applies an opt-in maintenance exemption, builds the gate status description and the PR and run evidence comments, and resolves task external IDs through a full paginated listing (it never trusts a server filter). `publish` reads before create, reads back after, and refuses differing content or duplicate identities. No entry point or action uses it yet.
+
 ### Security
 
 - The mise `uv` pin moves from 0.9.3 to 0.13.4, past GHSA-hq85-5cpj-mr62 (critical: bundled CA store), GHSA-4gg8-gxpx-9rph, GHSA-pjjw-68hj-v9mw, GHSA-pqhf-p39g-3x64 and GHSA-w476-p2h3-79g9. Dependabot does not scan `mise.toml`; the example workflow pin was already bumped in #63 (PTC-84).
@@ -17,6 +21,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Pages revert (PTC-104): the parked `<api>-pages-reverted-<ts>` name is checked for a clash and gets `-1` appended until free, through one `unused_name` helper that the `-pages-failed-` name uses too, so two reverts in one second no longer collide. Prune and the revert-recovery policy lookup accept such suffixed names. The shipped Pages remote program text changes; no host state does.
+- MCP deploy (PTC-103): `write_atomic` unlinks a stale or symlinked `.tmp` first, creates it with `O_EXCL|O_NOFOLLOW` and always sets the mode (the requested one, else an existing regular file's, else 0600; never a symlink target's), so it never follows a link or keeps old permissions. A corrupt or non-object receipt now fails with `Receipt unreadable; reconcile` instead of a JSON error. The shipped remote program text changes; no host state does.
 - Rename (PTC-105): the schema probe no longer reports a `manager` mismatch. Its test, `hasattr(model, "_base_manager")`, held for every Django model, so it guarded nothing; the snippet reads through `all_objects` and falls back to the base manager for a model without one, so no probe is needed. The host receives the program on each run, so no redeploy is needed.
 - `ce_page` (PTC-97): list, retrieve, create and the project access check now run their blocking SDK calls in a thread (`asyncio.to_thread`), as update already did, so they no longer stall the event loop.
 - Pages (PTC-92): `ce_page` update refuses an empty or whitespace-only `description_html` in the tool and the backend (the default empty argument used to wipe the page); `access` refuses `true` and `false`. Create still accepts an empty body (a new blank page loses nothing). The `ce_tools.py` and `pages_backend.py` payload digests change: redeploy needed, so the MCP compat entry point and Pages must be redeployed (direct route: revert, then apply; or the Saltbox build route). Add the new `ce_tools.py` digest to `RELEASED_ENTRY_POINT_DIGESTS` at release.
