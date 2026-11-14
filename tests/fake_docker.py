@@ -59,6 +59,7 @@ class FakeDocker:
         self.pg_restore_code = 0
         self.pg_restore_out = b"; Archive created by pg_dump\n"
         self.pg_restore_stderr = b""
+        self.acks = 0  # `ack` lines the host wrote to a snippet's stdin
         self.shell_stderr = b""  # what `manage.py shell` writes to a captured stderr
         self.restore_input = None  # the dump bytes `pg_restore -l` was fed on stdin
         # In-container snippet processes, by PLANE_RENAME_RUN token. A hung op never answers; a
@@ -222,6 +223,9 @@ class FakeDocker:
             return (1, b"alive\n") if alive else (0, b"gone\n")
         if "manage.py" in rest and "shell" in rest:
             assert self.on_manage_shell is not None, "no manage.py shell handler set"
+            if "-c" in rest:  # BOOTSTRAP: a length line, then exactly that many program bytes
+                length, _, body = (input or b"").partition(b"\n")
+                input = body[: int(length)]
             if self.snippet_outlives_client:
                 self.procs.append(env.get("PLANE_RENAME_RUN", ""))
             stdout, code = self.on_manage_shell((input or b"").decode())
@@ -304,8 +308,14 @@ class FakeDocker:
 
             def write(self, data):
                 assert not self.closed
-                self.data += data
+                if data == b"ack\n":  # a journal acknowledgement, after the program
+                    fake.acks += 1
+                else:
+                    self.data += data
                 return len(data)
+
+            def flush(self):
+                pass
 
             def close(self):
                 self.closed = True

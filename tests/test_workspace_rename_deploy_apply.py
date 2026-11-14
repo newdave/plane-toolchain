@@ -1,6 +1,8 @@
 """Workspace rename host program: apply flow and failure restarts."""
 
 import hashlib
+import subprocess
+import sys
 import json
 import pytest
 from fake_docker import Killed
@@ -254,7 +256,7 @@ def test_request_is_one_json_argument_line_before_the_snippet(host):
     assert host.shell.requests[0] == {"op": "check", "args": {"old": OLD, "new": NEW}}
     piped = [c for c in host.fake.calls if "manage.py" in c][0]
     assert piped[:3] == ("exec", "-i", "-e") and piped[3].startswith("PLANE_RENAME_RUN=")
-    assert piped[4:] == ("plane-api", "python", "manage.py", "shell")
+    assert piped[4:] == ("plane-api", "python", "manage.py", "shell", "-c", wr.BOOTSTRAP)
 
 
 @pytest.mark.parametrize("failure", ["celery_missing", "probe_fails", "stop_fails"])
@@ -355,3 +357,41 @@ def test_complete_receipt_is_a_no_op(host):
     host.fake.calls.clear()
     assert "already complete" in host.deploy()
     assert not mutating(host.fake)
+
+
+def test_apply_acks_every_journal_line_the_snippet_waited_for(host):
+    # PTC-94: the snippet writes a row only after the host acks its fsynced journal line.
+    assert host.deploy().startswith("Rename complete")
+    assert host.fake.acks == host.shell.acks == len(host.journal()) > 0
+
+
+ACK_PROGRAM = """\
+import json, pathlib, sys
+# é: the length line counts bytes, not characters
+record = {"kind": "workspace", "id": "w1", "slug": "old-slug"}
+print(json.dumps({"event": "journal", "record": record}), flush=True)
+ack = sys.stdin.buffer.readline()
+lines = (pathlib.Path(RENAME_REQUEST["args"]["directory"]) / "records.jsonl").read_text()
+summary = {"event": "summary", "ok": ack == b"ack\\n", "durable": lines.count("\\n")}
+print(json.dumps(summary), flush=True)
+"""
+
+
+def test_bootstrap_pipes_the_program_and_acks_only_after_the_fsync(tmp_path):
+    # A real child running BOOTSTRAP (as `manage.py shell -c` would): it waits for the ack and
+    # then finds its journal line already on disk.
+    directory = wr.secure_receipt_dir(tmp_path / "r")
+
+    children = []
+
+    def popen(argv, **kw):
+        assert argv[-2:] == ["-c", wr.BOOTSTRAP]
+        command = [sys.executable, "-c", wr.BOOTSTRAP]  # the shipped bootstrap only
+        children.append(subprocess.Popen(command, **kw))  # noqa: S603 - fixed argv
+        return children[-1]
+
+    summary, _ = wr.run_snippet(
+        "api", ACK_PROGRAM, "step_slug", {"directory": str(directory)}, directory, popen
+    )
+    children[0].stdout.close()
+    assert summary == {"event": "summary", "ok": True, "durable": 1}

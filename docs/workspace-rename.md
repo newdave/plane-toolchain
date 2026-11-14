@@ -25,7 +25,7 @@ Plane stores every relation and asset key against the workspace UUID, so only th
 Apply writes a receipt directory on the host (default `~/.local/state/plane-toolchain/workspace-rename` of the SSH user, mode 0700, files 0600):
 
 - `receipt.json`: the step, phase and rotation record.
-- `records.jsonl`: the journal, one line per rewritten row with its original values, written before the row changes. A kill mid-append can leave a torn last line; the next append repairs it first, so it never corrupts the record that follows.
+- `records.jsonl`: the journal, one line per rewritten row with its original values, written and fsynced before the row changes: the snippet waits for the host's acknowledgement of each line before the write it covers. A kill mid-append can leave a torn last line; the next append repairs it first, so it never corrupts the record that follows.
 - `run.lock`: the lock file that keeps two runs apart.
 - `backup.dump`: a `pg_dump -Fc` of the Plane database, with its SHA-256 in the receipt.
 
@@ -78,6 +78,8 @@ The code is tested against fakes, not a real Plane. Verify these against a Plane
 `check` now probes the structural assumptions itself, read-only, through Django's `_meta`, and refuses (so apply refuses too) when one is wrong. For each model it checks the table name, that a manager exists (`all_objects`, else the base manager; every real Django model has the base manager, so this check only guards the test doubles and cannot be the cause of a live mismatch) and that every field the snippet reads or writes exists with the expected kind: the link columns are text, the JSON columns are JSON stored as `jsonb`, the binary columns are binary, `workspace_id` exists on every owned model (including `Page` and `Description`), and the unowned `EmailNotificationLog` has neither `workspace` nor `workspace_id` (`Model mismatch: email_log.workspace_id (unexpected)`). Every mismatch is printed by model and field, never row content, for example `Model mismatch: page.workspace_id (missing)` or `Model mismatch: notification.data (db_type, expected jsonb, found json)`. A mismatch means the snippet was written for a different Plane: do not work around it, report it. The list below is what the probe cannot know.
 
 The owner should run `mise run owner:plane-workspace-rename:check` once against the real v1.4.3 deployment (or a copy) and record the result: the probe has only been run against fakes.
+
+- The snippet runs as `python manage.py shell -c <bootstrap>`, which reads a length line and then the program from stdin and leaves stdin open for the journal acknowledgements. A passing `check` shows that `shell -c` runs it; the acknowledgement path itself first runs in apply's slug step, whose transaction rolls back if an acknowledgement does not arrive.
 
 - `EmailNotificationLog` exists (table `email_notification_logs`) and has no workspace column. The snippet attributes a row to the old workspace when its `data` names `workspace_slug` with the old slug. A reused old slug or a nested key could match unrelated logs, so prefer the top-level key.
 - `Description.workspace_id` exists (table `descriptions`), and comments link to a `Description` row.
@@ -208,7 +210,7 @@ Apply and check refuse until the receipt directory is archived. After `Revert co
 
 ## Known risks
 
-- Journal durability: the snippet prints each journal line before it writes the row, and the host then fsyncs it. If the host program is killed with SIGKILL between the print and the fsync during `rows_done`, a row can be rewritten without a journal entry. Only the `pg_dump` backup recovers that row.
+- Journal durability: the snippet prints each journal line, then waits for the host to fsync it and answer `ack` on the snippet's stdin before it writes the row. If the host program is killed between the print and the ack, the snippet's stdin ends, it writes nothing more (the slug step rolls back; the row step stops before that row) and the orphan sweep of the next run stops it if it is still waiting.
 - JSON null and SQL NULL both read back as null. A JSON-null original is restored as SQL NULL. Check whether Plane has such rows in the rewritten columns.
 - `WEB_URL` decides which absolute links count as this instance. If it changes between apply and revert, the restore guard sees rows as changed and skips them (a partial restore).
 - Rebuilt editor documents: Live rebuilds the editor document from the new HTML and can drop details the HTML does not carry. Revert restores the stored originals and does not reconvert. Restore guards work items and Pages on `description_html` only.

@@ -320,25 +320,45 @@ def revert(host):
     return message
 
 
-class Lines:
-    """Process stdout that checks the journal file before handing out each next line."""
+def journal_count(directory):
+    return len(wr.load_journal(directory)) if directory.exists() else 0
 
-    def __init__(self, lines, directory):
-        self.lines, self.directory = lines, directory
+
+class Acks(io.BytesIO):
+    """Process stdin that checks each `ack` comes only once its journal line is on disk."""
+
+    def __init__(self, directory):
+        super().__init__()
+        self.directory, self.acks = directory, 0
+
+    def write(self, data):
+        if data == b"ack\n":
+            self.acks += 1
+            assert journal_count(self.directory) == self.acks, "ack before the journal fsync"
+        return super().write(data)
+
+
+class Lines:
+    """Process stdout that checks the journal file, and the ack for each journal line, before
+    handing out each next line."""
+
+    def __init__(self, lines, directory, stdin):
+        self.lines, self.directory, self.stdin = lines, directory, stdin
 
     def __iter__(self):
         for index, line in enumerate(self.lines):
             journalled = sum('"event": "journal"' in x for x in self.lines[:index])
-            records = wr.load_journal(self.directory) if self.directory.exists() else []
-            assert len(records) == journalled, "journal line not persisted before reading on"
+            records = journal_count(self.directory)
+            assert records == journalled, "journal line not persisted before reading on"
+            assert self.stdin.acks == journalled, "journal line not acknowledged"
             yield line.encode() + b"\n"
 
 
 def scripted(lines, directory):
     class Process:
         def __init__(self):
-            self.stdin = io.BytesIO()
-            self.stdout = Lines(lines, directory)
+            self.stdin = Acks(directory)
+            self.stdout = Lines(lines, directory, self.stdin)
 
         def wait(self):
             return 0
@@ -355,7 +375,7 @@ def scripted(lines, directory):
         def kill(self):
             pass
 
-    return lambda argv, **kw: Gone() if "-c" in argv else Process()
+    return lambda argv, **kw: Process() if "manage.py" in argv else Gone()
 
 
 def first_op(text):

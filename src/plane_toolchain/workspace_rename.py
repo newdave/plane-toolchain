@@ -637,6 +637,13 @@ def backup_database(db, directory, popen, crash=lambda label: None, uid=None, hi
 # --- T7: the apply state machine -------------------------------------------------------------
 
 SHELL = ("python", "manage.py", "shell")
+# `manage.py shell -c BOOTSTRAP`: read one length line, then exactly that many bytes of program
+# (the request line and the snippet) from stdin and run them. Stdin then stays open for acks:
+# the host writes `ack` after each journal line is fsynced, and the snippet waits for it before
+# the write that line covers. Plain `manage.py shell` would read stdin to its end first.
+BOOTSTRAP = (
+    "import sys; exec(sys.stdin.buffer.read(int(sys.stdin.buffer.readline())).decode('utf-8'))"
+)
 APPLY_OPS = ("step_slug", "step_rows")  # the only operations that emit journal events
 INTERRUPTED = (
     "Rename interrupted ({}). Services may be stopped. The receipt keeps the last completed "
@@ -722,9 +729,11 @@ def stop_snippet(api, token, popen):
 def run_snippet(api, snippet, op, args, directory, popen, uid=None, hide=()):
     """Run one snippet operation through `docker exec -i <api> python manage.py shell`.
 
-    Stdin is one request line (`RENAME_REQUEST = ...`) and then the snippet source. Stdout is
-    read line by line; non-JSON lines are ignored and never echoed. Each `journal` event is
-    appended to the journal (fsynced) before the next line is read, and is never kept or
+    The program runs as `manage.py shell -c BOOTSTRAP`. Stdin is a length line, then the
+    program: one request line (`RENAME_REQUEST = ...`) and the snippet source. Stdout is read
+    line by line; non-JSON lines are ignored and never echoed. Each `journal` event is appended
+    to the journal (fsynced) and only then acknowledged with an `ack` line on stdin; the
+    snippet writes the row it covers only after that ack. Journal lines are never kept or
     printed. Returns (summary or None, other events). A non-zero exit gives no summary.
     Stderr goes to a temporary file. Without a summary, an `exit` event carries the exit code
     and snippet_cause (exception class and redacted stderr tail; `hide` names are masked).
@@ -742,7 +751,17 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None, hide=()):
     token = ("check" if op == "check" else run_id(directory)) + ":" + os.urandom(8).hex()
     with tempfile.TemporaryFile() as errors:
         process = popen(
-            ["docker", "exec", "-i", "-e", SNIPPET_MARKER + "=" + token, api, *SHELL],
+            [
+                "docker",
+                "exec",
+                "-i",
+                "-e",
+                SNIPPET_MARKER + "=" + token,
+                api,
+                *SHELL,
+                "-c",
+                BOOTSTRAP,
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=errors,
@@ -779,8 +798,9 @@ def read_snippet(process, source, api, op, token, directory, popen, uid):
 
     try:
         arm()
-        process.stdin.write(source.encode())
-        process.stdin.close()
+        program = source.encode()
+        process.stdin.write(str(len(program)).encode() + b"\n" + program)
+        process.stdin.flush()  # stdin stays open: the acks follow
         for raw in process.stdout:
             arm()
             try:
@@ -793,14 +813,21 @@ def read_snippet(process, source, api, op, token, directory, popen, uid):
                 if op not in APPLY_OPS or not isinstance(event.get("record"), dict):
                     raise RuntimeError("unexpected journal event from " + op + "; refusing")
                 append_journal(directory, event["record"], uid)
+                process.stdin.write(b"ack\n")  # only once the line is durable
+                process.stdin.flush()
             elif event.get("event") == "summary":
                 summary = event
             elif event.get("event") != "progress":  # progress only re-arms the deadline
                 events.append(event)
+        process.stdin.close()
     except BaseException as failure:
         disarm()
         process.kill()
         process.wait()
+        try:
+            process.stdin.close()
+        except OSError:  # the pipe is already broken; nothing is left to send
+            pass
         if not stop_snippet(api, token, popen):
             if isinstance(failure, Exception):
                 raise RuntimeError(STUCK + " (" + op + ")") from None
@@ -1276,9 +1303,9 @@ def run_apply(data, seams):
     anything else stops with services down. After the slug change, a failure stops with
     services down for the operator to resume (apply) or revert. There is no automatic rollback.
 
-    Known risk: a kill of this process between the snippet's print of a journal line and the
-    host's fsync of it can leave a written row without a journal entry; only the pg_dump backup
-    recovers that row. Closing it needs an acknowledgement channel, which this does not have.
+    Journal durability: the snippet waits for this process's `ack` (sent after the fsync) before
+    each write a journal line covers (see run_snippet), so a kill of this process between the
+    print and the fsync leaves that row unwritten, never unjournalled.
     """
     run = run_context(data, seams, ("check", "apply"))
     operation, old, new = run["operation"], run["old"], run["new"]
@@ -1852,6 +1879,7 @@ SHIPPED_CONSTANTS = {
     "DRAIN_SECONDS": DRAIN_SECONDS,
     "DRAIN_INTERVAL": DRAIN_INTERVAL,
     "SHELL": SHELL,
+    "BOOTSTRAP": BOOTSTRAP,
     "APPLY_OPS": APPLY_OPS,
     "INTERRUPTED": INTERRUPTED,
     "LOCK_FILE": LOCK_FILE,

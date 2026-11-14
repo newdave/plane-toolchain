@@ -8,8 +8,10 @@ the original values of a row about to be written, because the host must persist 
 
 `check` is read-only. The apply steps are `step_slug` (one transaction) and `step_rows` (one
 row at a time); each emits the journal line for a row before it writes that row, with queryset
-`.update()` only. `restore` writes the journal (sent inside the request) back in one
-transaction and never calls Live. `health` is read-only; `flush_cache` clears the cache.
+`.update()` only. Under the shipped tail, emitting a journal line returns only once the host
+has acknowledged it on stdin (after its fsync); no acknowledgement, no write (`_read_ack`).
+`restore` writes the journal (sent inside the request) back in one transaction and never
+calls Live. `health` is read-only; `flush_cache` clears the cache.
 """
 
 # Dependencies below exist in the Plane backend image, not in this project's environment.
@@ -18,6 +20,7 @@ transaction and never calls Live. `health` is read-only; `flush_cache` clears th
 
 import base64
 import json
+import sys
 
 if "validate_slug" not in globals():  # absent only when imported outside the shipped snippet
     from plane_toolchain.workspace_rename_match import (  # noqa: F401
@@ -350,6 +353,20 @@ class _Abort(Exception):
         self.event = {"event": "error", "reason": reason, **where}
 
 
+class JournalNotAcked(RuntimeError):
+    """The host did not acknowledge a journal line (stdin ended or held something else)."""
+
+
+def _read_ack():
+    """Block until the host acknowledges the journal line just printed.
+
+    The host writes `ack` on stdin only after the line is fsynced in its journal. Anything else,
+    end of input included (the host was killed), raises, so the row the line covers is never
+    written: step_slug rolls back, step_rows stops before the row."""
+    if sys.stdin.buffer.readline() != b"ack\n":
+        raise JournalNotAcked("journal line not acknowledged")
+
+
 class JournalValueError(TypeError):
     """A binary column read back as something other than bytes; it cannot be journalled."""
 
@@ -536,9 +553,10 @@ def step_rows(args, orm, emit, convert=None):
     """Rewrite work item and Page descriptions that still match OLD, one row at a time.
 
     The HTML is rewrite_html(original); the editor fields come from Live (`rich` for work
-    items, `document` for Pages). Order per row: convert, journal, update. A failed conversion
-    stops the step before that row is touched. Resume re-derives the remaining rows, because a
-    written row no longer matches."""
+    items, `document` for Pages). Order per row: convert, journal, update. The journal holds
+    the row as the page query read it (every ROW_FIELDS column, one read), and the update is
+    guarded on that read's HTML. A failed conversion stops the step before that row is touched.
+    Resume re-derives the remaining rows, because a written row no longer matches."""
     old, new = args["old"], args["new"]
     summary = {"event": "summary", "ok": False, "step": "rows"}
     workspace_id = args.get("workspace_id")
@@ -554,7 +572,7 @@ def step_rows(args, orm, emit, convert=None):
     try:
         for table, key, variant in ROW_STEP:
             manager = orm.models[key].all_objects
-            for row in _pages(manager, {"workspace_id": workspace_id}, ("description_html",)):
+            for row in _pages(manager, {"workspace_id": workspace_id}, ROW_FIELDS):
                 where = {}
                 html = row["description_html"]
                 if not isinstance(html, str):
@@ -564,7 +582,7 @@ def step_rows(args, orm, emit, convert=None):
                     continue
                 row_id = str(row["pk"])
                 where = {"table": table, "id": row_id}
-                original = manager.filter(pk=row["pk"]).values(*ROW_FIELDS)[0]
+                original = {c: row[c] for c in ROW_FIELDS}
                 try:
                     fields = _rebuilt(
                         convert(new_html, variant),
@@ -699,9 +717,10 @@ def _restore_row(orm, table, row_id, originals, workspace_id, old, new, hosts):
 def restore(args, orm, emit, convert=None):
     """Write each journalled original back with queryset `.update()`, in one transaction.
 
-    The journal arrives in the request (`args["journal"]`, the T5 records), because stdin is
-    the program source under `manage.py shell`. The journal's workspace id must hold NEW (or
-    OLD, once restored), and no other workspace may hold OLD. Rows that no longer hold the
+    The journal arrives in the request (`args["journal"]`, the T5 records), because stdin
+    carries the program (and then only acks) under `manage.py shell -c BOOTSTRAP`. The
+    journal's workspace id must hold NEW (or OLD, once restored), and no other workspace may
+    hold OLD. Rows that no longer hold the
     expected rewrite are skipped and reported, and the summary is then `ok:false, partial:true`.
     Never calls Live. Idempotent."""
     old, new = args["old"], args["new"]
@@ -957,16 +976,23 @@ def _django_orm():
     return orm
 
 
-def _main(request, orm_factory, convert_factory, out, probe_factory=None):
-    """Run one request, writing each event as one sorted-key JSON line through `out`.
+def _main(request, orm_factory, convert_factory, out, probe_factory=None, ack=_read_ack):
+    """Run one request, writing each event as one sorted-key JSON line through `out`. After a
+    `journal` line, `ack()` must return before the operation goes on (and writes the row).
 
-    The request carries everything an operation needs, including restore's journal, because
-    stdin is the program source under `manage.py shell`."""
+    The request carries everything an operation needs, including restore's journal: stdin
+    carries the request and program first (see the host's BOOTSTRAP), then only acks."""
+
+    def emit(event):
+        out(json.dumps(event, sort_keys=True))
+        if event.get("event") == "journal":
+            ack()
+
     run(
         request["op"],
         request["args"],
         orm_factory(),
-        lambda event: out(json.dumps(event, sort_keys=True)),
+        emit,
         convert_factory(request["args"]),
         probe_factory(request["args"]) if probe_factory else None,
     )

@@ -48,6 +48,8 @@ def make_orm(**extra):
                     "workspace_id": "w1",
                     "description_html": "<p>none</p>",
                     "description_json": {},
+                    "description_binary": None,
+                    "description_stripped": None,
                     "deleted_at": None,
                 },
                 {
@@ -55,6 +57,8 @@ def make_orm(**extra):
                     "workspace_id": "w2",
                     "description_html": html,
                     "description_json": {},
+                    "description_binary": None,
+                    "description_stripped": None,
                     "deleted_at": None,
                 },
             ],
@@ -241,12 +245,13 @@ def other_workspace_holds_new():
 
 
 def delete_on_reread(orm):
-    """Delete i1 when step_rows re-reads it by pk: a concurrent delete after the page read."""
+    """Delete i1 when step_rows next filters on its pk: a concurrent delete after the page
+    read (the guarded update is that next filter)."""
     manager = orm.models["issue"].all_objects
     original_filter = manager.filter
 
     def spy(**kw):
-        if kw == {"pk": "i1"}:
+        if kw.get("pk") == "i1":
             orm.models["issue"].rows[:] = [r for r in orm.models["issue"].rows if r["id"] != "i1"]
         return original_filter(**kw)
 
