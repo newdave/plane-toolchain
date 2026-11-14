@@ -108,7 +108,7 @@ def install(operation, target):
         write_atomic(receipt, (json.dumps(current, indent=2) + "\n").encode())
         for name, path in files.items():
             place(destination, name, path.read_bytes())
-        print("Installed three workflow examples; review before committing")
+        print(f"Installed {len(files)} workflow examples; review before committing")
     elif operation == "revert":
         if not receipt.exists():
             print("No installation receipt; nothing removed")
