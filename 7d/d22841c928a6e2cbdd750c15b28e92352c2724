@@ -1,0 +1,45 @@
+CHANGELOG.md
+  s_f997234b8f2229::t_1e581da5b2754a 13-25
+tests/test_mcp_deploy.py
+  s_f997234b8f2229::t_1e581da5b2754a 8,11,1053-1125
+CONTRIBUTING.md
+  s_f997234b8f2229::t_169a63b055f827 27-28
+docs/extensions.md
+  s_f997234b8f2229::t_9f169335a5dca3 10,15-16
+docs/workspace-rename.md
+  s_f997234b8f2229::t_3366f37a2d2f04 83
+examples/github/uv-requirements.txt
+  s_f997234b8f2229::t_9a67a1876976fe 3-22
+pyproject.toml
+  s_f997234b8f2229::t_fb6fbc1113e308 7
+src/plane_toolchain/ce_tools.py
+  s_f997234b8f2229::t_c8cbefda101cc7 116-172,252-275
+src/plane_toolchain/mcp_deploy.py
+  s_f997234b8f2229::t_40a048ab6d6516 43-54,118-126,237,261,366,374
+src/plane_toolchain/workspace_rename_backend.py
+  s_f997234b8f2229::t_24efe5f082f104 53-55,84
+tests/test_ce_tools.py
+  s_f997234b8f2229::t_3480e34e9a15bb 182-255
+tests/test_legacy_payloads.py
+  s_f997234b8f2229::t_c125cd10eab0fb 19-20
+tests/test_workspace_rename_hardening_gates.py
+  s_f997234b8f2229::t_9c3a257fbf118a 20-28
+uv.lock
+  s_f997234b8f2229::t_bd0e3a48eee554 471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "7dd22841c928a6e2cbdd750c15b28e92352c2724",
+  "prompts": {},
+  "sessions": {
+    "s_f997234b8f2229": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ea15c55-f8a8-46eb-98da-121c034fa13f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
