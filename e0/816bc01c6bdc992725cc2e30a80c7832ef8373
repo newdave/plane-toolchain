@@ -1,0 +1,25 @@
+CHANGELOG.md
+  s_a03650451d84d5::t_62d11cc98cfaef 15
+tests/fake_orm.py
+  s_a03650451d84d5::t_62d11cc98cfaef 119-120
+tests/test_workspace_rename_hardening_gates.py
+  s_a03650451d84d5::t_7f14644293b531 107-109
+  s_a03650451d84d5::t_cc1eb9bdc98b8b 9
+  s_a03650451d84d5::t_7356a864b6fb3a 72,81-106,110-122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "e0816bc01c6bdc992725cc2e30a80c7832ef8373",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
