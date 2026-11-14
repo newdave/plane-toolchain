@@ -419,6 +419,12 @@ def reverted(target, receipt):
         if not isinstance(entry, dict) or entry.get("kind") not in KINDS:
             raise ValueError("Invalid installation receipt")
         text = read(guard(target, rel))
+        # An interrupted revert marks each entry once restored, and records the text it
+        # leaves behind first, so a change made just before the crash still counts as done.
+        if entry.get("reverted") is True or (
+            "after" in entry and fingerprint(text) == entry["after"]
+        ):
+            continue
         # A pending receipt marks each file done once written. A file not marked may be
         # unreached (still as before, or edited by the user since): it is never touched.
         unreached = pending and entry.get("done") is not True
@@ -463,6 +469,8 @@ def apply(target, values=None, toolchain=SOURCE, preapprove=True):
     resumed = None
     if receipt_path.exists():
         receipt = json.loads(receipt_path.read_text())
+        if receipt.get("reverting") is True:
+            raise ValueError("A revert was interrupted; run revert again to finish it")
         if receipt.get("pending") is not True:
             reverted(target, receipt)
             print("Plane integration already installed")
@@ -636,6 +644,8 @@ def label(target, env=None, client=None):
     if not receipt_path.is_file():
         raise ValueError("No installation receipt; run apply first")
     receipt = json.loads(receipt_path.read_text())
+    if receipt.get("reverting") is True:
+        raise ValueError("A revert was interrupted; run revert again to finish it")
     if receipt.get("pending") is True:
         raise ValueError("Installation was interrupted; run apply again to finish it")
     outdated(target, receipt)
@@ -712,11 +722,19 @@ def revert(target):
     kept = sorted(p.name for p in plane.iterdir() if p.name not in ours)
     if kept:
         changes.pop(".plane/.gitignore", None)
+    # As in apply, the receipt records progress: the text each entry will be left with goes
+    # in first, then each entry is marked once restored. A rerun finishes from there.
+    entries = receipt["entries"]
+    for rel, text in changes.items():
+        entries[rel]["after"] = fingerprint(text)
+    write(receipt_path, json.dumps({**receipt, "reverting": True}, indent=2) + "\n")
     for rel, text in changes.items():
         if text is None:
             (target / rel).unlink()
         else:
             write(target / rel, text)
+        entries[rel]["reverted"] = True
+        write(receipt_path, json.dumps({**receipt, "reverting": True}, indent=2) + "\n")
     receipt_path.unlink()
     # .plane/ belongs to the installer; client directories go only if it created them.
     for name in {".plane", *receipt.get("directories", [])}:
