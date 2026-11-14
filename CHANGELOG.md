@@ -17,6 +17,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Pages (PTC-113): `apply` and `revert` share one swap recovery, `recover_swap` (SIGTERM held, undo, then `recover_original` or `restore_any` as the fallback), and apply's retire step uses `sigterm_held`; the inline copies are gone. Behaviour, messages and SIGTERM semantics are unchanged. The shipped Pages remote program text changes (new shipped functions); the derived image source and its digest do not.
 - The MCP cursor pagination helper `paginated` moves from `plane_toolchain.github_evidence` to `plane_toolchain.connection` (PTC-118) as the single shared implementation. `github_evidence.paginated` still resolves to it. The CLI readback loop is unchanged: it stops early on a match and tolerates a missing cursor.
 
 ### Security
