@@ -1,7 +1,6 @@
 """Pages deploy: remote program, entry points, seams, health probes."""
 
 import ast
-import hashlib
 import inspect
 import json
 import shlex
@@ -63,7 +62,9 @@ def test_remote_finishes_apply_when_ssh_channel_is_gone(host, monkeypatch):
 
 def test_check_verifies_label_and_health(applied, monkeypatch, capsys):
     remote("check", applied, monkeypatch)
-    assert capsys.readouterr().out == "Pages image and API health verified\n"
+    assert (
+        capsys.readouterr().out == "Pages image and API health verified (digest " + DIGEST + ")\n"
+    )
     assert applied.calls == [*LOOKUP, HELD, HEALTH, PAGES]
 
 
@@ -118,7 +119,7 @@ def test_main_ships_fixed_program_and_source_digest_over_ssh(monkeypatch):
         container="plane-api_1",
         live_url="http://live:3000",
         source=source,
-        digest=hashlib.sha256(source.encode()).hexdigest(),
+        digest=pages_deploy.shipped_digest(source),
         replacement="import copy\n" + inspect.getsource(pages_deploy.replacement),
     )
 
@@ -197,7 +198,7 @@ def test_seam_apply_idempotent_and_refuses_existing_backup(applied, host):
 
 
 def test_seam_revert_success_and_check_label_mismatch(applied):
-    assert deploy("check", applied) == "Pages image and API health verified"
+    assert deploy("check", applied) == "Pages image and API health verified (digest " + DIGEST + ")"
     assert deploy("revert", applied).startswith("Original API container restored")
     assert_original_restored(applied)
     with pytest.raises(ValueError, match="does not match source"):

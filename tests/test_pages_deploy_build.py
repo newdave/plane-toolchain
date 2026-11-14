@@ -157,3 +157,20 @@ def test_build_failure_hides_the_repository_path_and_the_dns_host(host):
     message = str(error.value)
     assert "plane-backend" not in message and "registry-1.example.net" not in message
     assert "<base image>" in message and "lookup <host>" in message
+
+
+def test_digest_covers_source_replacement_and_dockerfile(monkeypatch):
+    base = pages_deploy.shipped_digest(SOURCE)
+    assert base == pages_deploy.shipped_digest(SOURCE)
+    assert pages_deploy.shipped_digest(SOURCE + "# x\n") != base
+    real = pages_deploy.replacement
+
+    def changed(original, image, live_url, digest):
+        return real(original, image, live_url, digest)
+
+    monkeypatch.setattr(pages_deploy, "replacement", changed)
+    assert pages_deploy.shipped_digest(SOURCE) != base  # replacement() source differs
+    monkeypatch.undo()
+    real_dockerfile = pages_deploy.dockerfile
+    monkeypatch.setattr(pages_deploy, "dockerfile", lambda image: real_dockerfile(image) + b"X")
+    assert pages_deploy.shipped_digest(SOURCE) != base  # Dockerfile template differs

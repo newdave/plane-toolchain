@@ -117,7 +117,7 @@ A check fails when the installed source differs. The MCP helper refuses tracked 
 
 A Saltbox role owns the API container and pins its image, labels and environment in the inventory, so the direct `apply` route (which swaps the container) does not fit. It also refuses a local running image. Use the build-only task instead. Obtain deployment authority first.
 
-1. Run `mise run owner:plane-pages:build` (needs `PLANE_MCP_SSH`; optional `PLANE_WORKER_CONTAINER`, default `plane-worker`, and `PLANE_BACKEND_IMAGE`). It derives `makeplane/plane-backend:<tag>` from the worker image unless `PLANE_BACKEND_IMAGE` is set, builds from that image's registry digest and prints `<image tag> <source digest>`. It refuses when the upstream image is missing or has no registry digest. It never creates, stops, renames or removes a container.
+1. Run `mise run owner:plane-pages:build` (needs `PLANE_MCP_SSH`; optional `PLANE_WORKER_CONTAINER`, default `plane-worker`, and `PLANE_BACKEND_IMAGE`). It derives `makeplane/plane-backend:<tag>` from the worker image unless `PLANE_BACKEND_IMAGE` is set, builds from that image's registry digest and prints `<image tag> <digest>`; the digest covers `pages_backend.py`, the create-body function and the Dockerfile. It refuses when the upstream image is missing or has no registry digest. It never creates, stops, renames or removes a container.
 2. Back up `/srv/git/saltbox/inventories/host_vars/localhost.yml`, then set:
    - `plane_role_api_docker_image`: the printed image tag.
    - `plane_role_api_docker_labels_custom`: `{plane-toolchain.pages.source: <printed digest>}`.

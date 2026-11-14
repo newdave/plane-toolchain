@@ -157,10 +157,9 @@ def healthy(name, probe, sleep, attempts=45, pages=True, budget=120, clock=time.
     raise ValueError("API health check failed")
 
 
-def build_context(base_image, source):
-    """Return a tar build context deriving the exact running image."""
-    # No credentials or runtime environment in context.
-    dockerfile = (
+def dockerfile(base_image):
+    """Dockerfile text deriving the running image; no credentials or runtime environment."""
+    return (
         "FROM " + base_image + "\nCOPY plane_pages.py " + NEUTRAL_PAGES_BACKEND_FILE + "\n"
         "RUN python -c \"from pathlib import Path; p=Path('/code/plane/api/urls/__init__.py'); "
         "p.write_text(p.read_text()+"
@@ -169,9 +168,16 @@ def build_context(base_image, source):
         + " import routes\\nurlpatterns += routes()\\n')\"\n"
         "RUN python -m py_compile " + NEUTRAL_PAGES_BACKEND_FILE + "\n"
     ).encode()
+
+
+def build_context(base_image, source):
+    """Return a tar build context deriving the exact running image."""
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w") as archive:
-        for filename, content in [("Dockerfile", dockerfile), ("plane_pages.py", source)]:
+        for filename, content in [
+            ("Dockerfile", dockerfile(base_image)),
+            ("plane_pages.py", source),
+        ]:
             info = tarfile.TarInfo(filename)
             info.size = len(content)
             archive.addfile(info, io.BytesIO(content))
@@ -336,7 +342,7 @@ def check(current, payload, health):
     if source_label(current) != payload["digest"]:
         raise ValueError("Pages image does not match source")
     health(payload["container"])
-    return "Pages image and API health verified"
+    return "Pages image and API health verified (digest " + payload["digest"] + ")"
 
 
 def restore_any(name, backup, reverted, probe, docker, policy):
@@ -667,6 +673,7 @@ REMOTE = program(
         set_restart,
         source_label,
         healthy,
+        dockerfile,
         build_context,
         docker_create,
         build_image,
@@ -703,6 +710,23 @@ REMOTE = program(
 )
 
 
+def replacement_source():
+    """Source of `replacement` as shipped to the host."""
+    import inspect
+
+    return "import copy\n" + inspect.getsource(replacement)
+
+
+def shipped_digest(source):
+    """Digest of everything that decides the derived image and container: the backend source,
+    `replacement` (the create body) and the Dockerfile. Each part is length-prefixed."""
+    digest = hashlib.sha256()
+    for part in (source, replacement_source(), dockerfile("<base image>").decode()):
+        data = part.encode()
+        digest.update(str(len(data)).encode() + b":" + data)
+    return digest.hexdigest()
+
+
 def valid_live_url(url):
     """Return whether url is plain http(s) with a host and no credentials, query or fragment."""
     try:
@@ -719,11 +743,9 @@ def valid_live_url(url):
 
 
 def main():
-    import inspect
-
     operation = sys.argv[1]
     source = Path(__file__).with_name("pages_backend.py").read_text()
-    digest = hashlib.sha256(source.encode()).hexdigest()
+    digest = shipped_digest(source)
     if operation == "build":
         (host,) = require_env("PLANE_MCP_SSH")
         worker = os.environ.get("PLANE_WORKER_CONTAINER") or "plane-worker"
@@ -756,7 +778,7 @@ def main():
         live_url=live_url,
         source=source,
         digest=digest,
-        replacement="import copy\n" + inspect.getsource(replacement),
+        replacement=replacement_source(),
     )
     run_remote(host, REMOTE, payload)
 
