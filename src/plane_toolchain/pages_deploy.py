@@ -16,9 +16,8 @@ import subprocess
 import sys
 import tarfile
 import time
-from pathlib import Path
 import urllib.parse
-from urllib.parse import urlsplit
+from pathlib import Path
 
 from plane_toolchain.legacy import (
     NEUTRAL_PAGES_BACKEND_FILE,
@@ -394,6 +393,35 @@ def restore_any(name, backup, reverted, probe, docker, policy):
                 pass
 
 
+def recover_original(name, backup, probe, docker, policy, now):
+    """Best effort after a failed apply rollback: never leave the derived container running.
+
+    `restore_any` starts whatever holds `name`, which is right for revert but here could be the
+    failed derived container. A Pages-labelled `name` is stopped and moved aside; when that
+    fails both containers stay stopped and the operator is told to reconcile.
+    """
+    try:
+        derived = probe("inspect", name) and source_label(json.loads(docker("inspect", name))[0])
+    except Exception:
+        derived = True  # Cannot tell what holds the name: do not start it.
+    if not derived:
+        restore_any(name, backup, failed_name(name, probe, now), probe, docker, policy)
+        return
+    probe("stop", name)
+    failed = failed_name(name, probe, now)
+    if probe("rename", name, failed):
+        set_restart(probe, "no", failed)
+        if probe("rename", backup, name):
+            set_restart(probe, policy, name)
+            probe("start", name)
+            return
+    say(
+        "Rollback incomplete: the derived container and the original are both left stopped; "
+        "run apply again to reconcile, or inspect " + name + " and " + backup,
+        sys.stderr,
+    )
+
+
 def promotion_policy(held, name, docker, probe):
     """Policy for the original about to run as `name`; keeps every parked derived off."""
     prefix = name + "-pages-reverted-"
@@ -604,7 +632,7 @@ def apply(current, payload, backup, docker, probe, create, health, now):
                     set_restart(probe, policy, name)
                     docker("start", name)
                 except Exception:
-                    restore_any(name, backup, failed_name(name, probe, now), probe, docker, policy)
+                    recover_original(name, backup, probe, docker, policy, now)
                     raise error  # Recovery error stays as __context__.
         finally:
             release_sigterm(mask, error)
@@ -712,6 +740,7 @@ REMOTE = program(
     + [
         check,
         restore_any,
+        recover_original,
         held_policy,
         promotion_policy,
         finish_revert,
@@ -755,7 +784,7 @@ def shipped_digest(source):
 def valid_live_url(url):
     """Return whether url is plain http(s) with a host and no credentials, query or fragment."""
     try:
-        parsed = urlsplit(url)
+        parsed = urllib.parse.urlsplit(url)
         parsed.port
     except ValueError:
         return False

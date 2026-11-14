@@ -364,7 +364,7 @@ def test_apply_rollback_failure_falls_back_to_restore_any(host, monkeypatch, fai
     with pytest.raises(ValueError, match="creation") as raised:
         remote("apply", host, monkeypatch)
     # The original error wins; the recovery error stays as its context.
-    assert raised.value.__context__ is not None
+    assert isinstance(raised.value.__context__, subprocess.CalledProcessError)
     assert_original_restored(host)
     assert BACKUP not in host.containers
 
@@ -382,3 +382,23 @@ def test_apply_sigterm_between_the_retire_rename_and_set_restart_restores_the_or
         deploy("apply", host)
     assert_original_restored(host)
     assert BACKUP not in host.containers
+
+
+@pytest.mark.parametrize("renames_failing", [1, 2], ids=["once", "persistently"])
+def test_apply_rollback_never_starts_the_derived_container_when_moving_it_aside_fails(
+    host, monkeypatch, capsys, renames_failing
+):
+    host.created_healthy = False
+    host.fail.extend([("rename", "api", f"api-pages-failed-{NOW}")] * renames_failing)
+    with pytest.raises(ValueError, match="API health check failed"):
+        remote("apply", host, monkeypatch)
+    if renames_failing == 1:
+        # The retry moves the derived aside and the original comes back.
+        assert_original_restored(host)
+        assert not host.containers[f"api-pages-failed-{NOW}"]["running"]
+    else:
+        # A stopped API beats a live unhealthy derived container: both stay stopped.
+        assert running(host) == []
+        assert host.containers["api"]["labels"].get(LABEL) == DIGEST
+        assert not host.containers[BACKUP]["running"]
+        assert "Rollback incomplete" in capsys.readouterr().err
