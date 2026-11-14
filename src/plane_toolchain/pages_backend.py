@@ -75,7 +75,13 @@ def creation_payload(data, sanitise, convert):
     access = data.get("access", 1)
     if not isinstance(name, str) or not name.strip() or len(name) > 255:
         raise PageInputError("name")
-    if not isinstance(body, str) or len(body.encode()) > 1_000_000 or access not in (0, 1):
+    # Create may take an empty body: a new blank page loses nothing. Update may not.
+    if (
+        not isinstance(body, str)
+        or len(body.encode()) > 1_000_000
+        or isinstance(access, bool)
+        or access not in (0, 1)
+    ):
         raise PageInputError("body")
     return dict(name=name, access=access, **converted_body(body, sanitise, convert))
 
@@ -105,7 +111,8 @@ def update_request(data):
     if set(data) - {"description_html", "expected_updated_at", "force"}:
         raise PageInputError("update_fields")
     body = data.get("description_html")
-    if not isinstance(body, str) or len(body.encode()) > 1_000_000:
+    # An empty body would wipe the page (only a version keeps the old one), so refuse it.
+    if not isinstance(body, str) or not body.strip() or len(body.encode()) > 1_000_000:
         raise PageInputError("body")
     stamp = data.get("expected_updated_at")
     try:
