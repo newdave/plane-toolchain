@@ -74,6 +74,76 @@ jobs:
 
 The driver retrieves the task in the configured project, verifies the target state belongs to the completed group, posts and rereads evidence, then updates and rereads status. A failed comment verification stops before the state change. An uncertain remote write fails the job without retries. GitHub concurrency limits overlapping invocations for a task; it is not a transaction with Plane and does not coordinate other clients.
 
+## Composite actions: PR gate and evidence
+
+Two composite actions tie pull requests to Plane tasks. `plane-pr-gate` posts the `Plane task references` status from the `Plane-Tasks` field in the PR body (1 to 3 IDs). `plane-evidence` comments CI and build results on those tasks. Both write comments and a status only. They never change a task's state and never record deployed health.
+
+Pin each action to a full 40-character commit SHA: copy the `Pin:` line from the release notes. A tag or branch is not accepted. The actions run with your Plane key.
+
+| Input | Default | Used by | Meaning |
+|---|---|---|---|
+| `plane-api-key` | none | both | Dedicated bot key. Required for the gate. May be empty for evidence, which then skips. |
+| `mcp-url` | none | both | Plane MCP endpoint. Required. |
+| `workspace` | none | both | Workspace slug. Required. |
+| `project` | none | both | Project the references resolve in. Required. |
+| `task-source` | none | both | Work item `external_source` that task IDs match. Required. |
+| `comment-source` | none | both | `external_source` recorded on comments. Required. |
+| `github-token` | `github.token` | both | Token for GitHub API reads and the gate's status write. |
+| `references-field` | `Plane-Tasks` | both | PR body field that lists task IDs. |
+| `references-pattern` | `[A-Z][A-Z0-9]*-\d+[A-Z]?` | both | Pattern each ID must match. |
+| `references-min`, `references-max` | `1`, `3` | both | Bounds on the ID count. |
+| `maintenance-field` | empty (off) | both | Field carrying the maintenance value. Empty turns the exemption off. |
+| `maintenance-value` | `dependency-update` | both | Value that marks a maintenance PR. |
+| `maintenance-author`, `maintenance-title-prefix`, `maintenance-branch-prefix`, `maintenance-base` | empty | both | Conditions a maintenance PR must meet. |
+| `maintenance-allowed-files` | empty | both | Newline list of files a maintenance PR may change. |
+| `label` | `github.workflow` | evidence | Label in the comment. |
+| `conclusion`, `needs` | empty | evidence | Set exactly one: a result (`success`, `failure`, `cancelled`), or the JSON of `needs`. |
+
+Composite actions cannot read `vars`. The caller gates each step with `if: vars.PLANE_ENABLED == 'true'`.
+
+Gate workflow, on `pull_request_target` only. It checks out nothing:
+
+```yaml
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, closed]
+permissions:
+  statuses: write
+  pull-requests: read
+jobs:
+  plane:
+    if: vars.PLANE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: newdave/plane-toolchain/.github/actions/plane-pr-gate@<40-character-sha> # v0.5.0
+        with:
+          plane-api-key: ${{ secrets.PLANE_API_KEY }}
+          mcp-url: https://plane.example.com/mcp
+          workspace: example
+          project: demo
+          task-source: example-github
+          comment-source: example-github
+```
+
+Evidence step at the end of a same-repo CI job. It must not fail the job:
+
+```yaml
+      - if: always() && vars.PLANE_ENABLED == 'true'
+        continue-on-error: true
+        uses: newdave/plane-toolchain/.github/actions/plane-evidence@<40-character-sha> # v0.5.0
+        with:
+          plane-api-key: ${{ secrets.PLANE_API_KEY }}
+          mcp-url: https://plane.example.com/mcp
+          workspace: example
+          project: demo
+          task-source: example-github
+          comment-source: example-github
+          label: ci
+          needs: ${{ toJSON(needs) }}
+```
+
+The gate fails closed: a Plane or transport error posts a `failure` status that names the cause. Evidence never fails the caller: it skips PRs with no reference field, and reports other failures as a warning and a job-summary line. [ADR 0002](decisions/0002-github-pr-gate-and-evidence-events.md) records the event rules.
+
 ## Trust boundaries
 
-Never pass Plane secrets to fork PR code. Do not add a PR head checkout, untrusted artifacts or shell interpolation of PR titles to these workflows. Write examples reject PR event contexts and require the default branch. If you add richer PR evidence, read GitHub metadata from trusted code and keep acceptance/status policy explicit. Preserve active work owned by another chat or person.
+Never pass Plane secrets to fork PR code. Do not add a PR head checkout, untrusted artifacts or shell interpolation of PR titles to these workflows. Write examples reject PR event contexts and require the default branch. If you add richer PR evidence, read GitHub metadata from trusted code and keep acceptance/status policy explicit. Preserve active work owned by another chat or person. The two composite actions above are the one exception to the `pull_request_target` refusal, under the rules in docs/decisions/0002-github-pr-gate-and-evidence-events.md.
