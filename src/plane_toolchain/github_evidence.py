@@ -272,12 +272,16 @@ def run_updates(
         "This records checks, not deployed health or task acceptance."
     )
     content = _paragraph(text, run_url, "Workflow run")
+    if any(pr["base"]["repo"]["full_name"] != repo for pr in prs):
+        raise ValueError("Unexpected PR base repository")
     return [Update(pr, f"{repo}:run:{run_id}:{attempt}:pr:{pr['number']}", content) for pr in prs]
 
 
 def aggregate(results: Mapping[str, str]) -> str:
     """Single conclusion from job results; skipped is neutral."""
     values = set(results.values())
+    for value in sorted(values - {"success", "skipped", "cancelled", "failure"}):
+        raise ValueError("Unknown job result: " + value)
     if "failure" in values:
         return "failure"
     if "cancelled" in values:

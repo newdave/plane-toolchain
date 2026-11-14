@@ -241,7 +241,7 @@ def test_matching_prs_head_or_merge_commit():
 
 def test_run_updates_text():
     sha = "c" * 40
-    pr = {"number": 7, "head": {"sha": sha}}
+    pr = {"number": 7, "head": {"sha": sha}, "base": {"repo": {"full_name": REPO}}}
     (update,) = ge.run_updates(
         [pr],
         REPO,
@@ -277,6 +277,25 @@ def test_aggregate():
     assert ge.aggregate({"a": "success", "b": "skipped", "c": "cancelled"}) == "cancelled"
     assert ge.aggregate({"a": "success", "c": "cancelled", "d": "failure"}) == "failure"
     assert ge.aggregate({}) == "success"
+    with pytest.raises(ValueError, match="Unknown job result: timed_out"):
+        ge.aggregate({"a": "success", "b": "timed_out"})
+    with pytest.raises(ValueError, match="Unknown job result: "):
+        ge.aggregate({"a": ""})
+
+
+def test_run_updates_refuse_foreign_base_repository():
+    foreign = {"number": 7, "head": {"sha": "c" * 40}, "base": {"repo": {"full_name": "o/d"}}}
+    with pytest.raises(ValueError, match="Unexpected PR base repository"):
+        ge.run_updates(
+            [foreign],
+            REPO,
+            "c" * 40,
+            label="build",
+            conclusion="success",
+            run_id=1,
+            attempt=1,
+            run_url="u",
+        )
 
 
 def test_run_evidence_skips_pr_without_reference_field():
