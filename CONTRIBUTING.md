@@ -24,6 +24,8 @@ The Actions examples remain under `examples/github/` so they are not active by d
 
 The `release` workflow runs when a `v*.*.*` tag is pushed. It requires the tag to be on the default branch and to match the `pyproject.toml` version, requires a `CHANGELOG.md` section for the version, and requires a successful `check` run from GitHub Actions on the tagged commit before it creates the release. Only the gate and release steps hold `GH_TOKEN`.
 
+When a release changes `src/plane_toolchain/ce_tools.py`, append the new file's sha256 to `RELEASED_ENTRY_POINT_DIGESTS` in `src/plane_toolchain/mcp_deploy.py` (with the tag in a comment) before tagging. `tests/test_mcp_deploy.py` fails if a tag's digest is missing. Apply and revert treat an entry point matching a listed digest as ours even when its receipt is stale.
+
 Dry run on a scratch fork (never on the real repository):
 
 1. Fork, then enable Actions. Merge a version bump and its CHANGELOG section to the fork's default branch and wait for `check` to pass.

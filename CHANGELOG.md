@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- MCP apply and revert no longer refuse a host entry point whose receipt is stale but whose content is exactly a `ce_tools.py` shipped in a past release (for example after another deploy wrote `server.py` without updating the receipt). Foreign content is still refused; `check` is unchanged. Releases append their digest to `RELEASED_ENTRY_POINT_DIGESTS`.
+
 ## [0.4.0] - 2026-11-14
 
 ### Added

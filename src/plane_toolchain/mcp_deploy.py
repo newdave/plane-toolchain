@@ -40,6 +40,18 @@ def git_tracked(root):
     return result.returncode == 0
 
 
+# sha256 of src/plane_toolchain/ce_tools.py at each released tag. A host entry point matching one
+# was written by this toolchain even when its receipt is stale, so apply and revert may overwrite
+# it. Shipped into the remote program. Every release that changes ce_tools.py appends its digest
+# (tests/test_mcp_deploy.py checks this against the git tags; see CONTRIBUTING.md).
+RELEASED_ENTRY_POINT_DIGESTS = (
+    "1f37e0237fd6dabf9b141697d8220f533cb96067ccd6820b27a619167d905777",  # v0.1.0
+    "3251a424debf574af740455e95abc4861c8edc7d2b4953fc2f29aa33700dc855",  # v0.2.0, v0.2.1
+    "03902b5cd9c390c9b9fb07c75e4cd16ae7055ad02b86106ed8d798f98efef08c",  # v0.3.0 to v0.3.2
+    "c0093a9f090704486570c0b3116decd524c3a13288ac47a2ba3adc7686b813d6",  # v0.4.0
+)
+
+
 def sha256(value):
     return hashlib.sha256(value).hexdigest()
 
@@ -101,6 +113,15 @@ def owned_digests(recorded):
         digests.add(recorded.get("previous"))
     digests.discard(None)
     return digests
+
+
+def overwritable(current, recorded):
+    """Whether apply or revert may replace current: receipt-owned or a shipped release (stale receipt).
+
+    Only apply and revert use this; check compares bytes exactly and never calls it.
+    """
+    digest = sha256(current)
+    return digest in owned_digests(recorded) or digest in RELEASED_ENTRY_POINT_DIGESTS
 
 
 def interrupted_write(current, desired, recorded, backup):
@@ -213,7 +234,7 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
             return "MCP compatibility entry point already applied"
         if backup.exists():
             saved = backup.read_bytes()
-            if current != saved and sha256(current) not in owned_digests(recorded):
+            if current != saved and not overwritable(current, recorded):
                 if not interrupted_write(current, desired, recorded, saved):
                     raise ValueError("Host entry point changed; preserve it and reconcile")
                 # Killed mid-write: the backup is the safe state to return to on failure.
@@ -234,7 +255,7 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         previous = backup.read_bytes()
         if current == previous:
             return "Original MCP entry point already restored"
-        if sha256(current) not in owned_digests(recorded):
+        if not overwritable(current, recorded):
             if not interrupted_write(current, desired, recorded, previous):
                 raise ValueError("Host entry point changed; refusing overwrite")
             current = previous  # Killed mid-write; a failed revert must not restore the stub.
@@ -338,6 +359,7 @@ REMOTE = program(
         legacy_state,
         refusal,
         owned_digests,
+        overwritable,
         interrupted_write,
         plain_entry_point,
         inspect_state,
@@ -345,7 +367,7 @@ REMOTE = program(
         deploy,
     ],
     guarded("say(deploy(json.load(sys.stdin), docker, git_tracked))\n"),
-    MCP,
+    {**MCP, "RELEASED_ENTRY_POINT_DIGESTS": RELEASED_ENTRY_POINT_DIGESTS},
 )
 
 
