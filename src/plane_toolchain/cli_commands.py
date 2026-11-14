@@ -338,7 +338,19 @@ async def relation_plan_run(call: Call, project: str, namespace: argparse.Namesp
         ],
     }
     if namespace.apply:
-        report["added"] = await relation_plan.apply(call, target, missing, namespace.pause)
+        written: list[tuple[str, str]] = []
+        try:
+            report["added"] = await relation_plan.apply(
+                call, target, missing, namespace.pause, written=written
+            )
+        except Exception:
+            done = "; ".join(f"{names[b]} blocked_by {names[k]}" for b, k in written)
+            print(f"plane: written: {done or 'none'}", file=sys.stderr)
+            print(
+                f"plane: failed at {names[relation_plan.failing(missing, written)]}",
+                file=sys.stderr,
+            )
+            raise
     return report
 
 

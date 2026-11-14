@@ -17,6 +17,7 @@ from plane_toolchain.cli_commands import IDENTIFIER, ReadbackError, UsageError, 
 Call = Callable[[str, dict], Awaitable[Any]]
 Plan = list[tuple[str, str]]
 DEFAULT_PAUSE = 0.5
+MAX_ITEMS = 500
 
 
 def load(path: str | Path) -> list[dict]:
@@ -107,8 +108,8 @@ async def inspect_remote(
 
     Every item must exist and sit in `project`. Existing relations among plan items
     are read and combined with the plan for a cycle check. Any failed read propagates,
-    so the run stops before the first write. Cycles that pass only through items
-    outside the plan are not seen.
+    so the run stops before the first write. The walk follows existing relations
+    transitively from the plan items, fetching at most MAX_ITEMS items.
     """
     names: dict[str, str] = {}
     for ident in dict.fromkeys(i for pair in plan for i in pair):
@@ -121,18 +122,27 @@ async def inspect_remote(
             raise UsageError(f"Relation tasks must be in one project: {ident} is not")
         names[canonical(found["id"])] = ident
     ids = {ident: uuid for uuid, ident in names.items()}
-    existing: dict[str, set[str]] = {uuid: set() for uuid in names}
+    existing: dict[str, set[str]] = {}
     edges: set[tuple[str, str]] = set()
-    for uuid in names:
+    queue = list(names)
+    fetched: set[str] = set()
+    while queue:
+        uuid = queue.pop(0)
+        if uuid in fetched:
+            continue
+        if len(fetched) >= MAX_ITEMS:
+            raise UsageError(f"Cycle check reached more than {MAX_ITEMS} items; split the plan")
+        fetched.add(uuid)
         listing = await call(
             "ce_workitem_relation",
             {"action": "list", "project_id": canonical(project), "workitem_id": uuid},
         )
-        for blocker in rows(listing, "blocked_by"):
-            existing[uuid].add(blocker)
-            edges.add((uuid, blocker))
-        for blocked in rows(listing, "blocking"):
-            edges.add((blocked, uuid))
+        blockers = rows(listing, "blocked_by")
+        existing[uuid] = set(blockers)
+        edges |= {(uuid, blocker) for blocker in blockers}
+        blocked_items = rows(listing, "blocking")
+        edges |= {(blocked, uuid) for blocked in blocked_items}
+        queue.extend(i for i in [*blockers, *blocked_items] if i not in fetched)
     edges |= {(ids[blocked], ids[blocker]) for blocked, blocker in plan}
     refuse_cycle(edges)
     missing: dict[str, list[str]] = {}
@@ -153,11 +163,13 @@ async def apply(
     missing: dict[str, list[str]],
     pause: float = DEFAULT_PAUSE,
     sleep: Callable[[float], Any] = asyncio.sleep,
+    written: list[tuple[str, str]] | None = None,
 ) -> int:
     """Add the missing links, one write per blocked item, rereading each. Return links added.
 
     Waits `pause` seconds between items. A reread that lacks a link raises ReadbackError.
-    A rerun is safe: only links still missing are written.
+    A rerun is safe: only links still missing are written. `written` collects the
+    (blocked, blocker) links confirmed so far, for reporting after a failure.
     """
     added = 0
     for index, (blocked, blockers) in enumerate(missing.items()):
@@ -174,4 +186,12 @@ async def apply(
         if not set(blockers) <= set(rows(listing, "blocked_by")):
             raise ReadbackError
         added += len(blockers)
+        if written is not None:
+            written.extend((blocked, blocker) for blocker in blockers)
     return added
+
+
+def failing(missing: dict[str, list[str]], written: list[tuple[str, str]]) -> str:
+    """Return the first blocked item that has no confirmed write: the one that failed."""
+    done = {blocked for blocked, _ in written}
+    return next(item for item in missing if item not in done)

@@ -196,3 +196,38 @@ def test_cli_cross_project_refused_without_writes(tmp_path):
     code, _, err = cli(["--apply"], world, tmp_path, pairs(("ABC-1", "ABC-2")))
     assert code == 2 and "one project" in err
     assert world.writes() == []
+
+
+def test_remote_cycle_through_non_plan_items_is_refused():
+    # Plan: ABC-1 blocked_by ABC-2. Existing: ABC-2 -> ABC-5 -> ABC-6 -> ABC-1.
+    world = World(edges=[("ABC-2", "ABC-5"), ("ABC-5", "ABC-6"), ("ABC-6", "ABC-1")])
+    plan = rp.validate(pairs(("ABC-1", "ABC-2")))
+    with pytest.raises(UsageError, match="cycle"):
+        asyncio.run(rp.validate_remote(world.call, PROJECT, plan))
+    assert world.writes() == []
+
+
+def test_remote_walk_is_bounded(monkeypatch):
+    monkeypatch.setattr(rp, "MAX_ITEMS", 3)
+    world = World(edges=[("ABC-2", "ABC-5"), ("ABC-5", "ABC-6"), ("ABC-6", "ABC-7")])
+    plan = rp.validate(pairs(("ABC-1", "ABC-2")))
+    with pytest.raises(UsageError, match="more than 3"):
+        asyncio.run(rp.validate_remote(world.call, PROJECT, plan))
+
+
+def test_cli_partial_failure_reports_links_already_written(tmp_path, capsys):
+    world = World(drop_writes=False)
+    orig = world.call
+
+    async def flaky(name, args):
+        if args.get("action") == "create" and args["workitem_id"] == IDS["ABC-3"]:
+            raise RuntimeError("boom")
+        return await orig(name, args)
+
+    world.call = flaky
+    plan = pairs(("ABC-1", "ABC-2"), ("ABC-3", "ABC-2"))
+    code, _, err = cli(["--apply", "--pause", "0"], world, tmp_path, plan)
+    assert code == 4
+    seen = capsys.readouterr().err
+    assert "written: ABC-1 blocked_by ABC-2" in seen
+    assert "failed at ABC-3" in seen
