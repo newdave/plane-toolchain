@@ -6,6 +6,8 @@ the same operation must then finish, and the opposite operation must work afterw
 one running API container, no stranded aside or derived state and sane restart policies.
 """
 
+import subprocess
+
 import pytest
 from fake_docker import FakeDocker, Killed
 from support_pages_deploy import BACKUP, DIGEST, LABEL, remote, restart, retained, running
@@ -115,3 +117,25 @@ def test_one_failing_call_leaves_one_running_api_and_the_next_run_converges(
         assert running(fake) == ["api"]
     else:
         assert_converged(fake, DERIVED_AFTER[OTHER[operation]])
+
+
+@pytest.mark.parametrize(
+    ("operation", "index"),
+    [(operation, index) for operation, count in CALLS.items() for index in range(count)],
+)
+def test_a_call_that_reports_failure_but_took_effect_leaves_one_running_api(
+    operation, index, monkeypatch
+):
+    fake = START[operation]()
+    state = fake.kill_at(index, "failed-took-effect")
+    try:
+        remote(operation, fake, monkeypatch)
+    except (subprocess.CalledProcessError, ValueError):  # a failed docker call, create or health
+        assert state["failed"][0] != "update"  # a policy update only warns, never raises
+    assert len(running(fake)) <= 1  # never two APIs, whatever the call did
+    del fake.execute, fake.create
+    remote(operation, fake, monkeypatch)
+    # The call took effect, so even a policy update that "failed" converges.
+    assert_converged(fake, DERIVED_AFTER[operation])
+    remote(OTHER[operation], fake, monkeypatch)
+    assert_converged(fake, DERIVED_AFTER[OTHER[operation]])

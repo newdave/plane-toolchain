@@ -473,6 +473,7 @@ def test_docker_timeout_is_overridable_and_expiry_names_only_the_command(monkeyp
 
 
 def test_run_remote_has_a_default_timeout_and_reports_expiry(monkeypatch, capsys):
+    monkeypatch.delenv("PLANE_SSH_TIMEOUT", raising=False)
     seen = []
 
     def run(argv, **kw):
@@ -489,3 +490,44 @@ def test_run_remote_has_a_default_timeout_and_reports_expiry(monkeypatch, capsys
         remote.run_remote(HOST, PROGRAM_TEXT, {}, timeout=5, interrupted="custom guidance")
     assert "custom guidance" in capsys.readouterr().err
     assert seen == [remote.SSH_SECONDS, 5]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, 6 * 3600),
+        ("", 6 * 3600),
+        ("  ", 6 * 3600),
+        ("90", 90.0),
+        ("7200.5", 7200.5),
+        ("1", 1.0),
+        ("604800", 604800.0),
+    ],
+)
+def test_ssh_timeout_defaults_and_reads_plane_ssh_timeout(monkeypatch, value, expected):
+    monkeypatch.delenv("PLANE_SSH_TIMEOUT", raising=False)
+    if value is not None:
+        monkeypatch.setenv("PLANE_SSH_TIMEOUT", value)
+    assert remote.ssh_timeout() == expected
+
+
+@pytest.mark.parametrize("value", ["0", "0.5", "-5", "abc", "nan", "inf", "1h", "604801", "1e12"])
+def test_ssh_timeout_rejects_a_bad_value_naming_only_the_variable(monkeypatch, value):
+    monkeypatch.setenv("PLANE_SSH_TIMEOUT", value)
+    with pytest.raises(SystemExit) as stop:
+        remote.ssh_timeout()
+    assert str(stop.value) == "PLANE_SSH_TIMEOUT must be a number of seconds from 1 to 604800"
+
+
+def test_run_remote_uses_the_env_timeout_and_an_explicit_one_wins(monkeypatch, capsys):
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(kw["timeout"])
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setenv("PLANE_SSH_TIMEOUT", "43200")
+    remote.run_remote(HOST, PROGRAM_TEXT, {})
+    remote.run_remote(HOST, PROGRAM_TEXT, {}, timeout=5)
+    assert seen == [43200.0, 5]
