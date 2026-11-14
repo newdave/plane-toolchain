@@ -11,6 +11,10 @@ All notable changes to this project are documented here. The format follows
 - `plane_toolchain.github_evidence` (PTC-120): core rules for GitHub PR gate and delivery evidence, with repository specifics passed as parameters. It parses the visible `Plane-Tasks` field (comments and fences ignored), applies an opt-in maintenance exemption, builds the gate status description and the PR and run evidence comments, and resolves task external IDs through a full paginated listing (it never trusts a server filter). `publish` reads before create, reads back after, and refuses differing content or duplicate identities. No entry point or action uses it yet.
 - `plane_toolchain.github_evidence_cli` (PTC-121): `gate` and `evidence` entry points over the core module, with a GitHub REST client (PR, commit PRs, changed files, status), the environment contract the coming actions will set, a Plane preflight that names a 401, 403 or empty project, and read-only retries (429 and 5xx wait 2, 4 and 8 s, or `Retry-After` capped at 30 s; creates are never retried). Every failure becomes a fixed, secret-free cause in a workflow annotation and the job summary. The gate fails closed and reposts its status when an edit changes the body but not the gate fields; evidence skips PRs without a reference field and never fails the gate. No action uses it yet.
 
+### Changed
+
+- The MCP cursor pagination helper `paginated` moves from `plane_toolchain.github_evidence` to `plane_toolchain.connection` (PTC-118) as the single shared implementation. `github_evidence.paginated` still resolves to it. The CLI readback loop is unchanged: it stops early on a match and tolerates a missing cursor.
+
 ### Security
 
 - The mise `uv` pin moves from 0.9.3 to 0.13.4, past GHSA-hq85-5cpj-mr62 (critical: bundled CA store), GHSA-4gg8-gxpx-9rph, GHSA-pjjw-68hj-v9mw, GHSA-pqhf-p39g-3x64 and GHSA-w476-p2h3-79g9. Dependabot does not scan `mise.toml`; the example workflow pin was already bumped in #63 (PTC-84).
