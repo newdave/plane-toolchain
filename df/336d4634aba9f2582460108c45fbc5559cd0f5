@@ -1,0 +1,25 @@
+pyproject.toml
+  s_a03650451d84d5::t_e0daf922092e37 7
+src/plane_toolchain/mcp_deploy.py
+  s_a03650451d84d5::t_e0daf922092e37 54
+CHANGELOG.md
+  s_a03650451d84d5::t_e0daf922092e37 9-10,24
+uv.lock
+  s_a03650451d84d5::t_369d0f6309290a 471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "df336d4634aba9f2582460108c45fbc5559cd0f5",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
