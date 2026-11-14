@@ -31,6 +31,8 @@ from support_pages_deploy import (
     remote,
     restart,
     run_health,
+    payload,
+    seams,
     running,
 )
 from support_pages_deploy import applied  # noqa: F401
@@ -380,3 +382,35 @@ def test_shipped_pages_and_mcp_programs_define_every_global_they_use():
 
 def test_health_probe_exec_has_a_timeout_in_the_shipped_entry():
     assert "timeout=20" in pages_deploy.REMOTE
+
+
+@pytest.mark.parametrize("name", ["--help", "-x", "éapi", "api١", "a b", "a;b", "", "a/b"])
+def test_validate_container_name_rejects_unsafe_names(name):
+    with pytest.raises(ValueError, match="Invalid deployment destination"):
+        pages_deploy.validate_container_name(name)
+
+
+@pytest.mark.parametrize("name", ["api", "plane-api_1", "plane.api-1", "9lives"])
+def test_validate_container_name_accepts_docker_names(name):
+    assert pages_deploy.validate_container_name(name) == name
+
+
+@pytest.mark.parametrize("operation", ["apply", "check", "revert", "prune"])
+def test_remote_deploy_rejects_an_unsafe_container_before_any_docker_call(host, operation):
+    data = dict(payload(operation), container="--help")
+    with pytest.raises(ValueError, match="Invalid deployment destination"):
+        pages_deploy.deploy(data, now=lambda: NOW, **seams(host))
+    assert host.calls == []
+
+
+def test_remote_build_rejects_an_unsafe_worker_before_any_docker_call(host):
+    data = dict(payload("build"), worker="--help")
+    with pytest.raises(ValueError, match="Invalid deployment destination"):
+        pages_deploy.deploy(data, now=lambda: NOW, **seams(host))
+    assert host.calls == []
+
+
+def test_docker_create_url_encodes_the_name(sockets):
+    pages_deploy.docker_create("a b&c", {})
+    [conn] = sockets.instances
+    assert conn.sent.startswith(b"POST /containers/create?name=a%20b%26c ")

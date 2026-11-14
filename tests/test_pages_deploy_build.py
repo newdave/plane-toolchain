@@ -174,3 +174,24 @@ def test_digest_covers_source_replacement_and_dockerfile(monkeypatch):
     real_dockerfile = pages_deploy.dockerfile
     monkeypatch.setattr(pages_deploy, "dockerfile", lambda image: real_dockerfile(image) + b"X")
     assert pages_deploy.shipped_digest(SOURCE) != base  # Dockerfile template differs
+
+
+@pytest.mark.parametrize("operation", ["check", "prune"])
+def test_main_rejects_a_leading_dash_container(monkeypatch, operation):
+    monkeypatch.setattr(sys, "argv", ["pages_deploy", operation])
+    monkeypatch.setenv("PLANE_MCP_SSH", "owner@host")
+    monkeypatch.setenv("PLANE_API_CONTAINER", "--help")
+    monkeypatch.setenv("PLANE_LIVE_URL", "http://live:3000")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("Must not connect"))
+    with pytest.raises(ValueError, match="Invalid deployment destination"):
+        pages_deploy.main()
+
+
+@pytest.mark.parametrize("worker", ["--help", "wé"])
+def test_main_build_rejects_leading_dash_and_unicode_worker(monkeypatch, worker):
+    monkeypatch.setattr(sys, "argv", ["pages_deploy", "build"])
+    monkeypatch.setenv("PLANE_MCP_SSH", "owner@host")
+    monkeypatch.setenv("PLANE_WORKER_CONTAINER", worker)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("Must not connect"))
+    with pytest.raises(ValueError, match="Invalid deployment destination"):
+        pages_deploy.main()

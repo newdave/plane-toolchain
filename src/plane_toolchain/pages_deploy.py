@@ -17,6 +17,7 @@ import sys
 import tarfile
 import time
 from pathlib import Path
+import urllib.parse
 from urllib.parse import urlsplit
 
 from plane_toolchain.legacy import (
@@ -184,6 +185,17 @@ def build_context(base_image, source):
     return stream.getvalue()
 
 
+def validate_container_name(name):
+    """Return `name` when it is a plain Docker container name; raise otherwise.
+
+    Names reach docker as operands, in `--filter name=` and in the create URL, so a leading dash,
+    Unicode or any other unusual character is refused (Docker's own name rule).
+    """
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+        raise ValueError("Invalid deployment destination")
+    return name
+
+
 def docker_create(name, body, timeout=30):
     """Create a container through the Docker API socket; the body stays in this process.
 
@@ -202,7 +214,7 @@ def docker_create(name, body, timeout=30):
     try:
         connection.request(
             "POST",
-            "/containers/create?name=" + name,
+            "/containers/create?name=" + urllib.parse.quote(name, safe=""),
             body=json.dumps(body),
             headers={"Content-Type": "application/json"},
         )
@@ -632,8 +644,9 @@ def deploy(payload, docker, probe, create, health, now):
     """
     operation = payload["operation"]
     if operation == "build":
+        validate_container_name(payload["worker"])
         return build(payload, docker)
-    name = payload["container"]
+    name = validate_container_name(payload["container"])
     backup = backup_name(name)
     missing = None
     listed = listed_names(name, docker)
@@ -661,7 +674,18 @@ def deploy(payload, docker, probe, create, health, now):
 
 
 REMOTE = program(
-    ["http.client", "io", "json", "re", "socket", "subprocess", "sys", "tarfile", "time"],
+    [
+        "http.client",
+        "io",
+        "json",
+        "re",
+        "socket",
+        "subprocess",
+        "sys",
+        "tarfile",
+        "time",
+        "urllib.parse",
+    ],
     [
         docker,
         docker_ok,
@@ -677,6 +701,7 @@ REMOTE = program(
         build_context,
         docker_create,
         build_image,
+        validate_container_name,
         hold_sigterm,
         release_sigterm,
         retained_names,
@@ -750,8 +775,9 @@ def main():
         (host,) = require_env("PLANE_MCP_SSH")
         worker = os.environ.get("PLANE_WORKER_CONTAINER") or "plane-worker"
         image = os.environ.get("PLANE_BACKEND_IMAGE") or None
-        if host.startswith("-") or not worker.replace("-", "").replace("_", "").isalnum():
+        if host.startswith("-"):
             raise ValueError("Invalid deployment destination")
+        validate_container_name(worker)
         if image and (image.startswith("-") or any(c.isspace() for c in image)):
             raise ValueError("Invalid PLANE_BACKEND_IMAGE")
         payload = dict(operation=operation, worker=worker, backend_image=image, source=source)
@@ -760,8 +786,9 @@ def main():
         return
     if operation == "prune":
         host, container = require_env("PLANE_MCP_SSH", "PLANE_API_CONTAINER")
-        if host.startswith("-") or not container.replace("-", "").replace("_", "").isalnum():
+        if host.startswith("-"):
             raise ValueError("Invalid deployment destination")
+        validate_container_name(container)
         confirm = os.environ.get("PLANE_PAGES_PRUNE") == "yes"
         run_remote(host, REMOTE, dict(operation=operation, container=container, confirm=confirm))
         return
@@ -770,8 +797,9 @@ def main():
     )
     if not valid_live_url(live_url):
         sys.exit("Invalid PLANE_LIVE_URL")
-    if host.startswith("-") or not container.replace("-", "").replace("_", "").isalnum():
+    if host.startswith("-"):
         raise ValueError("Invalid deployment destination")
+    validate_container_name(container)
     payload = dict(
         operation=operation,
         container=container,
