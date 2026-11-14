@@ -44,7 +44,7 @@ REWRITE_SCOPE = (
     ("email_notification_logs", "email_log", (("data", "json"),)),
 )
 REBUILD_FIELDS = ("description_json", "description_binary", "description_stripped")
-REBUILD_TABLES = ("issues", "pages", "descriptions")
+REBUILD_TABLES = ("issues", "pages")  # step_rows rebuilds these through Live
 # Columns apply derives from a rewritten column on in-scope rows; never unfixed.
 DERIVED_COLUMNS = {
     "issues": REBUILD_FIELDS,
@@ -77,6 +77,9 @@ SLUG_STEP = (
     ("notifications", "notification", (("data", "json"),)),
     ("email_notification_logs", "email_log", (("data", "json"),)),
 )
+# step_slug rewrites a Description row without Live, so a stored editor binary keeps OLD.
+# IssueComment has no binary column in Plane CE v1.4.3 (PTC-83): its binary is the Description's.
+STALE_BINARY = ("descriptions", "description", "description_binary")
 # step_rows rebuilds work items and Pages through Live, with these variants.
 ROW_STEP = (("issues", "issue", "rich"), ("pages", "page", "document"))
 ROW_FIELDS = ("description_html", *REBUILD_FIELDS)
@@ -167,6 +170,41 @@ def _report(emit, table, column, ids, reason):
             **({"truncated": True} if len(ids) > MAX_IDS else {}),
         }
     )
+
+
+def _stale(table, row):
+    """Whether step_slug leaves a stored editor binary on this rewritten row stale."""
+    return table == STALE_BINARY[0] and bool(row[STALE_BINARY[2]])
+
+
+def _not_rebuilt(orm, workspace_id, old, new, hosts, emit):
+    """Count (and report by id) the rows step_slug will rewrite but whose stored editor binary
+    it leaves holding OLD. Read-only; mirrors step_slug's row selection."""
+    table, key, column = STALE_BINARY
+    columns = next(c for t, _, c in SLUG_STEP if t == table)
+    names = [c for c, _ in columns]
+    rows = orm.models[key].all_objects.filter(**_scope(key, workspace_id))
+    rows = rows.values("pk", "workspace_id", *names, column).iterator()
+    ids = []
+    for scanned, row in enumerate(rows, 1):
+        if scanned % PROGRESS_EVERY == 0:
+            emit({"event": "progress"})
+        if not _stale(table, row) or not _owned(key, row, workspace_id, old):
+            continue
+        if any(_rewrite(row[c], kind, old, new, hosts)[1] for c, kind in columns):
+            ids.append(str(row["pk"]))
+    if ids:
+        emit(
+            {
+                "event": "not_rebuilt",
+                "table": table,
+                "column": column,
+                "count": len(ids),
+                "ids": ids[:MAX_IDS],
+                **({"truncated": True} if len(ids) > MAX_IDS else {}),
+            }
+        )
+    return len(ids)
 
 
 def _unfixed(orm, workspace_id, old, hosts, emit):
@@ -290,8 +328,16 @@ def check(args, orm, emit, convert=None):
         return False
     planned, rebuild = _plan(orm, workspace_id, old, hosts, emit)
     unfixed = _unfixed(orm, workspace_id, old, hosts, emit)
+    stale = _not_rebuilt(orm, workspace_id, old, new, hosts, emit)
     emit(
-        {"event": "summary", "ok": True, "planned": planned, "rebuild": rebuild, "unfixed": unfixed}
+        {
+            "event": "summary",
+            "ok": True,
+            "planned": planned,
+            "rebuild": rebuild,
+            "unfixed": unfixed,
+            "not_rebuilt": stale,
+        }
     )
     return True
 
@@ -424,7 +470,8 @@ def step_slug(args, orm, emit, convert=None):
                 manager = orm.models[key].all_objects
                 names = [c for c, _ in columns]
                 owner = () if key in UNOWNED else ("workspace_id",)
-                for row in _pages(manager, _scope(key, workspace_id), (*owner, *names)):
+                extra = (STALE_BINARY[2],) if table == STALE_BINARY[0] else ()
+                for row in _pages(manager, _scope(key, workspace_id), (*owner, *names, *extra)):
                     if not _owned(key, row, workspace_id, old):
                         continue
                     changes = {}
@@ -441,8 +488,8 @@ def step_slug(args, orm, emit, convert=None):
                     if manager.filter(pk=row["pk"], **originals).update(**changes) != 1:
                         raise _Abort("row_changed", table=table, id=row_id)
                     rewritten += 1
-                    # ASSUMPTION: these binary mirrors are left as stored (no Live call here).
-                    not_rebuilt += table in ("descriptions", "issue_comments")
+                    # The stored binary is left as is (no Live call here); check gates it.
+                    not_rebuilt += _stale(table, row)
     except _Abort as stop:
         emit(stop.event)
         emit(summary)

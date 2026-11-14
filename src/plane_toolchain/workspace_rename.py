@@ -854,6 +854,11 @@ def report(op, summary, events):
                 f"Not rewritten: {event.get('count')} in {event.get('table')}."
                 f"{event.get('column')} ({event.get('reason')})"
             )
+        elif kind == "not_rebuilt":
+            say(
+                f"Not rebuilt: {event.get('count')} in {event.get('table')}."
+                f"{event.get('column')} (the stored editor binary keeps the old slug)"
+            )
         elif kind == "health":
             say(
                 "Health " + str(event.get("check")) + ": " + ("ok" if event.get("ok") else "FAILED")
@@ -1121,7 +1126,7 @@ def drain_state(reason):
 def run_context(data, seams, operations=None):
     """What check, apply and revert share for one run, as a dict: the seams (docker, popen,
     clock, crash, uid, and seams itself for the lazily read sleep) and the payload (operation,
-    old, new, api, snippet, directory, names, options, undrained).
+    old, new, api, snippet, directory, names, options, undrained, stale_binaries).
 
     run_apply and run_revert each build one, use the run_* helpers below for the snippet call,
     the service stop and start and the step machine, and keep only their own steps and failure
@@ -1144,7 +1149,26 @@ def run_context(data, seams, operations=None):
     run["names"] = service_names(data.get("services") or {})
     run["options"] = {key: data[key] for key in ("live_url", "api_url") if data.get(key)}
     run["undrained"] = data.get("allow_undrained") is True
+    run["stale_binaries"] = data.get("allow_stale_binaries") is True
     return run
+
+
+def stale_binary_gate(run, summary):
+    """Refuse a check whose summary counts `not_rebuilt` rows unless the payload allows it.
+
+    step_slug rewrites Description rows without Live, so their stored editor binary keeps the
+    old slug, and a later editor save can bring it back. With `allow_stale_binaries` the run
+    goes on and says so."""
+    count = summary.get("not_rebuilt") or 0
+    if not count:
+        return
+    text = (
+        f"Description editor binaries not rebuilt: {count}; they keep the old slug and a later "
+        "editor save can bring it back"
+    )
+    if not run["stale_binaries"]:
+        raise RuntimeError(text + ". Set PLANE_RENAME_ALLOW_STALE_BINARIES=1 to accept that")
+    say("Warning: " + text + " (accepted by PLANE_RENAME_ALLOW_STALE_BINARIES)")
 
 
 def run_call(run, op, args):
@@ -1309,7 +1333,7 @@ def run_apply(data, seams):
             and run_slug_state(run, workspace_id) == "renamed"
         )
         if not slug_committed:
-            run_call(run, "check", {"old": old, "new": new})
+            stale_binary_gate(run, run_call(run, "check", {"old": old, "new": new}))
         run_call(run, "flush_cache", {"dry_run": True})
         detect_saltbox(names, docker)
     except RuntimeError as failure:
@@ -1798,6 +1822,7 @@ SHIPPED = (
     warnings_text,
     drain_state,
     run_context,
+    stale_binary_gate,
     run_call,
     run_health,
     run_slug_state,
@@ -1934,6 +1959,9 @@ def main(argv=None):
     undrained = os.environ.get("PLANE_RENAME_ALLOW_UNDRAINED") or None
     if undrained not in (None, "1"):
         sys.exit("Invalid PLANE_RENAME_ALLOW_UNDRAINED (use 1)")
+    stale = os.environ.get("PLANE_RENAME_ALLOW_STALE_BINARIES") or None
+    if stale not in (None, "1"):
+        sys.exit("Invalid PLANE_RENAME_ALLOW_STALE_BINARIES (use 1)")
     idle = os.environ.get("PLANE_RENAME_SNIPPET_IDLE_SECONDS") or None
     if idle is not None:
         try:
@@ -1958,6 +1986,8 @@ def main(argv=None):
             payload[key] = value
     if undrained:
         payload["allow_undrained"] = True
+    if stale:
+        payload["allow_stale_binaries"] = True
     if idle:
         payload["snippet_idle_seconds"] = idle
     sys.exit(run_remote(host, REMOTE, payload, check=False, interrupted=LOCAL_INTERRUPTED))

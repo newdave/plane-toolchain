@@ -154,6 +154,7 @@ def rename_orm():
                         "description_html": f'<a href="{LINK}">x</a>',
                         "description_json": {"type": "link", "href": LINK},
                         "description_stripped": f"see {LINK}",
+                        "description_binary": None,
                         "deleted_at": None,
                     }
                 ],

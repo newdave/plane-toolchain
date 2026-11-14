@@ -47,6 +47,7 @@ The receipt directory holds copies of workspace content. Keep it owner-only, nev
 | `PLANE_RENAME_RECEIPT_DIR` | Optional absolute path for the receipt directory on the host. |
 | `PLANE_RENAME_SNIPPET_IDLE_SECONDS` | Optional. Seconds a snippet may print nothing before it is treated as hung (default 900, up to 86400). |
 | `PLANE_RENAME_ALLOW_UNDRAINED` | Optional. Set to `1` to continue when jobs are still queued after the 60 second drain (see [Apply](#apply)). Any other value is refused. |
+| `PLANE_RENAME_ALLOW_STALE_BINARIES` | Optional. Set to `1` to accept Description rows whose stored editor binary keeps the old slug (see [Check](#check)). Any other value is refused. |
 | `PLANE_API_URL` | Optional API base URL, as seen inside the API container, for the health probe (default `http://127.0.0.1:8000`). |
 | `PLANE_DB_CONTAINER` | Optional, default `plane-db`. |
 | `PLANE_REDIS_CONTAINER` | Optional, default `plane-redis`. |
@@ -82,7 +83,7 @@ The owner should run `mise run owner:plane-workspace-rename:check` once against 
 - `Description.workspace_id` exists (table `descriptions`), and comments link to a `Description` row.
 - The comment columns `comment_html`, `comment_json` and `comment_stripped` exist as the snippet expects. Plane CE v1.4.3 has no `comment_binary` column (PTC-83).
 - Whether Live's convert route returns `description_stripped`. Restore guards work items and Pages on `description_html` only.
-- Description rows rewritten in the slug step are not rebuilt through Live, so their `description_binary` stays stale (counted as `not_rebuilt` in the summary). If such rows back editor content, a later editor save can bring the old slug back. Decide before apply whether that is acceptable.
+- Description rows rewritten in the slug step are not rebuilt through Live, so a stored `description_binary` keeps the old slug. If such rows back editor content, a later editor save can bring the old slug back. `check` lists them (`Not rebuilt: N in descriptions.description_binary`) and refuses, and so does apply, unless `PLANE_RENAME_ALLOW_STALE_BINARIES=1` accepts them. Rows with no stored binary are not counted.
 - The API listens on port 8000 inside its container and `/api/instances/` answers 200 there. The health check fails on any other status, redirects included. Set `PLANE_API_URL` if the port differs.
 - The RabbitMQ vhost the queue drain probes. It runs `rabbitmqctl list_queues` on `${RABBITMQ_DEFAULT_VHOST:-/}` inside `PLANE_MQ_CONTAINER` and needs a queue named `celery` there. If none is listed, stopping services fails with `celery queue not found; drain not verified`.
 - The Redis cache database. `cache.clear()` on django_redis issues `FLUSHDB` and wipes the whole Redis database. Confirm that Plane's cache database index is not shared with anything else (rate limits, a broker or result backend, other applications).
@@ -114,6 +115,7 @@ What each refusal means:
 | `found <files> without a receipt` | A journal or backup (current or rotated) from an earlier rename is present. Move it or the directory aside. Do not delete it. |
 | `backup.dump is missing`, `backup.dump does not match the recorded SHA-256`, `backup.dump has no recorded SHA-256`, `receipt is past the backup but has no backup SHA-256` | The backup and the receipt disagree. Investigate before resuming. |
 | `journal has a corrupt line`, `journal has no workspace record`, `journal names more than one workspace` | The journal is damaged or mixed. Stop and consider revert or the last resort. |
+| `Description editor binaries not rebuilt: N; ...` | N Description rows that the slug step rewrites keep a stored editor binary with the old slug. Decide whether that is acceptable (see [Verify before any live run](#verify-before-any-live-run)); set `PLANE_RENAME_ALLOW_STALE_BINARIES=1` to accept it and continue. |
 | `workspace_id_missing`, `live_url_missing`, `slug_not_renamed` | The step ran out of order or without its inputs. Rerun from `check`. |
 | `<op> gave no summary (exited with code <n>: <class>; stderr: <tail>)` | The Django snippet crashed before it reported, for example an import error after a Plane upgrade. `<class>` is the exception class from the traceback and `<tail>` the last stderr lines, with quoted text and container names redacted. Fix the cause and rerun. |
 
@@ -210,7 +212,7 @@ Apply and check refuse until the receipt directory is archived. After `Revert co
 - JSON null and SQL NULL both read back as null. A JSON-null original is restored as SQL NULL. Check whether Plane has such rows in the rewritten columns.
 - `WEB_URL` decides which absolute links count as this instance. If it changes between apply and revert, the restore guard sees rows as changed and skips them (a partial restore).
 - Rebuilt editor documents: Live rebuilds the editor document from the new HTML and can drop details the HTML does not carry. Revert restores the stored originals and does not reconvert. Restore guards work items and Pages on `description_html` only.
-- Stale `description_binary` on Description rows (see the verification list).
+- Stale `description_binary` on Description rows, accepted with `PLANE_RENAME_ALLOW_STALE_BINARIES=1` (see the verification list).
 - Stale bookmarks, emails already sent and invite links to the old slug break. Plane CE has no redirect.
 - A new workspace can later take the old slug and capture stale external links.
 - The receipt directory holds copies of content. Keep it private.

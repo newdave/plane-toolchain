@@ -112,6 +112,7 @@ def make_orm(**extra):
                     "description_html": f'<a href="{URL}">x</a>',
                     "description_json": {"type": "link", "href": URL},
                     "description_stripped": f"see {URL}",
+                    "description_binary": None,
                     "deleted_at": None,
                 },
                 {  # row of a deleted comment
@@ -120,6 +121,7 @@ def make_orm(**extra):
                     "description_html": f'<a href="{URL}">x</a>',
                     "description_json": {},
                     "description_stripped": None,
+                    "description_binary": None,
                     "deleted_at": "2026-01-01",
                 },
             ],
