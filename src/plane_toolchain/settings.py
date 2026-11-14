@@ -3,7 +3,8 @@
 import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
-from uuid import UUID
+
+from plane_toolchain.ids import is_uuid
 
 
 @dataclass(frozen=True)
@@ -46,10 +47,8 @@ class Settings:
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", workspace):
             raise ValueError("Invalid PLANE_WORKSPACE")
         project = env.get("PLANE_PROJECT", "")
-        try:
-            UUID(project)
-        except ValueError:
-            raise ValueError("PLANE_PROJECT must be a UUID") from None
+        if not is_uuid(project):
+            raise ValueError("PLANE_PROJECT must be a UUID")
         key = env.get("PLANE_API_KEY", "")
         if not key or any(ord(c) < 33 or ord(c) > 126 for c in key):
             raise ValueError("Missing or invalid PLANE_API_KEY")
