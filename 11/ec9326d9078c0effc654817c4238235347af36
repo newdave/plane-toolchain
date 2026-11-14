@@ -1,0 +1,32 @@
+tests/test_relation_plan.py
+  s_a03650451d84d5::t_cd336deb82bd11 1-198
+src/plane_toolchain/cli_commands.py
+  s_a03650451d84d5::t_a78c05a02bdda6 148-153
+  s_a03650451d84d5::t_f1543dd634f493 325-344
+  s_a03650451d84d5::t_c541c0066714f0 356
+CHANGELOG.md
+  s_a03650451d84d5::t_94d9491abdaa12 11-12
+docs/cli.md
+  s_a03650451d84d5::t_db19ba6615734b 89-108
+src/plane_toolchain/relation_plan.py
+  s_a03650451d84d5::t_1cf24fd548d84e 1-177
+src/plane_toolchain/cli.py
+  s_a03650451d84d5::t_a6570237bffdf6 105-112
+  s_a03650451d84d5::t_c342c148aa262a 25-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "11ec9326d9078c0effc654817c4238235347af36",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
