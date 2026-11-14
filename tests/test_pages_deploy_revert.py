@@ -316,7 +316,8 @@ def test_revert_recovery_nothing_startable_reraises_original(applied, capsys):
     with pytest.raises(subprocess.CalledProcessError) as caught:
         deploy("revert", applied)
     err = capsys.readouterr().err  # PTC-115: a cascade that gives up says so
-    assert "Rollback incomplete" in err and "no API is running" in err
+    assert "Rollback incomplete" in err and "start failed, state not verified" in err
+    assert "no API is running" not in err
     assert "Run revert again" in err
     assert caught.value.__context__ is not None
     assert not any(c["running"] for c in applied.containers.values())

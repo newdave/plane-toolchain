@@ -422,7 +422,7 @@ def restore_any(name, backup, reverted, probe, docker, policy):
         if not restore_any_steps(name, backup, reverted, aside, probe, policy):
             recovery_incomplete(
                 "unknown, possibly " + name + ", " + reverted + " or " + aside,
-                "unknown, possibly " + name + " or " + backup + "; no API is running",
+                "unknown, possibly " + name + " (start failed, state not verified) or " + backup,
                 "revert",
             )
     except RuntimeError:
@@ -787,11 +787,11 @@ def undo_apply(name, backup, policy, docker, probe, now, swap):
         docker("inspect", name)
         present = True
     except subprocess.CalledProcessError as error:
-        present = False
-        if b"no such" not in (error.stderr or b"").lower():
-            # The inspect failed for another reason, so `name` may hold the derived container:
-            # stop it, best effort, so the rename below cannot leave it running beside the original.
-            answer(probe, "stop", name)
+        # Once the original is retired, `name` holds the derived container or nothing, so an
+        # inspect that fails for any reason but `No such` is read as "the derived is there":
+        # it is stopped and parked below, never left to block the rename back. If it was not
+        # there, the stop or rename fails and recover_original sorts out the real state.
+        present = b"no such" not in (error.stderr or b"").lower()
     if present:
         if not probe("stop", name):  # Never rename a running derived aside.
             raise subprocess.CalledProcessError(1, ["docker", "stop", name])
