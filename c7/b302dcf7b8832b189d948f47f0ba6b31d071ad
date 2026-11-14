@@ -1,0 +1,32 @@
+CHANGELOG.md
+  s_066dd3ba2255bd::t_49ee25c30eeab5 9-17
+docs/decisions/0001-neutral-names.md
+  s_066dd3ba2255bd::t_49ee25c30eeab5 3,44-45,67-68,114
+  s_066dd3ba2255bd::t_928efb1c7402d0 115
+docs/configuration.md
+  s_066dd3ba2255bd::t_49ee25c30eeab5 5-17
+pyproject.toml
+  s_066dd3ba2255bd::t_49ee25c30eeab5 9
+src/plane_toolchain/session.py
+  s_066dd3ba2255bd::t_49ee25c30eeab5 68
+docs/cli.md
+  s_066dd3ba2255bd::t_49ee25c30eeab5 31
+uv.lock
+  s_066dd3ba2255bd::t_524179904481cd 3,6,235
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "c7b302dcf7b8832b189d948f47f0ba6b31d071ad",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}

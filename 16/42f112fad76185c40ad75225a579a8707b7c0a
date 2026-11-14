@@ -1,0 +1,31 @@
+scripts/install_project.py
+  s_066dd3ba2255bd::t_3f0988dda6ef76 404-408,414-415,455-460,481-482,485-486,488,490-500,509-510,515
+CHANGELOG.md
+  s_066dd3ba2255bd::t_400a2b059a83f7 15
+  s_066dd3ba2255bd::t_c3e1caa992687c 12
+tests/test_worktree_bridge.py
+  s_066dd3ba2255bd::t_fa9f34ae97f8f1 314-321
+docs/project-install.md
+  s_066dd3ba2255bd::t_400a2b059a83f7 28,66
+scripts/plane-mcp.sh
+  s_066dd3ba2255bd::t_400a2b059a83f7 75-77,80
+tests/test_project_install.py
+  s_066dd3ba2255bd::t_fa9f34ae97f8f1 827,842,872,883-918
+  s_066dd3ba2255bd::t_4dba6bc9c8fd20 919-920
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "1642f112fad76185c40ad75225a579a8707b7c0a",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}

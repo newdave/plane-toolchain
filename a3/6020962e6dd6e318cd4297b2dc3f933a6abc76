@@ -1,0 +1,44 @@
+src/plane_toolchain/mcp_deploy.py
+  s_066dd3ba2255bd::t_e0964b50fd4c4d 21-30
+  s_066dd3ba2255bd::t_e8d2f93c4dc208 110-112,117-118,256-257,259,275-278,283-285,287-288,315,335-336
+  s_066dd3ba2255bd::t_774d8915eaf1b1 294-299,302-307
+  s_066dd3ba2255bd::t_496f4e9b22c1e6 258,261
+  s_066dd3ba2255bd::t_9d5e7bc86861fc 316-321
+mise.toml
+  s_066dd3ba2255bd::t_25dea7bf658c8b 71
+tests/sigterm_harness.py
+  s_066dd3ba2255bd::t_8537f7afde1858 45
+  s_066dd3ba2255bd::t_d4bf7fc4941b02 33-34
+src/plane_toolchain/remote.py
+  s_066dd3ba2255bd::t_e8d2f93c4dc208 36-50,112-122
+  s_066dd3ba2255bd::t_8b021d7389dd12 123-124
+tests/test_pages_deploy.py
+  s_066dd3ba2255bd::t_18c023cf0fb14f 216,608,611,614-621,1476,1494-1499,1501-1514,1516-1537,1542,1549,1556,1564,1575-1582,1698-1713
+tests/test_remote.py
+  s_066dd3ba2255bd::t_810cb0079b3913 384-402
+CHANGELOG.md
+  s_066dd3ba2255bd::t_508518f858e1fd 11-13
+tests/test_mcp_deploy.py
+  s_066dd3ba2255bd::t_9faffa8898ac97 987-1038
+src/plane_toolchain/pages_deploy.py
+  s_066dd3ba2255bd::t_e8d2f93c4dc208 13,37,39,233-237,275-276,278-281,283-291,293-301,304-305,407,409-422,514-525,530,576,591,606-607,672-673
+  s_066dd3ba2255bd::t_6647e952d2a491 627-629
+docs/extensions.md
+  s_066dd3ba2255bd::t_508518f858e1fd 73,75,80,82,116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "a36020962e6dd6e318cd4297b2dc3f933a6abc76",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}

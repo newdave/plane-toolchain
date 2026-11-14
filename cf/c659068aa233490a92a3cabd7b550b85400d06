@@ -1,0 +1,30 @@
+CHANGELOG.md
+  s_066dd3ba2255bd::t_53a77304eebce1 9-12
+tests/test_workspace_rename_backend.py
+  s_066dd3ba2255bd::t_716b5d6c3364c1 225-236
+tests/test_workspace_rename_deploy.py
+  s_066dd3ba2255bd::t_2c302dbf27e34d 799-817
+src/plane_toolchain/workspace_rename.py
+  s_066dd3ba2255bd::t_616adcba28ee78 1246-1251
+  s_066dd3ba2255bd::t_fe59a2879d5690 1166-1168,1401-1402
+  s_066dd3ba2255bd::t_8081fb2fc4d04d 1000-1034,1069,1090,1096,1131,1140-1141,1222,1287,1297,1305-1306,1341,1345,1354-1365,1367-1378,1451,1461,1463,1500,1502-1503,1516,1526-1527,1545-1549,1601,1689-1694
+  s_066dd3ba2255bd::t_4da7fd638fc281 1035-1068,1070-1089,1091-1095,1097-1130,1132-1139,1165,1176,1201,1215,1218-1219,1236,1258,1265-1266,1268,1270,1272,1277,1335,1343,1366,1379,1400,1408,1431,1443,1462,1481,1483,1490,1493,1495,1504,1550,1695-1703
+src/plane_toolchain/workspace_rename_backend.py
+  s_066dd3ba2255bd::t_688714bffd4a9c 130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "cfc659068aa233490a92a3cabd7b550b85400d06",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}

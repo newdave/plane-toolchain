@@ -1,0 +1,30 @@
+src/plane_toolchain/remote.py
+  s_0f9f4887aae26e::t_91abab20ec0375 121-140
+tests/test_remote.py
+  s_0f9f4887aae26e::t_e01a675d940199 401,403-426
+src/plane_toolchain/pages_deploy.py
+  s_0f9f4887aae26e::t_f290dc07dbf908 478,561-566,573,585
+src/plane_toolchain/mcp_deploy.py
+  s_0f9f4887aae26e::t_91abab20ec0375 285,291,296,302,309-312,314-315
+  s_0f9f4887aae26e::t_f290dc07dbf908 306
+tests/test_pages_deploy_apply.py
+  s_0f9f4887aae26e::t_1b5268e32aeac4 169-180
+tests/sigterm_harness.py
+  s_0f9f4887aae26e::t_101aa6167ed76b 7-9,44-49,51-58,61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "ae6abf995e5649391c255557e0ba5b95505db1d2",
+  "prompts": {},
+  "sessions": {
+    "s_0f9f4887aae26e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3292e112-0ccb-44da-a9cd-0e74c6eec52c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}

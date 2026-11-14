@@ -1,0 +1,26 @@
+pyproject.toml
+  s_066dd3ba2255bd::t_a04d964d877c24 15-20
+  s_066dd3ba2255bd::t_7bf76523a7689e 27-33
+.github/workflows/ci.yml
+  s_066dd3ba2255bd::t_7bf76523a7689e 38
+mise.toml
+  s_066dd3ba2255bd::t_7bf76523a7689e 31
+uv.lock
+  s_066dd3ba2255bd::t_36adf1a318a257 143-253,481,495,681-694
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "a4e8b748948f6c124318a44accc4e3a2c4457e41",
+  "prompts": {},
+  "sessions": {
+    "s_066dd3ba2255bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07447b58-d5e8-48b3-9721-0c8468bd81ae",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}

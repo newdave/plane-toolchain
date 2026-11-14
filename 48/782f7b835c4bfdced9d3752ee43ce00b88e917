@@ -1,0 +1,21 @@
+docs/extensions.md
+  s_0f9f4887aae26e::t_6a0ad81f6baf25 96,141
+CHANGELOG.md
+  s_0f9f4887aae26e::t_6a0ad81f6baf25 9-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "48782f7b835c4bfdced9d3752ee43ce00b88e917",
+  "prompts": {},
+  "sessions": {
+    "s_0f9f4887aae26e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3292e112-0ccb-44da-a9cd-0e74c6eec52c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
