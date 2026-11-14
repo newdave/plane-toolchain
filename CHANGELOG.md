@@ -24,6 +24,10 @@ All notable changes to this project are documented here. The format follows
 - Pages deploy (PTC-115): the `No such` match after a timed-out Docker call ignores letter case, so a lower-case daemon message still reads as an absent container.
 - MCP deploy (PTC-115): a `docker restart` timeout during the rollback is reported on stderr and the health check still runs, so the "still unhealthy after rollback" message is no longer replaced by the timeout.
 
+### Fixed
+
+- Small validation gaps (PTC-109). `ce_tools.py`: `ce_intake` decide refuses a `snoozed_till` that is not an ISO 8601 date or datetime; `relation_result` reports a malformed relation group or row as a `ValueError` instead of a `TypeError`; `FASTMCP_PORT` must be an integer from 1 to 65535. Tool names, descriptions and schemas are unchanged. The file text changed, so the deployed entry-point digest changes again: the owner must redeploy (together with PTC-111). `plane ... --per-page` must be a positive integer and is capped at 100. The project installer rejects control characters in the toolchain path it writes to `local.env`. The workflow examples installer reports the real file count instead of "three". Workspace rename: the `snippet_idle_seconds` override now lives in the run, not in a module global that `run_locked` mutated; the free-space check allows for the journal as well as the dump; and a resume that cannot read the services' state (`docker inspect` failed) refuses and keeps the backup instead of rotating it.
+
 ### Tests
 
 - Review gaps (PTC-114): a test that the `plane-prompt.zsh` status cache expires after 30 seconds with no input change. The other seven reviewed cases (tampered installer receipt, bare-URL matcher, Pages rollback failure, SIGTERM mid-swap, empty page body, late Live store after the lock, `label` without `PLANE_API_URL`) already had tests; they are named in the PR. The three fake Docker builders under `tests/support_workspace_rename_*` are now one `make_fake_docker`.

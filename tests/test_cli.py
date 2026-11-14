@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 import anyio
 import pytest
+from plane_toolchain import cli_commands
 from plane_toolchain.connection import ToolError
 from plane_toolchain.cli import ReadbackError, UsageError, classify, environment, main
 
@@ -666,3 +667,14 @@ def test_name_readback_ignores_surrounding_whitespace(tmp_path):
     fake = Fake([{"id": PAGE, "name": " Plan"}, {**PLAN_PAGE, "name": "Plan "}])
     code, _, _ = run(["page", "create", "--name", "Plan", "--html", "<p>x</p>"], fake, tmp_path)
     assert code == 0
+
+
+def test_per_page_is_positive_and_capped_at_page_size(tmp_path):
+    fake = Fake([{}])
+    run(["task", "list", "--per-page", "100000"], fake, tmp_path)
+    assert fake.calls[0][1]["per_page"] == cli_commands.PAGE_SIZE
+    for bad in ("0", "-3", "x"):
+        fake = Fake([{}])
+        code, _, _ = run(["task", "list", "--per-page", bad], fake, tmp_path)
+        assert code == 2
+        assert fake.calls == []

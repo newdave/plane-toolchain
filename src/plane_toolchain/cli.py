@@ -40,6 +40,17 @@ def body(sub: argparse.ArgumentParser) -> None:
     group.add_argument("--file", default=None, help="file with HTML text, - for stdin")
 
 
+def per_page(text: str) -> int:
+    """A positive page size, capped at the largest page the toolchain requests."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a positive integer") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return min(value, cli_commands.PAGE_SIZE)
+
+
 def parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--project", default=argparse.SUPPRESS, help="project UUID")
@@ -50,7 +61,7 @@ def parser() -> argparse.ArgumentParser:
     # Add a group or action here and its handler to cli_commands.HANDLERS.
     task = groups.add_parser("task", help="tasks").add_subparsers(dest="action", required=True)
     listing = task.add_parser("list", parents=[common], help="list tasks")
-    listing.add_argument("--per-page", type=int, default=None)
+    listing.add_argument("--per-page", type=per_page, default=None)
     listing.add_argument("--cursor", default=None)
     show = task.add_parser("show", parents=[common], help="show one task")
     show.add_argument("ref", help="task UUID or identifier such as PTC-12")
@@ -67,7 +78,7 @@ def parser() -> argparse.ArgumentParser:
     )
     comments = comment.add_parser("list", parents=[common], help="list comments")
     comments.add_argument("ref", help="task UUID or identifier such as PTC-12")
-    comments.add_argument("--per-page", type=int, default=None)
+    comments.add_argument("--per-page", type=per_page, default=None)
     comments.add_argument("--cursor", default=None)
     added = comment.add_parser("add", parents=[common], help="add a comment")
     added.add_argument("ref", help="task UUID or identifier such as PTC-12")

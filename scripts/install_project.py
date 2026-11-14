@@ -458,6 +458,8 @@ def reverted(target, receipt):
 
 
 def local_env(toolchain, values):
+    if any(ord(c) < 32 or ord(c) == 127 for c in str(toolchain)):
+        raise ValueError("toolchain: control characters are not allowed")
     lines = [f"PLANE_TOOLCHAIN={toolchain}", "PLANE_ENABLED=false"]
     for name, value in values.items():
         if value is not None:

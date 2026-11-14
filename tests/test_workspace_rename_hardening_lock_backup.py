@@ -163,3 +163,20 @@ def test_invalid_dump_stops_apply_before_the_slug_change(host):
     assert "step_slug" not in host.ops()
     assert host.receipt()["step"] == "pending"
     assert all(host.running().values())  # services restarted
+
+
+def fake_free(monkeypatch, free_bytes):
+    class Free:
+        f_bavail, f_frsize = free_bytes // 4096, 4096
+
+    monkeypatch.setattr(os, "statvfs", lambda path: Free)
+
+
+def test_free_space_leaves_room_for_the_dump_and_the_journal(fake, tmp_path, monkeypatch):
+    directory = backup_dir(tmp_path)
+    fake.db_size = 200 << 20
+    fake_free(monkeypatch, 300 << 20)  # a dump fits, dump plus journal does not
+    with pytest.raises(RuntimeError, match="not enough free space"):
+        wr.check_free_space(directory, "plane-db", fake.popen)
+    fake_free(monkeypatch, 450 << 20)
+    wr.check_free_space(directory, "plane-db", fake.popen)

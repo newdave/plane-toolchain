@@ -636,3 +636,23 @@ def test_hidden_container_names_match_whole_names_only(host):
     text = str(caught.value)
     assert "plane_db" in text and "<container>" in text
     assert "on plane" not in text
+
+
+def test_idle_override_lives_in_the_run_not_the_module_global(host, monkeypatch):
+    seen = []
+    real = wr.run_apply
+
+    def spy(data, seams):
+        seen.append(wr.SNIPPET_IDLE_SECONDS)
+        return real(data, seams)
+
+    monkeypatch.setattr(wr, "run_apply", spy)
+    host.deploy("check", snippet_idle_seconds=0.3)
+    assert seen == [900]
+
+
+def test_snippet_idle_uses_a_valid_payload_value_else_the_default():
+    assert wr.snippet_idle({"snippet_idle_seconds": 0.3}) == 0.3
+    for bad in (-5, 0, True, "9", 86401, None):
+        assert wr.snippet_idle({"snippet_idle_seconds": bad}) == wr.SNIPPET_IDLE_SECONDS
+    assert wr.snippet_idle({}) == wr.SNIPPET_IDLE_SECONDS

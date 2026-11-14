@@ -241,3 +241,27 @@ def test_snippet_death_after_journal_emit_then_revert_restores_original_state(ho
         host.deploy()
     revert(host)
     assert snapshot(host.orm) == original
+
+
+def test_any_running_is_unknown_when_inspect_fails():
+    def broken(*args):
+        raise RuntimeError("docker inspect failed")
+
+    names = wr.service_names({})
+    assert wr.any_running({"docker": broken, "names": names}) is None
+    assert wr.any_running({"docker": lambda *a: b"not json", "names": names}) is None
+
+
+def test_kill_resume_refuses_when_service_state_is_unknown_and_keeps_the_backup(host, monkeypatch):
+    host.fake.crash_at("after_backed_up")
+    with pytest.raises(Killed):
+        host.deploy()
+    before = host.receipt()["step"]
+    with monkeypatch.context() as patch:
+        patch.setattr(wr, "any_running", lambda run: None)
+        with pytest.raises(RuntimeError, match="cannot tell whether the services run"):
+            host.deploy()
+    receipt = host.receipt()
+    assert receipt["step"] == before and not receipt.get("rotated_backups")
+    assert (host.directory / "backup.dump").read_bytes() == b"PGDMP-fake-dump"
+    assert "Rename complete" in host.deploy()  # docker answers again: the run resumes

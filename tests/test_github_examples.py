@@ -314,3 +314,9 @@ def test_body_text_distinguishes_different_text():
     from plane_toolchain.cli_commands import body_text
 
     assert body_text("a < b") != body_text("a b")
+
+
+def test_install_message_counts_the_installed_files(tmp_path, capsys):
+    install("apply", tmp_path)
+    count = len(list(EXAMPLES.glob("*.yml")))
+    assert f"Installed {count} workflow examples" in capsys.readouterr().out
