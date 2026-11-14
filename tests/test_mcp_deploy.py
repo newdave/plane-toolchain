@@ -1123,3 +1123,55 @@ def test_released_digests_cover_every_tag():
         assert sha(shown.stdout) in mcp_deploy.RELEASED_ENTRY_POINT_DIGESTS, (
             f"append the ce_tools.py digest of {tag} to RELEASED_ENTRY_POINT_DIGESTS"
         )
+
+
+# PTC-103: write_atomic never follows or reuses a temp file; corrupt receipt is readable.
+
+
+def test_write_atomic_replaces_a_symlinked_temp_file_without_following_it(tmp_path):
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    (tmp_path / "out.tmp").symlink_to(victim)
+    mcp_deploy.write_atomic(tmp_path / "out", "new", 0o640)
+    assert victim.read_text() == "keep"
+    assert (tmp_path / "out").read_text() == "new"
+    assert not (tmp_path / "out.tmp").exists()
+
+
+def test_write_atomic_does_not_reuse_a_stale_temp_file(tmp_path):
+    stale = tmp_path / "out.tmp"
+    stale.write_text("stale content that is longer")
+    stale.chmod(0o666)
+    mcp_deploy.write_atomic(tmp_path / "out", "new", 0o600)
+    assert (tmp_path / "out").read_bytes() == b"new"
+    assert (tmp_path / "out").stat().st_mode & 0o777 == 0o600
+
+
+def test_write_atomic_open_refuses_to_follow_or_truncate(tmp_path, monkeypatch):
+    flags = []
+    real = mcp_deploy.os.open
+    monkeypatch.setattr(mcp_deploy.os, "open", lambda p, f, *a: flags.append(f) or real(p, f, *a))
+    mcp_deploy.write_atomic(tmp_path / "out", "x")
+    needed = os.O_EXCL | os.O_NOFOLLOW
+    assert flags[0] & needed == needed and not flags[0] & os.O_TRUNC
+
+
+def test_write_atomic_without_mode_keeps_the_existing_mode(tmp_path):
+    target = tmp_path / "out"
+    target.write_text("old")
+    target.chmod(0o640)
+    mcp_deploy.write_atomic(target, "new")
+    assert target.read_text() == "new"
+    assert target.stat().st_mode & 0o777 == 0o640
+
+
+def test_write_atomic_without_mode_creates_private_file(tmp_path):
+    mcp_deploy.write_atomic(tmp_path / "out", "new")
+    assert (tmp_path / "out").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("operation", ["apply", "revert"])
+def test_corrupt_receipt_raises_readable_error(root, operation):
+    (root / "plane-toolchain-ce-receipt.json").write_text("not json")
+    with pytest.raises(ValueError, match="Receipt unreadable; reconcile"):
+        deploy(operation, root, mcp_host())

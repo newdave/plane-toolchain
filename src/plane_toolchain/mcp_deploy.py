@@ -76,15 +76,26 @@ def rewrite(target, content):
 def write_atomic(path, data, mode=None):
     """Write str or bytes next to path, fsync, then os.replace: readers see old or new, never partial.
 
-    The temporary file is created 0600 and given `mode` (if any) before it is renamed into place.
+    A stale or symlinked temporary file is unlinked (the link, never its target) and a fresh one
+    is created exclusively without following symlinks, then always given a mode before it is
+    renamed into place: `mode`, else the mode of the file it replaces, else 0600 (private).
     """
     temporary = str(path) + ".tmp"
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if mode is None:
+        try:
+            mode = os.stat(path).st_mode & 0o777
+        except FileNotFoundError:
+            mode = 0o600
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    descriptor = os.open(temporary, flags, 0o600)
     with os.fdopen(descriptor, "wb") as handle:
         handle.write(data.encode() if isinstance(data, str) else data)
         handle.flush()
-        if mode is not None:
-            os.fchmod(handle.fileno(), mode)
+        os.fchmod(handle.fileno(), mode)
         os.fsync(handle.fileno())
     os.replace(temporary, path)
     # Sync the directory so a power loss cannot bring back the older file.
@@ -219,7 +230,10 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
     backup = root / NEUTRAL_MCP_BACKUP_NAME
     receipt = root / NEUTRAL_MCP_RECEIPT_NAME
     old_receipt = receipt.read_text() if receipt.exists() else None
-    recorded = json.loads(old_receipt) if old_receipt is not None else {}
+    try:
+        recorded = json.loads(old_receipt) if old_receipt is not None else {}
+    except ValueError:
+        raise ValueError("Receipt unreadable; reconcile") from None
     if backup.exists() and "original" in recorded:
         if sha256(backup.read_bytes()) != recorded["original"]:
             raise ValueError("Backup does not match the recorded original; reconcile")
