@@ -197,6 +197,50 @@ def test_missing_summary_or_ok_false_is_failure(tmp_path, lines):
         wr.snippet_ok("api", "", "step_rows", {}, directory, scripted(lines, directory))
 
 
+IMPORT_ERROR = (
+    b"Traceback (most recent call last):\n"
+    b'  File "/code/manage.py", line 11, in <module>\n'
+    b"    from plane.settings import x\n"
+    b"ModuleNotFoundError: No module named 'plane.secret_module_name'\n"
+)
+
+
+def test_failing_snippet_reports_exception_class_and_redacted_stderr_tail(host, capsys):
+    # PTC-95: stderr was discarded, so an import error showed only "check gave no summary".
+    host.fake.on_manage_shell = lambda text: ("not json " + PRIVATE + "\n", 1)
+    host.fake.shell_stderr = IMPORT_ERROR + b'connect to plane-db password="hunter2" failed\n'
+    with pytest.raises(RuntimeError) as failure:
+        host.deploy("check")
+    message = str(failure.value)
+    assert "ModuleNotFoundError" in message and "exited with code 1" in message
+    out = capsys.readouterr()
+    shown = message + out.out + out.err
+    for hidden in ("secret_module_name", "hunter2", "plane-db", PRIVATE):
+        assert hidden not in shown
+    assert "<redacted>" in message and "<container>" in message
+
+
+def test_exception_class_is_from_the_last_traceback_only(tmp_path):
+    text = (
+        b"Traceback (most recent call last):\nKeyError: 'x'\nwarning: noise\n"
+        b"Traceback (most recent call last):\n  File 'x'\n"
+        b"django.db.utils.OperationalError: connection failed\n\tIs the server running?\n"
+    )
+    with (tmp_path / "e").open("w+b") as handle:
+        handle.write(text)
+        assert wr.exception_class(handle) == "django.db.utils.OperationalError"
+    with (tmp_path / "f").open("w+b") as handle:
+        handle.write(b"plain failure: no traceback\n")
+        assert wr.exception_class(handle) == ""
+        assert wr.snippet_cause(handle) == "stderr: plain failure: no traceback"
+
+
+def test_failing_snippet_without_stderr_still_says_it_exited(tmp_path):
+    directory = wr.secure_receipt_dir(tmp_path / "r")
+    with pytest.raises(RuntimeError, match=r"^check gave no summary$"):
+        wr.snippet_ok("api", "", "check", {}, directory, scripted([], directory))
+
+
 def test_journal_event_outside_an_apply_step_is_refused(tmp_path):
     directory = tmp_path / "r"
     lines = [json.dumps({"event": "journal", "record": {"kind": "workspace"}})]

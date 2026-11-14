@@ -59,6 +59,7 @@ class FakeDocker:
         self.pg_restore_code = 0
         self.pg_restore_out = b"; Archive created by pg_dump\n"
         self.pg_restore_stderr = b""
+        self.shell_stderr = b""  # what `manage.py shell` writes to a captured stderr
         self.restore_input = None  # the dump bytes `pg_restore -l` was fed on stdin
         # In-container snippet processes, by PLANE_RENAME_RUN token. A hung op never answers; a
         # snippet that outlives its killed client stays here until the kill script runs.
@@ -336,9 +337,14 @@ class FakeDocker:
                     errors = kw.get("stderr")
                     if hasattr(errors, "write"):  # stderr captured to a file
                         joined = " ".join(argv)
-                        errors.write(
-                            fake.pg_dump_stderr if "pg_dump" in joined else fake.pg_restore_stderr
-                        )
+                        if "manage.py" in argv:
+                            errors.write(fake.shell_stderr)
+                        else:
+                            errors.write(
+                                fake.pg_dump_stderr
+                                if "pg_dump" in joined
+                                else fake.pg_restore_stderr
+                            )
                     self.result = (code, io.BytesIO(stdout))
                 return self.result
 

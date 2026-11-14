@@ -462,6 +462,46 @@ def stderr_tail(handle, limit=300, hide=()):
     return "".join(c for c in text if c.isprintable())[:limit]
 
 
+def exception_class(handle):
+    """The exception class named by the last Python traceback on a child's stderr, or "".
+
+    It is the first unindented `Name:` (or bare `Name`) line after the last `Traceback` line,
+    for example `ModuleNotFoundError` or `django.db.utils.OperationalError`. A class name
+    carries no record content; the message after it is left to stderr_tail."""
+    handle.flush()
+    handle.seek(0, 2)
+    handle.seek(max(0, handle.tell() - 4096))
+    lines = handle.read().decode("utf-8", "replace").splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith("Traceback ")]
+    for line in lines[starts[-1] + 1 :] if starts else ():
+        found = re.match(r"([A-Za-z_][\w.]*)(?::|$)", line)
+        if found:
+            return found.group(1)
+    return ""
+
+
+def snippet_cause(handle, hide=()):
+    """Why a snippet gave no summary, safe to show: the exception class, then a redacted
+    stderr tail (see stderr_tail). Empty when stderr is empty."""
+    name = exception_class(handle)
+    tail = stderr_tail(handle, hide=hide)
+    return "; ".join(part for part in (name, tail and "stderr: " + tail) if part)
+
+
+def no_summary(op, events):
+    """The failure message for an operation that gave no summary, with the exit cause that
+    run_snippet recorded in an `exit` event, if any."""
+    for event in events:
+        if event.get("event") == "exit":
+            cause = event.get("cause")
+            return (
+                f"{op} gave no summary (exited with code {event.get('code')}"
+                + (": " + cause if cause else "")
+                + ")"
+            )
+    return op + " gave no summary"
+
+
 def database_size(db, popen):
     """Size of the Plane database in bytes from the db container, or None if it is unknown."""
     process = None
@@ -679,13 +719,15 @@ def stop_snippet(api, token, popen):
     return run_killer(api, token, popen) == "gone"
 
 
-def run_snippet(api, snippet, op, args, directory, popen, uid=None):
+def run_snippet(api, snippet, op, args, directory, popen, uid=None, hide=()):
     """Run one snippet operation through `docker exec -i <api> python manage.py shell`.
 
     Stdin is one request line (`RENAME_REQUEST = ...`) and then the snippet source. Stdout is
     read line by line; non-JSON lines are ignored and never echoed. Each `journal` event is
     appended to the journal (fsynced) before the next line is read, and is never kept or
     printed. Returns (summary or None, other events). A non-zero exit gives no summary.
+    Stderr goes to a temporary file. Without a summary, an `exit` event carries the exit code
+    and snippet_cause (exception class and redacted stderr tail; `hide` names are masked).
 
     The process runs with a `PLANE_RENAME_RUN=<receipt-dir id>:<token>` marker in its environment. Killing the
     local `docker exec` client does not stop the Python process in the container, so every
@@ -698,12 +740,25 @@ def run_snippet(api, snippet, op, args, directory, popen, uid=None):
     source = "RENAME_REQUEST = __import__('json').loads(" + repr(request) + ")\n" + snippet
     # A check only reads and takes no lock, so its marker is not a directory's: a sweep ignores it.
     token = ("check" if op == "check" else run_id(directory)) + ":" + os.urandom(8).hex()
-    process = popen(
-        ["docker", "exec", "-i", "-e", SNIPPET_MARKER + "=" + token, api, *SHELL],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
+    with tempfile.TemporaryFile() as errors:
+        process = popen(
+            ["docker", "exec", "-i", "-e", SNIPPET_MARKER + "=" + token, api, *SHELL],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=errors,
+        )
+        summary, events = read_snippet(process, source, api, op, token, directory, popen, uid)
+        if summary is None:
+            code = process.wait()
+            cause = snippet_cause(errors, hide=(*hide, api))
+            if code or cause:
+                events.append({"event": "exit", "code": code, "cause": cause})
+    return summary, events
+
+
+def read_snippet(process, source, api, op, token, directory, popen, uid):
+    """run_snippet's loop: pipe `source` to the started snippet `process`, then read its
+    output; returns (summary, events)."""
     summary, events = None, []
     expired, timer = [], []
 
@@ -825,12 +880,12 @@ def report(op, summary, events):
         say(f"Partial restore: {summary.get('skipped', 0)} rows skipped; this is not a full revert")
 
 
-def snippet_ok(api, snippet, op, args, directory, popen, uid=None):
+def snippet_ok(api, snippet, op, args, directory, popen, uid=None, hide=()):
     """run_snippet and report; return the summary. A missing summary or ok:false raises."""
-    summary, events = run_snippet(api, snippet, op, args, directory, popen, uid)
+    summary, events = run_snippet(api, snippet, op, args, directory, popen, uid, hide)
     report(op, summary, events)
     if summary is None:
-        raise RuntimeError(op + " gave no summary")
+        raise RuntimeError(no_summary(op, events))
     if summary.get("ok") is not True:
         raise RuntimeError(op + " failed")
     return summary
@@ -1095,7 +1150,14 @@ def run_context(data, seams, operations=None):
 def run_call(run, op, args):
     """Run one snippet operation; return its summary. No summary or ok:false raises."""
     return snippet_ok(
-        run["api"], run["snippet"], op, args, run["directory"], run["popen"], run["uid"]
+        run["api"],
+        run["snippet"],
+        op,
+        args,
+        run["directory"],
+        run["popen"],
+        run["uid"],
+        run["names"].values(),
     )
 
 
@@ -1491,12 +1553,19 @@ def run_revert(data, seams):
         crash("before_restore")
         args = {"old": old, "new": new, "journal": records, "workspace_id": workspace_id}
         summary, events = run_snippet(
-            run["api"], run["snippet"], "restore", args, directory, run["popen"], uid
+            run["api"],
+            run["snippet"],
+            "restore",
+            args,
+            directory,
+            run["popen"],
+            uid,
+            run["names"].values(),
         )
         report("restore", summary, events)
         crash("after_restore")
         if summary is None:
-            raise RuntimeError("restore gave no summary")
+            raise RuntimeError(no_summary("restore", events))
         skipped = summary.get("skipped", 0) if summary.get("partial") else 0
         if not skipped and summary.get("ok") is not True:
             raise RuntimeError("restore failed")
@@ -1691,6 +1760,9 @@ SHIPPED = (
     detect_saltbox,
     set_receipt_field,
     stderr_tail,
+    exception_class,
+    snippet_cause,
+    no_summary,
     database_size,
     check_free_space,
     validate_dump,
@@ -1708,6 +1780,7 @@ SHIPPED = (
     is_stuck,
     stop_snippet,
     run_snippet,
+    read_snippet,
     report,
     snippet_ok,
     inspect_services,

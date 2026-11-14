@@ -115,6 +115,7 @@ What each refusal means:
 | `backup.dump is missing`, `backup.dump does not match the recorded SHA-256`, `backup.dump has no recorded SHA-256`, `receipt is past the backup but has no backup SHA-256` | The backup and the receipt disagree. Investigate before resuming. |
 | `journal has a corrupt line`, `journal has no workspace record`, `journal names more than one workspace` | The journal is damaged or mixed. Stop and consider revert or the last resort. |
 | `workspace_id_missing`, `live_url_missing`, `slug_not_renamed` | The step ran out of order or without its inputs. Rerun from `check`. |
+| `<op> gave no summary (exited with code <n>: <class>; stderr: <tail>)` | The Django snippet crashed before it reported, for example an import error after a Plane upgrade. `<class>` is the exception class from the traceback and `<tail>` the last stderr lines, with quoted text and container names redacted. Fix the cause and rerun. |
 
 If a receipt for the same rename exists, check says which step it is at and that apply resumes from there.
 
