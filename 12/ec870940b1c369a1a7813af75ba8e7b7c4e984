@@ -1,0 +1,24 @@
+tests/support_workspace_rename_deploy.py
+  s_a03650451d84d5::t_1bc1df5a39fe03 186
+  s_a03650451d84d5::t_256bb0d5b27388 34-35,42-44
+  s_a03650451d84d5::t_6066881fc944ae 45-46
+tests/support_workspace_rename_hardening.py
+  s_a03650451d84d5::t_1b8a68198143e6 8
+  s_a03650451d84d5::t_248f829d1893c5 28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "12ec870940b1c369a1a7813af75ba8e7b7c4e984",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
