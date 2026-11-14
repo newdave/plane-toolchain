@@ -704,7 +704,8 @@ def build(payload, docker):
 def deploy(payload, docker, probe, create, health, now):
     """Run one operation against the Docker host; return the operator message.
 
-    docker(*args, **kw) -> bytes raises on failure; probe(*args) -> bool never raises;
+    docker(*args, **kw) -> bytes raises on failure; probe(*args) -> bool is False only when
+    the command ran and failed, and raises only when Docker does not answer in time;
     create(name, body) raises unless created; health(name, pages=True) raises unless healthy
     (pages=False when the upstream original, which has no Pages route, is promoted).
     """

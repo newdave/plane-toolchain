@@ -43,19 +43,22 @@ def docker(*args, timeout=None, **kw):
 
 
 def docker_ok(*args, timeout=300):
-    """Run the Docker CLI without raising or output; return whether it succeeded.
+    """Run the Docker CLI without output; return whether the command ran and succeeded.
 
-    A command still running after `timeout` seconds is killed and counts as failure.
+    False means only that it ran and failed (callers read `inspect` as an existence test). A
+    command still running after `timeout` seconds is killed and raises RuntimeError, as in
+    `docker`, so a hung daemon never reads as a missing container.
     """
     try:
         result = subprocess.run(  # noqa: S603 - fixed docker argv
             ["docker", *args],  # noqa: S607 - docker on PATH
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=300 if timeout is None else timeout,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return False
+        command = args[0] if args else ""
+        raise RuntimeError(f"docker {command} timed out after {timeout:g} s") from None
     return result.returncode == 0
 
 

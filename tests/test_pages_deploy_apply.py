@@ -15,6 +15,7 @@ from support_pages_deploy import (
     IMAGE,
     LABEL,
     LOOKUP,
+    MUTATIONS,
     NOTE,
     PAGES,
     PS,
@@ -158,6 +159,15 @@ def test_apply_docker_timeout_mid_swap_rolls_back(host, monkeypatch):
     assert_original_restored(host)
     assert all(host.timeouts.values()), host.timeouts  # every docker call had a timeout
     assert host.timeouts[("build", "-t", IMAGE, "-")] == 1800
+
+
+def test_apply_hung_existence_probe_raises_instead_of_reading_absent(host, monkeypatch):
+    # PTC-96 review: `probe("inspect", backup)` timing out must not look like "no backup".
+    host.hang.append(("inspect", BACKUP))
+    with pytest.raises(RuntimeError, match=r"^docker inspect timed out after 300 s$"):
+        remote("apply", host, monkeypatch)
+    assert not [c for c in host.calls if c[0] in MUTATIONS | {"build"}]
+    assert host.containers["api"]["running"] and BACKUP not in host.containers
 
 
 def test_apply_health_failure_retains_failed_derived_and_restores_original(host, monkeypatch):

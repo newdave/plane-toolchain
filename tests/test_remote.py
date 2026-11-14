@@ -463,8 +463,12 @@ def test_docker_timeout_is_overridable_and_expiry_names_only_the_command(monkeyp
     assert caught.value.__cause__ is None and caught.value.__suppress_context__
     with pytest.raises(RuntimeError, match="after 7 s"):
         remote.docker("exec", "secret-container-name", timeout=7)
-    assert remote.docker_ok("inspect", "x") is False
-    assert remote.docker_ok("inspect", "x", timeout=20) is False
+    # A hung probe must never read as "the container is absent": False means only that the
+    # command ran and failed (PTC-96 review).
+    with pytest.raises(RuntimeError, match=r"^docker inspect timed out after 300 s$"):
+        remote.docker_ok("inspect", "secret-container-name")
+    with pytest.raises(RuntimeError, match="after 20 s"):
+        remote.docker_ok("inspect", "x", timeout=20)
     assert seen == [300, 7, 300, 20]
 
 
