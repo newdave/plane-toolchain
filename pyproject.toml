@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "plane-toolchain"
-version = "0.3.1"
+version = "0.3.2"
 description = "Plane CE MCP extensions and project integration helpers"
 requires-python = ">=3.12"
 license = "MIT"
