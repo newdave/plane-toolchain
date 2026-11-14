@@ -606,13 +606,18 @@ def apply(current, payload, backup, docker, probe, create, health, now):
         # SIGTERM waits across the retire: a signal between the rename and `retired` or the
         # policy update would otherwise leave the API stopped under the backup name.
         mask = hold_sigterm()
+        failure = None
         try:
             docker("stop", name)
             docker("rename", name, backup)
             retired = True
             set_restart(probe, "no", backup)  # After the rename: a failed rename keeps the policy.
+        except BaseException as caught:
+            failure = caught
+            raise
         finally:
-            release_sigterm(mask)  # A deferred SIGTERM lands here, inside the rollback's try.
+            # A deferred SIGTERM lands here, inside the rollback's try; the report keeps the cause.
+            release_sigterm(mask, failure)
         create(name, body)
         docker("start", name)
         health(name)
