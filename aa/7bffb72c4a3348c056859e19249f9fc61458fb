@@ -1,0 +1,39 @@
+docs/agent-workflow.md
+  s_a03650451d84d5::t_5a62cc4bc16732 61,91,97
+templates/project/skills/plane-tasks/SKILL.md
+  s_a03650451d84d5::t_5a62cc4bc16732 49,75
+CHANGELOG.md
+  s_a03650451d84d5::t_93d11ad5c10b8d 12
+  s_a03650451d84d5::t_30e65d9cc3d42f 13-16,18-20,27-28,61-63
+  s_a03650451d84d5::t_f728732fbf8b7e 64
+pyproject.toml
+  s_a03650451d84d5::t_30e65d9cc3d42f 7
+tests/test_workspace_rename_failure_policies.py
+  s_a03650451d84d5::t_30e65d9cc3d42f 1-200
+tests/test_project_skill.py
+  s_a03650451d84d5::t_66e2814603fd37 102-103,126-129,151-184
+src/plane_toolchain/mcp_deploy.py
+  s_a03650451d84d5::t_30e65d9cc3d42f 53
+scripts/install_project.py
+  s_a03650451d84d5::t_5ee91ee346c8c9 754-766,768-769,771-772
+src/plane_toolchain/workspace_rename.py
+  s_a03650451d84d5::t_30e65d9cc3d42f 1327-1531,1558,1623-1639,1642-1679,1681,1683-1724,1726-1728,1730-1737,1740-1746,1748-1759,1761-1765,1787,1840-1856,2016-2041
+uv.lock
+  s_a03650451d84d5::t_d086fb19869d80 471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "aa7bffb72c4a3348c056859e19249f9fc61458fb",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
