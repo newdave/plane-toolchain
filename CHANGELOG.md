@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `PLANE_SSH_TIMEOUT` (PTC-115): seconds for the local SSH session limit of every remote deploy and rename operation, replacing the 6 hour default, so a long workspace rename keeps its local output. It must be a positive number; anything else stops the task before it connects. See `docs/extensions.md`.
+
+### Changed
+
+- Pages deploy (PTC-115): a failed start in a rollback no longer reports the container as `(stopped)` (it says `start failed, state not verified`), and a rollback that finds no container under the API name says the derived container is `not created` instead of `not under <api>`. The revert recovery (`restore_any`) reports `Rollback incomplete` when its start or rename fails and no API is running, where it used to return silently. An apply rollback whose own inspect of the API name fails (other than `No such`) stops that name, best effort, before moving the original back.
+- Docs (PTC-115): the Pages health wait is checked after an attempt, so its worst case is about 160 seconds, not 120. The "Saltbox route" gets a line on when to repeat it, and the PTC-92 entry below points to it.
+- Rename (PTC-115): the exception class reported for a failed snippet is read from the last 64 KiB of its stderr, not 4 KiB, so a deep traceback still names it.
+
+### Fixed
+
+- Pages deploy (PTC-115): the `No such` match after a timed-out Docker call ignores letter case, so a lower-case daemon message still reads as an absent container.
+- MCP deploy (PTC-115): a `docker restart` timeout during the rollback is reported on stderr and the health check still runs, so the "still unhealthy after rollback" message is no longer replaced by the timeout.
+
+### Tests
+
+- PTC-115: failure injection covers a Docker call that reports failure but took effect; a real-pipe test for a snippet process that is SIGKILLed mid-line; CI runs `mise run setup` before `mise run check`; the update late-store retrieve runs off the event loop; the old installer receipt test uses the literal v0.4.0 receipt.
+
 ## [0.5.0] - 2026-11-14
 
 ### Added
@@ -36,7 +55,7 @@ All notable changes to this project are documented here. The format follows
 - MCP deploy (PTC-103): `write_atomic` unlinks a stale or symlinked `.tmp` first, creates it with `O_EXCL|O_NOFOLLOW` and always sets the mode (the requested one, else an existing regular file's, else 0600; never a symlink target's), so it never follows a link or keeps old permissions. A corrupt or non-object receipt now fails with `Receipt unreadable; reconcile` instead of a JSON error. The shipped remote program text changes; no host state does.
 - Rename (PTC-105): the schema probe no longer reports a `manager` mismatch. Its test, `hasattr(model, "_base_manager")`, held for every Django model, so it guarded nothing; the snippet reads through `all_objects` and falls back to the base manager for a model without one, so no probe is needed. The host receives the program on each run, so no redeploy is needed.
 - `ce_page` (PTC-97): list, retrieve, create and the project access check now run their blocking SDK calls in a thread (`asyncio.to_thread`), as update already did, so they no longer stall the event loop.
-- Pages (PTC-92): `ce_page` update refuses an empty or whitespace-only `description_html` in the tool and the backend (the default empty argument used to wipe the page); `access` refuses `true` and `false`. Create still accepts an empty body (a new blank page loses nothing). The `ce_tools.py` and `pages_backend.py` payload digests change: redeploy needed, so the MCP compat entry point and Pages must be redeployed (direct route: revert, then apply; or the Saltbox build route). Add the new `ce_tools.py` digest to `RELEASED_ENTRY_POINT_DIGESTS` at release.
+- Pages (PTC-92): `ce_page` update refuses an empty or whitespace-only `description_html` in the tool and the backend (the default empty argument used to wipe the page); `access` refuses `true` and `false`. Create still accepts an empty body (a new blank page loses nothing). The `ce_tools.py` and `pages_backend.py` payload digests change: redeploy needed, so the MCP compat entry point and Pages must be redeployed (direct route: revert, then apply; or the Saltbox build route, see "Saltbox route" in `docs/extensions.md`). Add the new `ce_tools.py` digest to `RELEASED_ENTRY_POINT_DIGESTS` at release.
 - CI runs `mise run setup` and `mise run check` instead of a copied command list, so it also installs the `tools/mcp-remote` lockfile. `cancel-in-progress` applies only to pull requests, so a running push build on the default branch is no longer cancelled before `release.yml` can find its `check` run. GitHub can still cancel a pending (queued) run in the same concurrency group (PTC-100).
 - Ruleset: the required `check` status is bound to GitHub Actions (`integration_id` 15368), so another app or the status API cannot satisfy it. The owner must re-apply `.github/rulesets/main.json` (PTC-99).
 - Project installer (PTC-98): `revert` records its progress in the receipt like `apply` does (the text each file will be left with, then a mark once restored), so a crash midway no longer leaves an install that refuses every revert with "removed since installation". Rerun `revert` to finish; `apply` and `label` refuse until then. Edits made to files not yet restored are still refused.
