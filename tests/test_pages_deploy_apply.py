@@ -351,3 +351,19 @@ def test_applied_container_gets_fresh_hostname(host):
     deploy("apply", host)
     derived = host.containers["api"]
     assert derived["hostname"] != old and derived["hostname"] == derived["id"][:12]
+
+
+@pytest.mark.parametrize(
+    "failing",
+    [[("rename", BACKUP, "api")], ["start", "start"]],
+    ids=["rollback-rename", "rollback-start"],
+)
+def test_apply_rollback_failure_falls_back_to_restore_any(host, monkeypatch, failing):
+    host.fail.append(("create", "api"))
+    host.fail.extend(failing)
+    with pytest.raises(ValueError, match="creation") as raised:
+        remote("apply", host, monkeypatch)
+    # The original error wins; the recovery error stays as its context.
+    assert raised.value.__context__ is not None
+    assert_original_restored(host)
+    assert BACKUP not in host.containers

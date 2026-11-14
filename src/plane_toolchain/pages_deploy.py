@@ -573,14 +573,18 @@ def apply(current, payload, backup, docker, probe, create, health, now):
     except BaseException as error:
         mask = hold_sigterm()  # A SIGTERM now waits until the rollback is done.
         try:
-            if probe("inspect", name):
-                probe("stop", name)
-                failed = failed_name(name, probe, now)
-                docker("rename", name, failed)
-                set_restart(probe, "no", failed)
-            docker("rename", backup, name)
-            set_restart(probe, policy, name)
-            docker("start", name)
+            try:
+                if probe("inspect", name):
+                    probe("stop", name)
+                    failed = failed_name(name, probe, now)
+                    docker("rename", name, failed)
+                    set_restart(probe, "no", failed)
+                docker("rename", backup, name)
+                set_restart(probe, policy, name)
+                docker("start", name)
+            except Exception:
+                restore_any(name, backup, failed_name(name, probe, now), probe, docker, policy)
+                raise error  # Recovery error stays as __context__.
         finally:
             release_sigterm(mask, error)
         raise

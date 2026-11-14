@@ -248,13 +248,13 @@ def test_healthy_needs_both_probes_in_one_attempt(host):
     assert len(calls) == 5
 
 
-def test_seam_apply_rollback_rename_failure_leaves_original_as_backup(host):
-    # Current behaviour: no further recovery when restoring the original fails.
+def test_seam_apply_rollback_rename_failure_still_restores_original(host):
+    # restore_any takes over when the rollback itself fails (PTC-88).
     host.fail += ["start", ("rename", BACKUP, "api")]
     with pytest.raises(subprocess.CalledProcessError):
         deploy("apply", host)
-    assert not host.containers[BACKUP]["running"]
-    assert "api" not in host.containers
+    assert host.containers["api"]["running"]
+    assert BACKUP not in host.containers
     assert not host.containers[f"api-pages-failed-{NOW}"]["running"]
 
 
