@@ -47,6 +47,9 @@ LEGACY_BLOCK = (
     "<!-- plane-toolchain:end -->\n"
 )
 SHIM = (TEMPLATES / "plane.sh").read_text()
+SKILL = (TEMPLATES / "skills/plane-tasks/SKILL.md").read_text(encoding="utf-8")
+# One copy per client: Claude Code reads .claude/skills, Codex and other agents .agents/skills.
+SKILL_PATHS = (".claude/skills/plane-tasks/SKILL.md", ".agents/skills/plane-tasks/SKILL.md")
 # Shim as installed by PTC-48, before the worktree fallback. Installs made then still carry it:
 # revert accepts it, and apply reports it as outdated without rewriting it.
 LEGACY_SHIM = (TEMPLATES / "plane.sh.legacy").read_text()
@@ -124,8 +127,17 @@ LABEL = {
     "color": "#EF4444",
     "description": "Agent is blocked until a human answers the question in the latest comment.",
 }
-# Directories the installer may create and, once empty, remove again.
-DIRECTORIES = (".plane", ".claude", ".codex")
+# Directories the installer may create and, once empty, remove again (children before parents).
+DIRECTORIES = (
+    ".plane",
+    ".claude",
+    ".codex",
+    ".agents",
+    ".claude/skills",
+    ".agents/skills",
+    ".claude/skills/plane-tasks",
+    ".agents/skills/plane-tasks",
+)
 
 
 class Changed(ValueError):
@@ -300,6 +312,8 @@ KINDS = {
     "shim": insert_file(SHIM, also=(LEGACY_SHIM,), digests=KNOWN_SHIM_SHA256),
     "gitignore": insert_file(GITIGNORE, reuse=True),
     "include": insert_file("@AGENTS.md\n"),
+    # A checkout with autocrlf, or an editor, may have converted the line endings; accept those.
+    "skill": insert_file(SKILL, also=(SKILL.replace("\n", "\r\n"),)),
     "block": (insert_block, remove_block),
     "mcp-json": (insert_server, remove_server),
     "hooks-json": (insert_hook, remove_hook),
@@ -368,6 +382,7 @@ PLANNED = {
     ".claude/settings.json",
     ".codex/config.toml",
     ".codex/hooks.json",
+    *SKILL_PATHS,
 }
 
 
@@ -403,6 +418,7 @@ def plan(target, preapprove=True):
         (".claude/settings.json", settings_kind(target, preapprove)),
         (".codex/config.toml", "codex-toml"),
         (".codex/hooks.json", "hooks-json"),
+        *((rel, "skill") for rel in SKILL_PATHS),
     ]
 
 
@@ -735,12 +751,25 @@ def revert(target):
             write(target / rel, text)
         entries[rel]["reverted"] = True
         write(receipt_path, json.dumps({**receipt, "reverting": True}, indent=2) + "\n")
+    # Client directories go only if apply created them and they are still empty real
+    # directories; one that cannot be removed is left and reported, never an error. They go
+    # before the receipt, which lives in .plane/ and is the last thing to leave.
+    left = []
+    names = [n for n in receipt.get("directories", []) if n in DIRECTORIES and n != ".plane"]
+    for name in sorted(names, key=lambda n: -n.count("/")):
+        path = target / name
+        if path.is_symlink() or not path.is_dir() or any(path.iterdir()):
+            continue
+        try:
+            path.rmdir()
+        except OSError:
+            left.append(name)
     receipt_path.unlink()
-    # .plane/ belongs to the installer; client directories go only if it created them.
-    for name in {".plane", *receipt.get("directories", [])}:
-        if name in DIRECTORIES and (target / name).is_dir() and not any((target / name).iterdir()):
-            (target / name).rmdir()
+    if plane.is_dir() and not plane.is_symlink() and not any(plane.iterdir()):
+        plane.rmdir()
     print("Removed unchanged Plane integration")
+    if left:
+        print("Left in place (could not remove): " + ", ".join(left))
     if kept:
         print("Kept ignored local files in .plane/: " + ", ".join(kept))
 

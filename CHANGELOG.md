@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `plane-tasks` agent skill and a workflow guide (PTC-116). The project installer now writes `templates/project/skills/plane-tasks/SKILL.md` to `.claude/skills/plane-tasks/SKILL.md` and `.agents/skills/plane-tasks/SKILL.md` and records both in `.plane/install.json` (kind `skill`), so revert removes them (and the directories it created) when unchanged; CRLF copies are accepted. It covers the task lifecycle, `awaiting-decision`, blocked-by rules, `ce_intake` with the issue ID, `ce_page` update limits, planning destinations, task description layout and the `Plane-Tasks:` PR field. `docs/agent-workflow.md` is the longer reference. Existing installs get the skill by revert then apply.
+
 ### Tests
 
 - Review gaps (PTC-114): a test that the `plane-prompt.zsh` status cache expires after 30 seconds with no input change. The other seven reviewed cases (tampered installer receipt, bare-URL matcher, Pages rollback failure, SIGTERM mid-swap, empty page body, late Live store after the lock, `label` without `PLANE_API_URL`) already had tests; they are named in the PR. The three fake Docker builders under `tests/support_workspace_rename_*` are now one `make_fake_docker`.
