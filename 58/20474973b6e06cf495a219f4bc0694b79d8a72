@@ -1,0 +1,21 @@
+mise.toml
+  s_a03650451d84d5::t_188fbc1a2985d9 26
+tests/test_ci_config.py
+  s_a03650451d84d5::t_188fbc1a2985d9 61-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "5820474973b6e06cf495a219f4bc0694b79d8a72",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
