@@ -6,12 +6,12 @@ import sys
 from html.parser import HTMLParser
 from collections.abc import Awaitable, Callable
 from typing import Any
-from uuid import UUID
+
+from plane_toolchain.ids import IDENTIFIER, canonical, is_uuid
 
 Call = Callable[[str, dict], Awaitable[Any]]
 PAGE_SIZE = 100
 MAX_PAGES = 50
-IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9]*-\d+")
 
 
 class UsageError(Exception):
@@ -20,18 +20,6 @@ class UsageError(Exception):
 
 class ReadbackError(Exception):
     """A write was not confirmed by rereading; exit code 5."""
-
-
-def is_uuid(value: str) -> bool:
-    try:
-        UUID(value)
-    except ValueError:
-        return False
-    return True
-
-
-def canonical(value: str) -> str:
-    return str(UUID(value))
 
 
 def task_reference(ref: str) -> None:
@@ -153,12 +141,17 @@ def validate(namespace: argparse.Namespace) -> None:
         namespace.plan = relation_plan.validate(relation_plan.load(namespace.file))
 
 
-async def task_list(call: Call, project: str, namespace: argparse.Namespace) -> Any:
-    arguments: dict = {"action": "list", "project_id": project}
+def paging(arguments: dict, namespace: argparse.Namespace) -> None:
+    """Copy the optional --per-page and --cursor options into the tool arguments."""
     if namespace.per_page is not None:
         arguments["per_page"] = namespace.per_page
     if namespace.cursor is not None:
         arguments["cursor"] = namespace.cursor
+
+
+async def task_list(call: Call, project: str, namespace: argparse.Namespace) -> Any:
+    arguments: dict = {"action": "list", "project_id": project}
+    paging(arguments, namespace)
     return await call("workitem", arguments)
 
 
@@ -209,10 +202,7 @@ async def comment_list(call: Call, project: str, namespace: argparse.Namespace) 
         call, project, namespace.ref, getattr(namespace, "project", None)
     )
     arguments: dict = {"action": "list", "project_id": project_id, "workitem_id": workitem_id}
-    if namespace.per_page is not None:
-        arguments["per_page"] = namespace.per_page
-    if namespace.cursor is not None:
-        arguments["cursor"] = namespace.cursor
+    paging(arguments, namespace)
     return await call("workitem_comment", arguments)
 
 

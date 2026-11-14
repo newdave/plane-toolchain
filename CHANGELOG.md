@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `plane_toolchain.ids` (PTC-112): UUID, task identifier and relation-type helpers now live in one module used by `cli`, `cli_commands`, `relation_plan` and `settings`, and `task list` and `comment list` share one paging helper. Behaviour is unchanged. `ce_tools.py` ships alone as the MCP server and is untouched; `tests/test_ids.py` pins its local copies to `ids.py`.
+
 ## [0.5.0] - 2026-11-14
 
 ### Added
