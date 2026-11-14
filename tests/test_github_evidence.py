@@ -1,5 +1,6 @@
 """GitHub evidence core: reference parsing, gate rules, events and Plane publishing."""
 
+import asyncio
 import hashlib
 
 import pytest
@@ -164,7 +165,7 @@ def digest(head: str, body: str) -> str:
     return "Plane-Tasks sha256:" + hashlib.sha256((head + "\n" + body).encode()).hexdigest()
 
 
-def test_description_matches_terrain_link():
+def test_description_binds_head_and_body_hash():
     pr = {"head": {"sha": "a" * 40}, "body": "Plane-Tasks: ABC-1"}
     assert ge.description(pr) == digest("a" * 40, "Plane-Tasks: ABC-1")
     assert ge.description(dict(pr, body=None)) == digest("a" * 40, "")
@@ -288,3 +289,225 @@ def test_run_evidence_skips_pr_without_reference_field():
         "ABC-1"
     ]
     assert ge.optional_references(renovate_pr(), FILES, REPO, refs, MAINTENANCE) == []
+
+
+SOURCE = "demo-github"
+
+
+def update(key="event", content="<p>Evidence</p>"):
+    return ge.Update({}, key, content)
+
+
+def test_all_references_resolve_before_any_evidence_write():
+    selected = [(update(), ["ABC-1", "ABC-2"])]
+    with pytest.raises(ValueError, match="Referenced Plane task missing: ABC-2"):
+        ge.resolved_updates(selected, {"ABC-1": {"id": "first"}})
+    assert ge.resolved_updates(selected, {"ABC-1": {"id": "first"}, "ABC-2": {"id": "second"}}) == [
+        ("first", "event", "<p>Evidence</p>"),
+        ("second", "event", "<p>Evidence</p>"),
+    ]
+
+
+class Comments:
+    def __init__(self):
+        self.rows = []
+        self.creates = 0
+        self.uncertain = False
+
+    async def call(self, name, arguments):
+        assert name == "workitem_comment"
+        assert "state" not in arguments
+        if arguments["action"] == "list":
+            return {"results": self.rows, "next_page_results": False}
+        assert arguments["action"] == "create"
+        self.creates += 1
+        self.rows.append(dict(arguments, id="comment"))
+        if self.uncertain:
+            self.uncertain = False
+            raise RuntimeError("Connection lost after create")
+        return self.rows[-1]
+
+
+def publish(comments, content="<p>Evidence</p>", key="event", item="task"):
+    return asyncio.run(ge.publish(comments.call, "project", item, key, content, source=SOURCE))
+
+
+def test_duplicate_events_create_one_comment():
+    comments = Comments()
+    assert publish(comments, key="repo:pr:1:merged:v") is True
+    assert publish(comments, key="repo:pr:1:merged:v") is False
+    assert comments.creates == 1
+    assert comments.rows[0]["external_source"] == SOURCE
+    assert comments.rows[0]["external_id"] == "repo:pr:1:merged:v:task:task"
+
+
+def test_retry_after_uncertain_write_rereads_before_creating():
+    comments = Comments()
+    comments.uncertain = True
+    with pytest.raises(RuntimeError):
+        publish(comments)
+    assert publish(comments) is False
+    assert comments.creates == 1
+
+
+def test_conflicting_duplicate_event_content_is_reported():
+    comments = Comments()
+    publish(comments, "<p>One</p>")
+    with pytest.raises(ValueError, match="content"):
+        publish(comments, "<p>Different</p>")
+
+
+def test_publish_refuses_differing_content():
+    comments = Comments()
+    comments.rows.append(
+        dict(
+            external_source=SOURCE,
+            external_id="event:task:task",
+            comment_html="<p>Existing</p>",
+        )
+    )
+    with pytest.raises(ValueError, match="Existing evidence content differs; inspect before retry"):
+        publish(comments, "<p>Other</p>")
+    assert comments.creates == 0
+
+
+def test_publish_returns_false_when_present():
+    comments = Comments()
+    comments.rows.append(
+        dict(
+            external_source=SOURCE,
+            external_id="event:task:task",
+            comment_html="<p>Evidence</p>",
+        )
+    )
+    assert publish(comments) is False
+    assert comments.creates == 0
+
+
+def test_publish_refuses_duplicates_and_unverified_writes():
+    comments = Comments()
+    row = dict(external_source=SOURCE, external_id="event:task:task", comment_html="<p>E</p>")
+    comments.rows.extend([row, dict(row)])
+    with pytest.raises(ValueError, match="Duplicate Plane evidence identity"):
+        publish(comments)
+
+    async def forgetful(name, arguments):
+        if arguments["action"] == "list":
+            return []
+        return {}
+
+    with pytest.raises(ValueError, match="Plane evidence write not verified"):
+        asyncio.run(ge.publish(forgetful, "project", "task", "event", "<p>E</p>", source=SOURCE))
+
+
+def test_one_event_can_publish_to_multiple_tasks_with_global_comment_identity_uniqueness():
+    rows = {}
+    identities = set()
+
+    async def call(name, arguments):
+        assert name == "workitem_comment"
+        task_rows = rows.setdefault(arguments["workitem_id"], [])
+        if arguments["action"] == "list":
+            return {"results": task_rows, "next_page_results": False}
+        identity = (arguments["external_source"], arguments["external_id"])
+        if identity in identities:
+            raise ValueError("HTTP 409: comment external identity already exists")
+        identities.add(identity)
+        task_rows.append(dict(arguments))
+        return task_rows[-1]
+
+    async def run():
+        for _ in range(2):
+            for task in ("first", "second"):
+                await ge.publish(call, "project", task, "shared", "<p>E</p>", source=SOURCE)
+
+    asyncio.run(run())
+    assert len(identities) == 2
+    assert all(len(task_rows) == 1 for task_rows in rows.values())
+
+
+def test_legacy_event_identity_is_verified_without_recreating_comment():
+    comments = Comments()
+    comments.rows.append(
+        dict(external_source=SOURCE, external_id="event", comment_html="<p>Old</p>")
+    )
+    assert publish(comments, "<p>Old</p>") is False
+    assert comments.creates == 0
+    with pytest.raises(ValueError, match="content"):
+        publish(comments, "<p>Changed</p>")
+
+
+def listing(rows, size=100):
+    """A fake workitem listing that ignores any external_id filter, in cursor pages."""
+    calls = []
+
+    async def call(name, arguments):
+        calls.append(arguments)
+        assert name == "workitem"
+        start = int(arguments["cursor"] or 0)
+        page = rows[start : start + size]
+        more = start + size < len(rows)
+        return {
+            "results": page,
+            "next_page_results": more,
+            "next_cursor": str(start + size) if more else None,
+        }
+
+    return call, calls
+
+
+def test_directory_ignores_server_filter_and_rejects_duplicates():
+    rows = [
+        {"id": f"id{n}", "external_source": SOURCE, "external_id": f"XYZ-{n}"}
+        for n in range(1, 249)
+    ]
+    rows += [
+        {"id": "other", "external_source": "elsewhere", "external_id": "not a task id"},
+        {"id": "seven", "external_source": SOURCE, "external_id": "ABC-7"},
+    ]
+    call, calls = listing(rows)
+    found = asyncio.run(ge.paginated(call, "workitem", {"action": "list", "external_id": "ABC-7"}))
+    assert len(found) == 250 and len(calls) == 3
+    entries = ge.directory_entries(found, SOURCE, ge.ReferenceRules().pattern)
+    assert entries["ABC-7"]["id"] == "seven"
+    assert "not a task id" not in entries
+    with pytest.raises(ValueError, match="Duplicate task identity: ABC-7"):
+        ge.directory_entries(
+            found + [{"id": "again", "external_source": SOURCE, "external_id": "ABC-7"}],
+            SOURCE,
+            ge.ReferenceRules().pattern,
+        )
+    with pytest.raises(ValueError, match="Invalid task identity"):
+        ge.directory_entries(
+            [{"external_source": SOURCE, "external_id": "bad id"}],
+            SOURCE,
+            ge.ReferenceRules().pattern,
+        )
+
+
+def test_paginated_rejects_repeated_cursor():
+    async def call(name, arguments):
+        return {"results": [{}], "next_page_results": True, "next_cursor": "same"}
+
+    with pytest.raises(ValueError, match="Invalid MCP pagination"):
+        asyncio.run(ge.paginated(call, "workitem", {}))
+
+    async def missing(name, arguments):
+        return {"results": [], "next_page_results": True}
+
+    with pytest.raises(ValueError, match="Invalid MCP pagination"):
+        asyncio.run(ge.paginated(missing, "workitem", {}))
+
+
+def test_paginated_accepts_plain_list_and_caps_pages():
+    async def plain(name, arguments):
+        return [{"id": 1}]
+
+    assert asyncio.run(ge.paginated(plain, "workitem", {})) == [{"id": 1}]
+    counter = iter(range(1000))
+
+    async def endless(name, arguments):
+        return {"results": [], "next_page_results": True, "next_cursor": str(next(counter))}
+
+    with pytest.raises(ValueError, match="MCP pagination limit reached"):
+        asyncio.run(ge.paginated(endless, "workitem", {}))

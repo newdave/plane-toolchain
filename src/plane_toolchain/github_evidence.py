@@ -283,3 +283,85 @@ def aggregate(results: Mapping[str, str]) -> str:
     if "cancelled" in values:
         return "cancelled"
     return "success"
+
+
+async def paginated(call, name: str, arguments: dict) -> list[dict]:
+    """Follow explicit MCP cursors, rejecting incomplete or repeated pagination."""
+    rows = []
+    seen = set()
+    cursor = ""
+    for _ in range(100):
+        data = await call(name, dict(arguments, cursor=cursor, per_page=100))
+        if isinstance(data, list):
+            return rows + data
+        rows.extend(data["results"])
+        if not data.get("next_page_results"):
+            return rows
+        cursor = data.get("next_cursor")
+        if not cursor or cursor in seen:
+            raise ValueError("Invalid MCP pagination")
+        seen.add(cursor)
+    raise ValueError("MCP pagination limit reached")
+
+
+def directory_entries(rows: list[dict], source: str, pattern: str) -> dict[str, dict]:
+    """Index unique external task identities of one source.
+
+    The caller lists every row: the server's external_id filter is not trusted.
+    """
+    result = {}
+    for item in rows:
+        if item.get("external_source") != source:
+            continue
+        identity = item.get("external_id", "")
+        if not re.fullmatch(pattern, identity):
+            raise ValueError("Invalid task identity")
+        if identity in result:
+            raise ValueError("Duplicate task identity: " + identity)
+        result[identity] = item
+    return result
+
+
+def resolved_updates(
+    selected: list[tuple[Update, list[str]]], tasks: dict[str, dict]
+) -> list[tuple[str, str, str]]:
+    """Resolve the entire event before publishing any evidence."""
+    updates = []
+    for update, identities in selected:
+        for identity in identities:
+            if identity not in tasks:
+                raise ValueError("Referenced Plane task missing: " + identity)
+            updates.append((tasks[identity]["id"], update.key, update.content))
+    return updates
+
+
+async def publish(
+    call, project: str, item: str, event_key: str, content: str, *, source: str
+) -> bool:
+    """Read before create and verify after create, including retries after uncertain writes.
+
+    Returns True when a comment was created, False when it was already present.
+    """
+    arguments = {"project_id": project, "workitem_id": item}
+    # Plane enforces external comment identities across tasks. Keep the legacy
+    # key matching so replaying an event never duplicates saved evidence.
+    identity = f"{event_key}:task:{item}"
+    expected = dict(external_source=source, external_id=identity, comment_html=content)
+    rows = await paginated(call, "workitem_comment", dict(arguments, action="list"))
+    matches = [
+        row
+        for row in rows
+        if row.get("external_source") == source and row.get("external_id") in {event_key, identity}
+    ]
+    if len(matches) > 1:
+        raise ValueError("Duplicate Plane evidence identity")
+    if matches:
+        if matches[0].get("comment_html") != content:
+            raise ValueError("Existing evidence content differs; inspect before retry")
+        return False
+    await call("workitem_comment", dict(arguments, action="create", **expected))
+    rows = await paginated(call, "workitem_comment", dict(arguments, action="list"))
+    matches = [row for row in rows if all(row.get(key) == value for key, value in expected.items())]
+    if len(matches) != 1:
+        raise ValueError("Plane evidence write not verified")
+    return True
