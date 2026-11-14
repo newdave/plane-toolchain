@@ -1,0 +1,23 @@
+CHANGELOG.md
+  s_9eff9a2b37a1ff::t_9a13162a91c87f 11
+scripts/install_project.py
+  s_9eff9a2b37a1ff::t_1e345fa8e93a65 422-427,472-473,647-648,725-730,736-737
+tests/test_project_install.py
+  s_9eff9a2b37a1ff::t_665dc51ab14999 937-1000
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "42d7c02522377111656da4b4e4421e159e992aea",
+  "prompts": {},
+  "sessions": {
+    "s_9eff9a2b37a1ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "55042e9c-e6eb-4713-981d-553dcbce9ea4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
