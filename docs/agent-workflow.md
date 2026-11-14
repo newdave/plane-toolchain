@@ -31,7 +31,7 @@ Why the work exists.
 - An observable check.
 ```
 
-`Files`, `Dependencies` and `Notes` are optional sections. Review the whole remote description before you replace it, and never rewrite it for a state-only change.
+`Files`, `Dependencies` and `Notes` are optional sections. Every new task gets a priority (`urgent`, `high`, `medium` or `low`), never `none`; when the owner gave none, choose one from the impact and urgency, and report it. Review the whole remote description before you replace it, and never rewrite it for a state-only change.
 
 ## Task lifecycle
 

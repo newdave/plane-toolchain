@@ -132,6 +132,7 @@ def test_skill_states_the_rules_it_ports():
         "## Context",
         "## Scope",
         "## Acceptance",
+        "never `none`",
         "Relation deletion is unsupported",
     ):
         assert needed in text, needed

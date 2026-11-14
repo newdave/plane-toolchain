@@ -6,6 +6,7 @@ Plane is the authoritative system for this project's scope, acceptance criteria,
 - Use the `plane` MCP server for every task read and write. Reread each write to verify it.
 - Do not keep a parallel backlog in repository files, TODO comments or agent todo lists.
 - Treat "tasks" or "the queue" as this project's Plane work items.
+- Set a priority (`urgent`, `high`, `medium` or `low`) on every work item you create, never `none`.
 - Move a work item to In Progress only while it is actively worked on.
 - Move it to Done only when its acceptance criteria are met. A merged PR alone is not Done.
 - Store specs, plans and other planning narratives as project Pages, not repository files.
