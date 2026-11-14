@@ -46,6 +46,17 @@ def test_two_reverts_in_one_second_get_different_names(applied, monkeypatch):
     }
 
 
+def test_promotion_policy_ignores_suffixed_aside_and_picks_the_plain_suffixed(
+    interrupted, monkeypatch
+):
+    live = f"api-pages-reverted-{NOW}-1"
+    interrupted.containers.pop(f"api-pages-reverted-{NOW - 5}")
+    interrupted.add(live, labels={LABEL: DIGEST}, running=False, RestartPolicy={"Name": "always"})
+    interrupted.add(live + "-aside", running=False, RestartPolicy={"Name": "on-failure"})
+    remote("revert", interrupted, monkeypatch)
+    assert restart(interrupted, "api") == "always"
+
+
 def test_interrupted_revert_uses_the_newest_suffixed_reverted_name(interrupted, monkeypatch):
     # Two reverts in one second: `<ts>` is stale, `<ts>-1` is the live derived and decides policy.
     stale, live = f"api-pages-reverted-{NOW}", f"api-pages-reverted-{NOW}-1"
