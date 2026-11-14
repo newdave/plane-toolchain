@@ -428,12 +428,13 @@ def recover_original(name, backup, probe, docker, policy, now, parked=None):
     failed derived container. A container is started as `name` only when a successful inspect
     shows it is unlabelled (the original). A Pages-labelled one is stopped and moved aside; an
     unknown or stuck state leaves things stopped where possible and says where each container
-    is. `parked` is the name the rollback already moved the derived container to, if it did.
+    is. `parked` says where the rollback moved the stopped derived container, when it tried:
+    `<name> (stopped)`, or `unknown, possibly ...` when that rename did not answer in time.
     A probe that times out is such an unknown state; this never raises it, so the caller still
     raises its original error.
     """
     # Where the derived container is, kept current by the steps so a timeout can say it.
-    where = {"derived": parked + " (stopped)" if parked else None}
+    where = {"derived": parked}
     try:
         recover_original_steps(name, backup, probe, docker, policy, now, where)
     except RuntimeError:
@@ -454,13 +455,15 @@ def recover_original(name, backup, probe, docker, policy, now, parked=None):
 def settle_unknown(name, probe, docker):
     """After a timeout: inspect `name` once more; return (kind, text) for the message.
 
-    kind is "original" (unlabelled: left as it is, never stopped), "absent", "derived" or
-    "unknown" (the inspect failed too). A derived or unknown holder is stopped, best effort.
+    kind is "original" (unlabelled: left as it is, never stopped), "absent" (Docker said "No
+    such"), "derived" or "unknown" (the inspect failed or timed out too). A derived or unknown holder is stopped, best effort.
     """
     try:
         held = json.loads(docker("inspect", name))[0]
-    except subprocess.CalledProcessError:
-        return "absent", name + " (absent)"
+    except subprocess.CalledProcessError as error:
+        if b"No such" in (error.stderr or b""):  # Docker's answer for a missing container
+            return "absent", name + " (absent)"
+        held = None  # Any other daemon error says nothing about `name`
     except Exception:
         held = None
     if held is not None and source_label(held) is None:
@@ -707,7 +710,7 @@ def apply(current, payload, backup, docker, probe, create, health, now):
     body = derive(current, payload, docker)
     policy = restart_arg(current)  # Read before retiring; restored when promoted back.
     retired = False  # The original now sits under its backup name.
-    parked = None  # Where the rollback moved a derived container, once it did.
+    parked = None  # Where the rollback moved the stopped derived container, once it tried.
     try:
         # SIGTERM waits across the retire: a signal between the rename and `retired` or the
         # policy update would otherwise leave the API stopped under the backup name.
@@ -740,8 +743,10 @@ def apply(current, payload, backup, docker, probe, create, health, now):
                         if not probe("stop", name):  # Never rename a running derived aside.
                             raise subprocess.CalledProcessError(1, ["docker", "stop", name])
                         failed = failed_name(name, probe, now)
+                        # The rename can take effect and then time out: say both names.
+                        parked = "unknown, possibly " + name + " or " + failed + " (stopped)"
                         docker("rename", name, failed)
-                        parked = failed
+                        parked = failed + " (stopped)"
                         set_restart(probe, "no", failed)
                     docker("rename", backup, name)
                     set_restart(probe, policy, name)

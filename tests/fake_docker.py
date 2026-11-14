@@ -80,6 +80,7 @@ class FakeDocker:
         self.queue_probes = []
         self.crash_label = None
         self.error_output = b""  # stderr attached to a failed call's CalledProcessError
+        self.call_stderr = b""  # the latest call's own stderr, used when error_output is unset
 
     def add(self, name, labels=None, running=True, healthy=True, hostname=None, **host_config):
         ident = self.new_id()
@@ -134,11 +135,13 @@ class FakeDocker:
     def execute(self, *args, input=None):
         """Return (returncode, stdout) for one docker CLI invocation."""
         self.calls.append(args)
+        self.call_stderr = b""
         command, rest = args[0], args[1:]
         if self.failing(args):
             return 1, b""
         if command == "inspect":
             if rest[0] not in self.containers:
+                self.call_stderr = b"Error: No such object: " + rest[0].encode() + b"\n"
                 return 1, b""
             return 0, json.dumps([self.document(rest[0])]).encode()
         if command == "ps":
@@ -395,7 +398,9 @@ class FakeDocker:
         self.streams[args] = (kw.get("stdout"), kw.get("stderr"))
         code, stdout = self.execute(*args, input=kw.get("input"))
         if code and kw.get("check", True):
-            raise subprocess.CalledProcessError(code, ["docker", *args], stderr=self.error_output)
+            raise subprocess.CalledProcessError(
+                code, ["docker", *args], stderr=self.error_output or self.call_stderr
+            )
         return stdout
 
     def probe(self, *args):
@@ -438,7 +443,9 @@ class FakeDocker:
                     raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
             code, stdout = self.execute(*argv[1:], input=kw.get("input"))
         if code and kw.get("check"):
-            raise subprocess.CalledProcessError(code, argv, stderr=self.error_output)
+            raise subprocess.CalledProcessError(
+                code, argv, stderr=self.error_output or self.call_stderr
+            )
         return subprocess.CompletedProcess(argv, code, stdout if kw.get("capture_output") else None)
 
     def http_connection(self):

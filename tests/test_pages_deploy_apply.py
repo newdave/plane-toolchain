@@ -595,3 +595,37 @@ def test_original_start_that_took_effect_but_timed_out_is_left_running(host, mon
     err = capsys.readouterr().err
     assert "Rollback incomplete" in err and "original api (running)" in err
     assert f"derived container {failed} (stopped)" in err
+
+
+# PTC-96 fix round 4: the rollback's own move aside can take effect and time out, and an
+# inspect error other than "No such" is an unknown state, never "absent".
+
+
+def test_rollback_rename_aside_that_took_effect_but_timed_out_is_named(host, monkeypatch, capsys):
+    host.fail.append("start")  # the derived container's start fails: rollback
+    failed = f"api-pages-failed-{NOW}"
+    hang_after(host, ("start", "api"), ("rename", "api", failed), nth=1, effect=True)
+    hang_after(host, ("start", "api"), ("rename", BACKUP, "api"), nth=1)  # recovery's move
+    with pytest.raises(subprocess.CalledProcessError):
+        remote("apply", host, monkeypatch)
+    assert not host.containers[failed]["running"] and "api" not in host.containers
+    assert labelled_running(host) == [] and not host.containers[BACKUP]["running"]
+    err = capsys.readouterr().err
+    assert f"derived container unknown, possibly api or {failed} (stopped)" in err
+    assert f"original {BACKUP} (stopped)" in err
+    assert "absent" not in err
+
+
+def test_inspect_daemon_error_after_a_timeout_is_unknown_not_absent(host, monkeypatch, capsys):
+    host.fail.append("start")  # the derived container's start fails: rollback
+    failed = f"api-pages-failed-{NOW}"
+    host.fail.append(("rename", "api", failed))  # the rollback's move aside fails: recovery
+    hang_after(host, ("start", "api"), ("rename", BACKUP, "api"), nth=1)  # recovery's move
+    host.error_output = b"Error response from daemon: connection refused\n"
+    with pytest.raises(subprocess.CalledProcessError):
+        remote("apply", host, monkeypatch)
+    assert labelled_running(host) == [] and not host.containers[BACKUP]["running"]
+    assert host.calls[-2:] == [("inspect", "api"), ("stop", "api")]  # the unknown path's stop
+    err = capsys.readouterr().err
+    assert "Rollback incomplete" in err and "absent" not in err
+    assert f"original unknown, possibly {BACKUP} or api" in err
