@@ -157,6 +157,34 @@ def test_receipt_paths_outside_the_target_are_refused_untouched(tmp_path, escape
     assert snapshot(tmp_path) == before
 
 
+@pytest.mark.parametrize("claude", [None, "@AGENTS.md\n", "# Mine\n"])
+@pytest.mark.parametrize("preapprove", [True, False])
+def test_every_planned_path_is_an_allowed_receipt_path(tmp_path, claude, preapprove):
+    if claude is not None:
+        (tmp_path / "CLAUDE.md").write_text(claude)
+    planned = {rel for rel, _ in installer["plan"](tmp_path, preapprove)}
+    assert planned <= installer["PLANNED"]
+
+
+def test_old_format_receipt_still_reverts(tmp_path):
+    seed_project(tmp_path)
+    apply(tmp_path)
+    path = tmp_path / ".plane/install.json"
+    old = {
+        "version": 1,
+        "directories": json.loads(path.read_text()).get("directories", []),
+        "entries": {
+            rel: {"kind": entry["kind"], "created": entry["created"]}
+            for rel, entry in json.loads(path.read_text())["entries"].items()
+        },
+    }
+    path.write_text(json.dumps(old, indent=2) + "\n")
+    revert(tmp_path)
+    (tmp_path / ".plane/local.env").unlink()
+    (tmp_path / ".plane/.gitignore").unlink(missing_ok=True)
+    assert snapshot(tmp_path) == EXISTING
+
+
 def test_symlinked_paths_refused(tmp_path):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
