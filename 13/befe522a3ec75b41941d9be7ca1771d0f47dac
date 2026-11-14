@@ -1,0 +1,23 @@
+tests/test_mcp_deploy.py
+  s_a03650451d84d5::t_5f8f81203a13d9 1126-1177
+src/plane_toolchain/mcp_deploy.py
+  s_a03650451d84d5::t_5f8f81203a13d9 79-81,84-94,98,233-236
+CHANGELOG.md
+  s_a03650451d84d5::t_c6b1400982d5bc 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "13befe522a3ec75b41941d9be7ca1771d0f47dac",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
