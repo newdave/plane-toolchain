@@ -211,3 +211,11 @@ def test_replacement_adds_no_label_other_than_the_source_label():
     body = pages_deploy.replacement(original.document("api"), IMAGE, "http://live:3000", DIGEST)
     assert set(body["Labels"]) - set(COMPOSE) == {LABEL}
     assert all(body["Labels"][key] == value for key, value in COMPOSE.items())
+
+
+def test_prune_keeps_a_suffixed_newest_reverted_and_removes_the_older_plain(host):
+    host.add("api-pages-reverted-5", labels={LABEL: DIGEST}, running=False)
+    host.add("api-pages-reverted-5-1", labels={LABEL: DIGEST}, running=False)
+    prune(host, confirm=True)
+    assert "api-pages-reverted-5-1" in host.containers
+    assert "api-pages-reverted-5" not in host.containers
