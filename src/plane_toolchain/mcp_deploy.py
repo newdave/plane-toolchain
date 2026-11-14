@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import pathlib
+import stat
 import subprocess
 import sys
 import time
@@ -78,14 +79,16 @@ def write_atomic(path, data, mode=None):
 
     A stale or symlinked temporary file is unlinked (the link, never its target) and a fresh one
     is created exclusively without following symlinks, then always given a mode before it is
-    renamed into place: `mode`, else the mode of the file it replaces, else 0600 (private).
+    renamed into place: `mode`, else the mode of the regular file it replaces, else 0600 (private).
     """
     temporary = str(path) + ".tmp"
     if mode is None:
         try:
-            mode = os.stat(path).st_mode & 0o777
+            held = os.lstat(path)  # lstat: a symlink target mode is never inherited
         except FileNotFoundError:
-            mode = 0o600
+            held = None
+        regular = held is not None and stat.S_ISREG(held.st_mode)
+        mode = held.st_mode & 0o777 if regular else 0o600
     try:
         os.unlink(temporary)
     except FileNotFoundError:
@@ -234,6 +237,8 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         recorded = json.loads(old_receipt) if old_receipt is not None else {}
     except ValueError:
         raise ValueError("Receipt unreadable; reconcile") from None
+    if not isinstance(recorded, dict):
+        raise ValueError("Receipt unreadable; reconcile")
     if backup.exists() and "original" in recorded:
         if sha256(backup.read_bytes()) != recorded["original"]:
             raise ValueError("Backup does not match the recorded original; reconcile")
@@ -364,7 +369,7 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
 
 
 REMOTE = program(
-    ["ast", "hashlib", "json", "os", "pathlib", "subprocess", "sys", "time"],
+    ["ast", "hashlib", "json", "os", "pathlib", "stat", "subprocess", "sys", "time"],
     [
         docker,
         git_tracked,

@@ -1175,3 +1175,22 @@ def test_corrupt_receipt_raises_readable_error(root, operation):
     (root / "plane-toolchain-ce-receipt.json").write_text("not json")
     with pytest.raises(ValueError, match="Receipt unreadable; reconcile"):
         deploy(operation, root, mcp_host())
+
+
+def test_write_atomic_without_mode_never_inherits_a_symlink_targets_mode(tmp_path):
+    target = tmp_path / "target"
+    target.write_text("old")
+    target.chmod(0o666)
+    link = tmp_path / "out"
+    link.symlink_to(target)
+    mcp_deploy.write_atomic(link, "new")
+    assert not link.is_symlink() and link.read_text() == "new"
+    assert link.stat().st_mode & 0o777 == 0o600
+    assert target.read_text() == "old" and target.stat().st_mode & 0o777 == 0o666
+
+
+@pytest.mark.parametrize("text", ["1", "null", "[]"])
+def test_non_object_receipt_raises_readable_error(root, text):
+    (root / "plane-toolchain-ce-receipt.json").write_text(text)
+    with pytest.raises(ValueError, match="Receipt unreadable; reconcile"):
+        deploy("apply", root, mcp_host())
