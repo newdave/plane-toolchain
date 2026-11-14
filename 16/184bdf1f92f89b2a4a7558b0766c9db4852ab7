@@ -1,0 +1,27 @@
+docs/configuration.md
+  s_a03650451d84d5::t_1d8cd92a6e1011 32
+src/plane_toolchain/session.py
+  s_a03650451d84d5::t_a569cfd3d8436c 79-91
+  s_a03650451d84d5::t_74ff7243d28eaf 104-111
+  s_a03650451d84d5::t_fb5540acd6d164 14
+CHANGELOG.md
+  s_a03650451d84d5::t_b281a423242491 13-14
+tests/test_worktree_bridge.py
+  s_a03650451d84d5::t_c70538705e3024 440-491
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "16184bdf1f92f89b2a4a7558b0766c9db4852ab7",
+  "prompts": {},
+  "sessions": {
+    "s_a03650451d84d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90f019ba-2c4f-4e4e-8505-b1967be8f70d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
