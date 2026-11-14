@@ -41,6 +41,11 @@
       "automerge": true
     },
     {
+      "description": "GitHub Actions digests carry no reliable release timestamp, so minimumReleaseAge cannot gate them; review them by hand instead of automerging.",
+      "matchManagers": ["github-actions"],
+      "automerge": false
+    },
+    {
       "description": "Never automerge the key-bearing MCP bridge dependencies.",
       "matchManagers": ["npm"],
       "automerge": false
