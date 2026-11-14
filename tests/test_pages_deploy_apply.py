@@ -367,3 +367,18 @@ def test_apply_rollback_failure_falls_back_to_restore_any(host, monkeypatch, fai
     assert raised.value.__context__ is not None
     assert_original_restored(host)
     assert BACKUP not in host.containers
+
+
+def test_apply_sigterm_between_the_retire_rename_and_set_restart_restores_the_original(host):
+    real = host.probe
+
+    def terminate(*args):
+        if args == ("update", "--restart=no", BACKUP):
+            raise SystemExit(143)  # what the SIGTERM handler raises
+        return real(*args)
+
+    host.probe = terminate
+    with pytest.raises(SystemExit):
+        deploy("apply", host)
+    assert_original_restored(host)
+    assert BACKUP not in host.containers

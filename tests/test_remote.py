@@ -424,3 +424,23 @@ def test_pages_sigterm_during_a_failure_triggered_rollback_does_not_abort_it(tmp
     # ... and the deferred SIGTERM was delivered afterwards, after the failure report.
     assert code == 143 and "API health check failed" in err
     assert err.index("API health check failed") < err.index("Terminated (SIGTERM)")
+
+
+def test_pages_sigterm_right_after_the_retire_rename_does_not_strand_the_api(tmp_path):
+    from support_pages_deploy import BACKUP, payload
+
+    # SIGTERM lands in the policy update that follows the rename of the original to its backup.
+    config = {
+        "kind": "pages",
+        "payload": payload("apply"),
+        "block_call": ["update", "--restart=no", BACKUP],
+        "block": 3,
+    }
+    code, state, err = run_harness(tmp_path, config)
+    assert state is not None, err
+    assert "Traceback" not in err
+    assert code == 143 and "Terminated (SIGTERM)" in err
+    # The swap was undone: the original runs as api again and the backup name is free.
+    assert state["containers"]["api"] == {"running": True, "labelled": False}
+    assert BACKUP not in state["containers"]
+    assert state["calls"].count(["rename", BACKUP, "api"]) == 1

@@ -555,36 +555,39 @@ def apply(current, payload, backup, docker, probe, create, health, now):
         return "Pages image already applied; API healthy"
     body = derive(current, payload, docker)
     policy = restart_arg(current)  # Read before retiring; restored when promoted back.
+    retired = False  # The original now sits under its backup name.
     try:
-        docker("stop", name)
-        docker("rename", name, backup)
-    except BaseException as error:
-        mask = hold_sigterm()  # A SIGTERM now waits until the API is started again.
+        # SIGTERM waits across the retire: a signal between the rename and `retired` or the
+        # policy update would otherwise leave the API stopped under the backup name.
+        mask = hold_sigterm()
         try:
-            probe("start", name)  # Never leave the live API stopped; its policy is unchanged.
+            docker("stop", name)
+            docker("rename", name, backup)
+            retired = True
+            set_restart(probe, "no", backup)  # After the rename: a failed rename keeps the policy.
         finally:
-            release_sigterm(mask, error)
-        raise
-    set_restart(probe, "no", backup)  # After the rename: a failed rename keeps the policy.
-    try:
+            release_sigterm(mask)  # A deferred SIGTERM lands here, inside the rollback's try.
         create(name, body)
         docker("start", name)
         health(name)
     except BaseException as error:
         mask = hold_sigterm()  # A SIGTERM now waits until the rollback is done.
         try:
-            try:
-                if probe("inspect", name):
-                    probe("stop", name)
-                    failed = failed_name(name, probe, now)
-                    docker("rename", name, failed)
-                    set_restart(probe, "no", failed)
-                docker("rename", backup, name)
-                set_restart(probe, policy, name)
-                docker("start", name)
-            except Exception:
-                restore_any(name, backup, failed_name(name, probe, now), probe, docker, policy)
-                raise error  # Recovery error stays as __context__.
+            if not retired:
+                probe("start", name)  # Never leave the live API stopped; its policy is unchanged.
+            else:
+                try:
+                    if probe("inspect", name):
+                        probe("stop", name)
+                        failed = failed_name(name, probe, now)
+                        docker("rename", name, failed)
+                        set_restart(probe, "no", failed)
+                    docker("rename", backup, name)
+                    set_restart(probe, policy, name)
+                    docker("start", name)
+                except Exception:
+                    restore_any(name, backup, failed_name(name, probe, now), probe, docker, policy)
+                    raise error  # Recovery error stays as __context__.
         finally:
             release_sigterm(mask, error)
         raise
