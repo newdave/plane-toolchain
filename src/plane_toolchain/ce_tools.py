@@ -113,6 +113,63 @@ def page_update_body(description_html, expected_updated_at, force):
     }
 
 
+INTAKE_STATUSES = (-1, 0, 1, 2)
+
+
+def intake_decide_body(status, snoozed_till, duplicate_to):
+    """Top-level body for CE intake-issues/<id>/ PATCH (IntakeIssueUpdateSerializer fields).
+
+    status: -1 rejected, 0 snoozed (needs snoozed_till), 1 accepted, 2 duplicate (needs
+    duplicate_to, a work item UUID). Fields not needed by the status are refused, not dropped.
+    """
+    if isinstance(status, bool) or status not in INTAKE_STATUSES:
+        raise ValueError(
+            "status must be one of -1 (rejected), 0 (snoozed), 1 (accepted), 2 (duplicate)"
+        )
+    if status == 0 and not snoozed_till:
+        raise ValueError("status 0 (snoozed) requires snoozed_till")
+    if status != 0 and snoozed_till:
+        raise ValueError("snoozed_till is only valid with status 0")
+    if status == 2 and not duplicate_to:
+        raise ValueError("status 2 (duplicate) requires duplicate_to")
+    if status != 2 and duplicate_to:
+        raise ValueError("duplicate_to is only valid with status 2")
+    body = {"status": status}
+    if status == 0:
+        body["snoozed_till"] = snoozed_till
+    if status == 2:
+        body["duplicate_to"] = canonical_uuid(duplicate_to)
+    return body
+
+
+def intake_path(workspace, project_id, workitem_id):
+    """Plain CE detail path; never the unrouted .../status suffix."""
+    return (
+        f"{workspace}/projects/{canonical_uuid(project_id)}"
+        f"/intake-issues/{canonical_uuid(workitem_id)}"
+    )
+
+
+def decide_intake(intake, workspace, project_id, workitem_id, status, snoozed_till, duplicate_to):
+    """Precheck access, PATCH the decision, reread, and fail if the status did not change.
+
+    CE applies intake fields only for project admins and silently ignores them for
+    others, so the reread is compared with the request rather than trusted.
+    """
+    body = intake_decide_body(status, snoozed_till, duplicate_to)
+    path = intake_path(workspace, project_id, workitem_id)
+    sdk_private(intake, "_get")(path)
+    sdk_private(intake, "_patch")(path, body)
+    record = sdk_private(intake, "_get")(path)
+    if not isinstance(record, dict):
+        record = record.model_dump()
+    if record.get("status") != body["status"]:
+        raise RuntimeError(
+            "Intake status was not changed; CE needs project admin to decide intake items"
+        )
+    return record
+
+
 MAX_LATE_STORE_SECONDS = 60
 
 
@@ -190,6 +247,30 @@ def main():
             sdk_private(client.work_items.relations, "_get")(
                 f"{workspace}/projects/{project_id}/work-items/{workitem_id}/relations"
             )
+        )
+
+    @server.tool(name="ce_intake")
+    def ce_intake(
+        action: Literal["decide"],
+        project_id: str,
+        workitem_id: str,
+        status: int,
+        snoozed_till: str = "",
+        duplicate_to: str = "",
+    ) -> dict:
+        """Plane CE intake decision (the official intake update calls an unrouted /status path).
+
+        decide sets status on an intake record: -1 rejected, 0 snoozed (needs snoozed_till,
+        ISO 8601 datetime), 1 accepted, 2 duplicate (needs duplicate_to, a work item UUID).
+        workitem_id is the intake record's issue id (its work item id), as listed by intake.
+        Sends a plain PATCH to intake-issues/<id>/ with the caller's API key; CE allows it
+        for project admins only. Returns the reread intake record.
+        """
+        if action != "decide":
+            raise ValueError("ce_intake supports decide only")
+        client, workspace = get_plane_client_context()
+        return decide_intake(
+            client.intake, workspace, project_id, workitem_id, status, snoozed_till, duplicate_to
         )
 
     @server.tool(name="ce_page", description=CE_PAGE_DESCRIPTION)

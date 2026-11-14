@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `ce_intake` MCP tool (`decide`): reject, snooze, accept or mark an intake record duplicate through Plane CE's routed `PATCH intake-issues/<id>/`, because the official intake update calls `.../status`, which CE v1.4.3 does not route. Rereads the record and fails if CE ignored the change (non-admin callers). The `ce_tools.py` payload digest changes: redeploy needed.
+
 ## [0.3.2] - 2026-11-14
 
 ### Fixed
