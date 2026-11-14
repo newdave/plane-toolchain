@@ -130,6 +130,33 @@ def test_edited_installation_never_reverted_or_reapplied(tmp_path):
     assert snapshot(tmp_path) == before
 
 
+@pytest.mark.parametrize("escape", ["../outside/AGENTS.md", "{abs}/outside/AGENTS.md", "a/../../x"])
+def test_receipt_paths_outside_the_target_are_refused_untouched(tmp_path, escape):
+    target = tmp_path / "project"
+    target.mkdir()
+    apply(target)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "AGENTS.md").write_text((target / "AGENTS.md").read_text())
+    path = target / ".plane/install.json"
+    data = json.loads(path.read_text())
+    data["entries"][escape.format(abs=tmp_path)] = {"kind": "block", "created": True}
+    path.write_text(json.dumps(data))
+    before = snapshot(tmp_path)
+    for operation in (revert, apply):
+        with pytest.raises(ValueError, match="outside target|Invalid installation receipt"):
+            operation(target)
+    assert snapshot(tmp_path) == before
+    # An interrupted (pending) receipt is checked just as strictly.
+    data["pending"] = True
+    path.write_text(json.dumps(data))
+    before = snapshot(tmp_path)
+    for operation in (revert, apply):
+        with pytest.raises(ValueError, match="outside target|Invalid installation receipt"):
+            operation(target)
+    assert snapshot(tmp_path) == before
+
+
 def test_symlinked_paths_refused(tmp_path):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()

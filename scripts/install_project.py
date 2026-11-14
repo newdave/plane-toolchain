@@ -340,6 +340,9 @@ def write(path, text, mode=None):
 
 def guard(target, rel):
     """Refuse symlinks anywhere between the target root and the file."""
+    parts = Path(rel).parts
+    if Path(rel).is_absolute() or ".." in parts or not parts:
+        raise ValueError(f"{rel}: outside target")
     path = target / rel
     for part in (path, *path.parents):
         if part == target:
@@ -353,6 +356,19 @@ def guard(target, rel):
                 )
             raise ValueError(f"{rel}: refusing symlinked installation path")
     raise ValueError(f"{rel}: outside target")
+
+
+# Every path plan() can produce; a receipt naming any other path is not ours.
+PLANNED = {
+    ".plane/plane.sh",
+    ".plane/.gitignore",
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".mcp.json",
+    ".claude/settings.json",
+    ".codex/config.toml",
+    ".codex/hooks.json",
+}
 
 
 def settings_kind(target, preapprove=True):
@@ -395,10 +411,12 @@ def reverted(target, receipt):
     entries = receipt.get("entries")
     if receipt.get("version") != 1 or not isinstance(entries, dict) or not entries:
         raise ValueError("Invalid installation receipt")
+    if not set(entries) <= PLANNED:
+        raise ValueError("Invalid installation receipt")
     result = {}
     pending = receipt.get("pending") is True
     for rel, entry in entries.items():
-        if entry.get("kind") not in KINDS:
+        if not isinstance(entry, dict) or entry.get("kind") not in KINDS:
             raise ValueError("Invalid installation receipt")
         text = read(guard(target, rel))
         # A pending receipt marks each file done once written. A file not marked may be
@@ -450,6 +468,9 @@ def apply(target, values=None, toolchain=SOURCE, preapprove=True):
             print("Plane integration already installed")
             outdated(target, receipt)
             return
+        entries = receipt.get("entries")
+        if not isinstance(entries, dict) or not set(entries) <= PLANNED:
+            raise ValueError("Invalid installation receipt")
         resumed = receipt
         print("Finishing an interrupted installation")
         recorded = receipt["entries"].get(".claude/settings.json", {}).get("approval")
