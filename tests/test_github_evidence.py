@@ -185,3 +185,106 @@ def test_gate_fields_changed():
     assert not changed("Plane-Tasks: ABC-1", "Plane-Tasks: ABC-1\n" + EXEMPT)
     assert not changed(None, "")
     assert changed(None, "Plane-Tasks: ABC-1")
+
+
+def test_pr_update_keys_and_html():
+    event = {
+        "action": "closed",
+        "number": 7,
+        "pull_request": {"updated_at": "2026-01-01T00:00:00Z"},
+    }
+    pr = {
+        "number": 7,
+        "merged": True,
+        "head": {"sha": "b" * 40},
+        "html_url": "https://github.com/example/demo/pull/7",
+        "base": {"repo": {"full_name": REPO}},
+    }
+    update = ge.pr_update(event, pr, REPO)
+    assert update.pr is pr
+    assert update.key == "example/demo:pr:7:merged:2026-01-01T00:00:00Z"
+    assert update.content == (
+        f"<p>PR #7: merged. Head: {'b' * 40}. "
+        '<a href="https://github.com/example/demo/pull/7">Pull request</a></p>'
+    )
+    unmerged = ge.pr_update(dict(event, action="edited"), dict(pr, merged=False), REPO)
+    assert unmerged.key == "example/demo:pr:7:edited:2026-01-01T00:00:00Z"
+    assert ge.pr_update(dict(event, action="closed"), dict(pr, merged=False), REPO).key.endswith(
+        ":closed:2026-01-01T00:00:00Z"
+    )
+    assert ge.pr_update(dict(event, action="labeled"), pr, REPO) is None
+    other = dict(pr, base={"repo": {"full_name": "other/demo"}})
+    with pytest.raises(ValueError, match="Unexpected PR base repository"):
+        ge.pr_update(event, other, REPO)
+
+
+def test_matching_prs_head_or_merge_commit():
+    sha = "c" * 40
+
+    def candidate(number, head, merge, repo=REPO):
+        return {
+            "number": number,
+            "head": {"sha": head},
+            "merge_commit_sha": merge,
+            "base": {"repo": {"full_name": repo}},
+        }
+
+    candidates = [
+        candidate(1, sha, "d" * 40),
+        candidate(2, "e" * 40, sha),
+        candidate(3, sha, sha, repo="other/demo"),
+        candidate(4, "e" * 40, None),
+    ]
+    assert [pr["number"] for pr in ge.matching_prs(candidates, REPO, sha)] == [1, 2]
+
+
+def test_run_updates_text():
+    sha = "c" * 40
+    pr = {"number": 7, "head": {"sha": sha}}
+    (update,) = ge.run_updates(
+        [pr],
+        REPO,
+        sha,
+        label="build",
+        conclusion="success",
+        run_id=42,
+        attempt=2,
+        run_url="https://github.com/example/demo/actions/runs/42",
+    )
+    assert update.pr is pr
+    assert update.key == "example/demo:run:42:2:pr:7"
+    assert update.content == (
+        f"<p>build: success. Revision: {sha}. "
+        "This records checks, not deployed health or task acceptance. "
+        '<a href="https://github.com/example/demo/actions/runs/42">Workflow run</a></p>'
+    )
+    with pytest.raises(ValueError, match="Invalid workflow SHA"):
+        ge.run_updates(
+            [pr],
+            REPO,
+            "XYZ",
+            label="build",
+            conclusion="success",
+            run_id=42,
+            attempt=1,
+            run_url="u",
+        )
+
+
+def test_aggregate():
+    assert ge.aggregate({"a": "success", "b": "skipped"}) == "success"
+    assert ge.aggregate({"a": "success", "b": "skipped", "c": "cancelled"}) == "cancelled"
+    assert ge.aggregate({"a": "success", "c": "cancelled", "d": "failure"}) == "failure"
+    assert ge.aggregate({}) == "success"
+
+
+def test_run_evidence_skips_pr_without_reference_field():
+    refs = ge.ReferenceRules()
+    assert ge.optional_references({"body": "no field here"}, [], REPO, refs, MAINTENANCE) == []
+    assert ge.optional_references({"body": None}, [], REPO, refs, MAINTENANCE) == []
+    with pytest.raises(ValueError):
+        ge.optional_references({"body": "Plane-Tasks: bad"}, [], REPO, refs, MAINTENANCE)
+    assert ge.optional_references({"body": "Plane-Tasks: ABC-1"}, [], REPO, refs, MAINTENANCE) == [
+        "ABC-1"
+    ]
+    assert ge.optional_references(renovate_pr(), FILES, REPO, refs, MAINTENANCE) == []

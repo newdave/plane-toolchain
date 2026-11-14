@@ -6,8 +6,9 @@ the MCP ``call``. Evidence is comments only; task state is never changed.
 """
 
 import hashlib
+import html
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
@@ -188,3 +189,97 @@ def gate_fields_changed(
         )
 
     return fields(before) != fields(after)
+
+
+def optional_references(
+    pr: dict,
+    files: list[str],
+    repo: str,
+    refs: ReferenceRules,
+    maintenance: MaintenanceRules,
+) -> list[str]:
+    """Evidence only: a PR with no reference field has nothing to record, so skip it.
+
+    A malformed field or a failed exemption still raises.
+    """
+    body = pr.get("body") or ""
+    if not references(body, refs) and not needs_files(body, maintenance):
+        return []
+    return required_references(pr, files, repo, refs, maintenance)
+
+
+STATUS_CONTEXT = "Plane task references"
+PR_ACTIONS = frozenset({"opened", "edited", "synchronize", "reopened", "closed"})
+
+
+@dataclass(frozen=True)
+class Update:
+    """One PR and the evidence comment to record for it."""
+
+    pr: dict
+    key: str
+    content: str
+
+
+def _paragraph(text: str, url: str, label: str) -> str:
+    return f'<p>{html.escape(text)} <a href="{html.escape(url, quote=True)}">{label}</a></p>'
+
+
+def pr_update(event: dict, pr: dict, repo: str) -> Update | None:
+    """Evidence for a pull_request_target event; the PR itself comes from the API."""
+    if pr["base"]["repo"]["full_name"] != repo:
+        raise ValueError("Unexpected PR base repository")
+    action = event["action"]
+    if action not in PR_ACTIONS:
+        return None
+    number = int(event["number"])
+    outcome = "merged" if action == "closed" and pr["merged"] else action
+    version = str(event["pull_request"]["updated_at"])
+    text = f"PR #{number}: {outcome}. Head: {pr['head']['sha']}."
+    return Update(
+        pr,
+        f"{repo}:pr:{number}:{outcome}:{version}",
+        _paragraph(text, pr["html_url"], "Pull request"),
+    )
+
+
+def matching_prs(candidates: list[dict], repo: str, sha: str) -> list[dict]:
+    """Keep PRs of this repository whose head or merge commit is the run's commit."""
+    return [
+        pr
+        for pr in candidates
+        if pr["base"]["repo"]["full_name"] == repo
+        and sha in {pr["head"]["sha"], pr.get("merge_commit_sha")}
+    ]
+
+
+def run_updates(
+    prs: list[dict],
+    repo: str,
+    sha: str,
+    *,
+    label: str,
+    conclusion: str,
+    run_id: int,
+    attempt: int,
+    run_url: str,
+) -> list[Update]:
+    """Evidence for a finished run; a rerun attempt gets its own key."""
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("Invalid workflow SHA")
+    text = (
+        f"{label}: {conclusion}. Revision: {sha}. "
+        "This records checks, not deployed health or task acceptance."
+    )
+    content = _paragraph(text, run_url, "Workflow run")
+    return [Update(pr, f"{repo}:run:{run_id}:{attempt}:pr:{pr['number']}", content) for pr in prs]
+
+
+def aggregate(results: Mapping[str, str]) -> str:
+    """Single conclusion from job results; skipped is neutral."""
+    values = set(results.values())
+    if "failure" in values:
+        return "failure"
+    if "cancelled" in values:
+        return "cancelled"
+    return "success"
