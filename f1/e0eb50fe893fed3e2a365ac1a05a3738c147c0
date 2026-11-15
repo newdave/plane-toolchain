@@ -1,0 +1,49 @@
+tests/test_workspace_rename_backend_check.py
+  s_1bde54f3848399::t_e40dd079313562 6,9,238-239,305
+  s_1bde54f3848399::t_b3850177f34ed7 8,83
+tests/test_workspace_rename_hardening_gates.py
+  s_1bde54f3848399::t_e40dd079313562 9,119
+  s_1bde54f3848399::t_b3850177f34ed7 552,555
+src/plane_toolchain/workspace_rename.py
+  s_1bde54f3848399::t_4c3406c14f6bc2 29,168
+  s_1bde54f3848399::t_ed931174b44e11 31,170
+  s_1bde54f3848399::t_532df43cc1c90d 30,165-167,171-172
+  s_1bde54f3848399::t_4fbb2f313ee496 28,169
+tests/support_workspace_rename_hardening.py
+  s_1bde54f3848399::t_e40dd079313562 79,82
+src/plane_toolchain/workspace_rename_backend_check.py
+  s_1bde54f3848399::t_4c3406c14f6bc2 1-243
+tests/test_workspace_rename_backend_rows.py
+  s_1bde54f3848399::t_a6c3642682bf06 50
+  s_1bde54f3848399::t_0eeaee544e8206 13,402
+tests/support_workspace_rename_backend.py
+  s_1bde54f3848399::t_e40dd079313562 7,157
+src/plane_toolchain/workspace_rename_backend_django.py
+  s_1bde54f3848399::t_16526f9495f4b3 1-14,18-186
+  s_1bde54f3848399::t_4c3406c14f6bc2 15
+  s_1bde54f3848399::t_ed931174b44e11 17
+  s_1bde54f3848399::t_4fbb2f313ee496 16
+src/plane_toolchain/workspace_rename_backend_apply.py
+  s_1bde54f3848399::t_4fbb2f313ee496 1-279
+src/plane_toolchain/workspace_rename_backend_restore.py
+  s_1bde54f3848399::t_ed931174b44e11 1-15,17-241
+  s_1bde54f3848399::t_4fbb2f313ee496 16
+src/plane_toolchain/workspace_rename_backend.py
+  s_1bde54f3848399::t_4c3406c14f6bc2 3-7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "f1e0eb50fe893fed3e2a365ac1a05a3738c147c0",
+  "prompts": {},
+  "sessions": {
+    "s_1bde54f3848399": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa57f6da-c6ab-4f76-98a5-11f63f16a0d7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
