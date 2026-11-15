@@ -1,0 +1,27 @@
+CHANGELOG.md
+  s_1bde54f3848399::t_1613e81f72d588 11
+tests/test_project_install.py
+  s_1bde54f3848399::t_46d6f4e8efc2bc 1430-1431,1433-1434
+docs/project-install.md
+  s_1bde54f3848399::t_d2e55a38e24e28 82
+scripts/install_project.py
+  s_1bde54f3848399::t_b560df0e2f74fa 65
+tests/fixtures/plane-sh-pre-prompt.txt
+  s_1bde54f3848399::t_318998c3ac2bbd 1-76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "591728ed471cb06a1f4df8aeaff3bae2a2f5fe56",
+  "prompts": {},
+  "sessions": {
+    "s_1bde54f3848399": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa57f6da-c6ab-4f76-98a5-11f63f16a0d7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
