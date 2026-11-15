@@ -1,0 +1,21 @@
+tests/test_workspace_rename_parts.py
+  s_1bde54f3848399::t_90c9f527a3cc81 113-130
+src/plane_toolchain/workspace_rename_snippet.py
+  s_1bde54f3848399::t_eef6139c1029df 143-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "405edc210eb2645feb67fc93cdde431bbd96fc22",
+  "prompts": {},
+  "sessions": {
+    "s_1bde54f3848399": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa57f6da-c6ab-4f76-98a5-11f63f16a0d7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
