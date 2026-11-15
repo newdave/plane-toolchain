@@ -1,0 +1,25 @@
+tests/fake_orm.py
+  s_1bde54f3848399::t_584492160065d9 25-27,36-45,47
+src/plane_toolchain/workspace_rename.py
+  s_1bde54f3848399::t_77a02252588b2b 157-161,163-164
+tests/test_workspace_rename_parts.py
+  s_1bde54f3848399::t_47caa1eb322a77 4
+  s_1bde54f3848399::t_9ba5a1231418aa 99-112
+  s_1bde54f3848399::t_ac49d5b35c2f6d 8,86-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "8d89e54acd5232fd8cf5f382a071524af4394f6a",
+  "prompts": {},
+  "sessions": {
+    "s_1bde54f3848399": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa57f6da-c6ab-4f76-98a5-11f63f16a0d7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
