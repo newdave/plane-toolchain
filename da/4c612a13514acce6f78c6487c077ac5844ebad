@@ -1,0 +1,26 @@
+tests/test_github_config.py
+  s_1bde54f3848399::t_7316e8e2bc9249 395,433-459
+  s_1bde54f3848399::t_b5ebf0f819f628 460-461
+  s_1bde54f3848399::t_2cb8d8efafab4d 17-18,52-53,80,394
+  s_1bde54f3848399::t_fabd6810316486 396,405
+docs/github-actions.md
+  s_1bde54f3848399::t_d4eae0cf0bb0c8 32
+scripts/github_config.py
+  s_1bde54f3848399::t_dd494edf6ffeb3 10,18,67-72,74-77,79-86,88-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "da4c612a13514acce6f78c6487c077ac5844ebad",
+  "prompts": {},
+  "sessions": {
+    "s_1bde54f3848399": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa57f6da-c6ab-4f76-98a5-11f63f16a0d7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
