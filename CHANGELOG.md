@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- graphify support for agents working on this repository. `mise run graph:update` builds an AST-only knowledge graph in `graphify-out/` (gitignored, no API calls) from the opt-in `graph` dependency group, so `uv sync` and CI do not install it. `AGENTS.md` tells agents to use `graphify query`, `path` and `explain` before grepping, and a Claude Code `PreToolUse` hook (`scripts/graphify-hint.py`) adds that hint to Bash searches, Grep and Glob when a graph exists. The project installer and installed projects are unchanged.
+
 ## [0.5.1] - 2026-11-14
 
 ### Added
