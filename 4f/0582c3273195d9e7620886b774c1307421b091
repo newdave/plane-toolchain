@@ -1,0 +1,19 @@
+CHANGELOG.md
+  s_1bde54f3848399::t_b2c658444bd206 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "4f0582c3273195d9e7620886b774c1307421b091",
+  "prompts": {},
+  "sessions": {
+    "s_1bde54f3848399": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa57f6da-c6ab-4f76-98a5-11f63f16a0d7",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
