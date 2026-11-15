@@ -1,0 +1,39 @@
+scripts/install_project.py
+  s_b350171de8ba24::t_8418ac138108e8 414,418-424
+  s_3202d236e3f201::t_62aa87a8069c47 446
+  s_3202d236e3f201::t_fb84b9839d635f 404-413,415-417,425-428
+  s_3202d236e3f201::t_91daae98f92ea5 551-555
+CHANGELOG.md
+  s_3202d236e3f201::t_e79c0db158880a 9-10,12
+  s_b350171de8ba24::t_d7c7c95dea559c 11
+tests/test_project_skill.py
+  s_b350171de8ba24::t_7bb8b87bda6183 127-136
+  s_3202d236e3f201::t_55050a936f4736 87-104,115-126
+  s_b350171de8ba24::t_5327dd3688d757 105-114
+docs/project-install.md
+  s_3202d236e3f201::t_bfc451983322b0 31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "7e50ddd06358de95dcf358ad9a3611af18592fa5",
+  "prompts": {},
+  "sessions": {
+    "s_3202d236e3f201": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ccbdd869-ca1e-450b-b2bc-34aa37146f01",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    },
+    "s_b350171de8ba24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0ba45039-30a3-4c4d-aeb2-6e7cffe81f99",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
