@@ -1,0 +1,23 @@
+docs/project-install.md
+  s_1bde54f3848399::t_83644e208a4390 89-90
+CONTRIBUTING.md
+  s_1bde54f3848399::t_83644e208a4390 36
+pyproject.toml
+  s_1bde54f3848399::t_83644e208a4390 31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "e94baf42ba31406509e911a111ffc8856f5e750e",
+  "prompts": {},
+  "sessions": {
+    "s_1bde54f3848399": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa57f6da-c6ab-4f76-98a5-11f63f16a0d7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
