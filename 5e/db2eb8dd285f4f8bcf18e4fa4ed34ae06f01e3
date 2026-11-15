@@ -1,0 +1,61 @@
+src/plane_toolchain/workspace_rename_receipt.py
+  s_1bde54f3848399::t_8a35163f7c2fea 191-194,199,201-230
+  s_1bde54f3848399::t_85489640efcfef 395,397
+tests/test_workspace_rename_backend_restore.py
+  s_1bde54f3848399::t_d2a0cec5e5373d 284-340,344-347,350
+  s_1bde54f3848399::t_ece147b4124957 3-4,14
+tests/test_workspace_rename_deploy_revert.py
+  s_1bde54f3848399::t_d333a9379e4cb5 373
+  s_1bde54f3848399::t_d9c4da2501f986 3-5,10
+  s_1bde54f3848399::t_82e50921e3e873 361-362
+  s_1bde54f3848399::t_a9491ffd738030 45-47
+  s_1bde54f3848399::t_f6bbda3528d7ed 348-360,363-372,374-394,398-400,404-406
+  s_1bde54f3848399::t_c3942ab3d6dde9 395,401,403
+  s_1bde54f3848399::t_6d8ad28bd7a7a8 396-397,402
+src/plane_toolchain/workspace_rename_backend.py
+  s_1bde54f3848399::t_60200e144cebf9 16-17
+tests/fake_docker.py
+  s_1bde54f3848399::t_74afea1a117ec9 77-81,243-244,330,337-340
+tests/support_workspace_rename_deploy.py
+  s_1bde54f3848399::t_74afea1a117ec9 189
+tests/test_workspace_rename_receipt.py
+  s_1bde54f3848399::t_a1d4e2abffc2d3 3
+  s_1bde54f3848399::t_c57044eec21eef 163-189
+src/plane_toolchain/workspace_rename_revert.py
+  s_1bde54f3848399::t_5ee8cab1e2c93a 189-190,196,201
+  s_1bde54f3848399::t_26df23ecbfee3d 7,9,39-40,51,188
+tests/support_workspace_rename_backend.py
+  s_1bde54f3848399::t_24d853b6efcc1f 285-299
+  s_1bde54f3848399::t_0572533ca88afa 4
+src/plane_toolchain/workspace_rename_backend_restore.py
+  s_1bde54f3848399::t_6d173286f7017c 38-65,67,69-72,74,76,78
+  s_1bde54f3848399::t_6d3227460694ce 105-106
+  s_1bde54f3848399::t_2aa91f2f22f5c7 7-8
+  s_1bde54f3848399::t_f4e77d89fb134c 157-162
+src/plane_toolchain/workspace_rename_backend_django.py
+  s_1bde54f3848399::t_60200e144cebf9 13,18-23,163-165,169-174,183,186-187
+tests/fake_orm.py
+  s_1bde54f3848399::t_74afea1a117ec9 384-386,388,390,408-409,412-413
+src/plane_toolchain/workspace_rename_snippet.py
+  s_1bde54f3848399::t_05837212abe21e 137-138,196-210,214-216,262,272-279,303-307,326-329,500
+tests/test_workspace_rename_deploy_apply.py
+  s_1bde54f3848399::t_d333a9379e4cb5 345,348
+tests/test_workspace_rename_hardening_snippet_kill.py
+  s_1bde54f3848399::t_44c1fa78ca37d2 254-316
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "5edb2eb8dd285f4f8bcf18e4fa4ed34ae06f01e3",
+  "prompts": {},
+  "sessions": {
+    "s_1bde54f3848399": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa57f6da-c6ab-4f76-98a5-11f63f16a0d7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
