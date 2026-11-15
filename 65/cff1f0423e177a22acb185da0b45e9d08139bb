@@ -1,0 +1,25 @@
+AGENTS.md
+  s_984aa9b2e8cdae::t_b4c374b688ca6c 7
+docs/agent-workflow.md
+  s_984aa9b2e8cdae::t_fa2b4fd94aa0dc 34
+templates/project/AGENTS.md
+  s_984aa9b2e8cdae::t_c8918d44140ca5 9
+templates/project/skills/plane-tasks/SKILL.md
+  s_984aa9b2e8cdae::t_e8f20fdd02efd8 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "65cff1f0423e177a22acb185da0b45e9d08139bb",
+  "prompts": {},
+  "sessions": {
+    "s_984aa9b2e8cdae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd37145a-b4a1-4ee5-a8a3-56007c44ba57",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
