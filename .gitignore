@@ -16,3 +16,4 @@ dist/
 .DS_Store
 tools/mcp-remote/node_modules/
 .coverage
+graphify-out/

@@ -32,6 +32,9 @@ run = "uv run --locked pytest -q --cov --cov-report=term:skip-covered"
 env = { VIRTUAL_ENV = false }
 [tasks.check]
 depends = ["lint", "lint:ci", "test"]
+[tasks."graph:update"]
+run = "uv run --locked --group graph graphify update ."
+env = { VIRTUAL_ENV = false }
 [tasks."plane:cli"]
 run = "uv run --locked python -m plane_toolchain.cli"
 env = { VIRTUAL_ENV = false }
