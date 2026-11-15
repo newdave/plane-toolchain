@@ -1,0 +1,21 @@
+AGENTS.md
+  s_ee8a574341f228::t_fb2be8f3f58b46 12-15
+CHANGELOG.md
+  s_ee8a574341f228::t_13b61e6157d9ed 9-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "04e5c0643c1c883f7fbefae0d022bd939daf969c",
+  "prompts": {},
+  "sessions": {
+    "s_ee8a574341f228": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "79ecb8e9-bac9-42ed-a4ca-b4a197138c52",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
