@@ -20,7 +20,7 @@ Write a task description with real headings and lists, never paragraphs with lin
 - `## Acceptance`: observable checks, as a list.
 - Optional: `## Files`, `## Dependencies`, `## Notes`.
 
-Set a priority on every task you create: `urgent`, `high`, `medium` or `low`, never `none`. If the owner gave none, choose one from the impact and urgency, and report it.
+Set a priority on every task you create: `urgent`, `high`, `medium` or `low`, never `none`. If the owner gave none, choose one from the impact and urgency, and report it. Add the task to its feature's Module when one exists; do not create a Module only to hold it.
 
 Before you replace a title or description, read all of the current remote content and keep its scope, acceptance and evidence. For a state-only change, leave the description alone. Preserve assignees, labels, cycles and comments.
 
