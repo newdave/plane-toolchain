@@ -18,6 +18,9 @@ dev = [
     "pyyaml>=6,<7",
     "pytest-cov>=6,<8",
 ]
+graph = [
+    "graphifyy>=0.8.18,<0.9",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
