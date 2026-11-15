@@ -1,0 +1,20 @@
+src/plane_toolchain/workspace_rename_revert.py
+  s_1bde54f3848399::t_51b30fd74c84c3 170-172
+  s_1bde54f3848399::t_41354cdae58203 173
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "a6374a49603a58c86f5198bd6a3a454d547f3378",
+  "prompts": {},
+  "sessions": {
+    "s_1bde54f3848399": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa57f6da-c6ab-4f76-98a5-11f63f16a0d7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
