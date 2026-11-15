@@ -1,0 +1,42 @@
+tests/test_workspace_rename_hardening_gates.py
+  s_1bde54f3848399::t_a3127a070e11d0 506,508
+tests/test_workspace_rename_deploy_apply.py
+  s_1bde54f3848399::t_7c5d76075adb75 438-457
+src/plane_toolchain/workspace_rename_backend_restore.py
+  s_1bde54f3848399::t_e6e4377a961edf 59
+tests/test_workspace_rename_hardening_snippet_kill.py
+  s_1bde54f3848399::t_c1297f5dfe7f14 33-36
+src/plane_toolchain/workspace_rename_apply.py
+  s_1bde54f3848399::t_e6e4377a961edf 71,156,312
+  s_1bde54f3848399::t_8a19c77714786f 15
+docs/workspace-rename.md
+  s_1bde54f3848399::t_c1297f5dfe7f14 188
+tests/test_workspace_rename_parts.py
+  s_1bde54f3848399::t_f400f5805738fb 122,138
+  s_1bde54f3848399::t_fd8c97b32eed43 136-137,139-140
+  s_1bde54f3848399::t_a3127a070e11d0 118-121,123-125,129
+  s_1bde54f3848399::t_c1297f5dfe7f14 133-135
+  s_1bde54f3848399::t_8e08f0bd940b07 141
+src/plane_toolchain/workspace_rename_snippet.py
+  s_1bde54f3848399::t_e6e4377a961edf 354-355
+CHANGELOG.md
+  s_1bde54f3848399::t_c1297f5dfe7f14 16
+tests/test_workspace_rename_backend_restore.py
+  s_1bde54f3848399::t_8e08f0bd940b07 308-316
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "3e018508ff94cb4037cfef33b6f48c55515e905e",
+  "prompts": {},
+  "sessions": {
+    "s_1bde54f3848399": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa57f6da-c6ab-4f76-98a5-11f63f16a0d7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
