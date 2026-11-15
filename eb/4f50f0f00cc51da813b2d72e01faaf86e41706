@@ -1,0 +1,36 @@
+scripts/plane-prompt.zsh
+  s_1bde54f3848399::t_585820a9e4e4df 2-4,6
+  s_1bde54f3848399::t_bac2650bc5cfff 45
+  s_1bde54f3848399::t_2735db19351201 61
+scripts/install_project.py
+  s_1bde54f3848399::t_b7f39cf0b48851 64-66
+CHANGELOG.md
+  s_1bde54f3848399::t_8a58de5ee1dfc9 11,43-44,73-74,127-128,195-196,235
+  s_1bde54f3848399::t_8014c5834477c2 236
+docs/project-install.md
+  s_1bde54f3848399::t_8a58de5ee1dfc9 74-89
+tests/test_project_install.py
+  s_1bde54f3848399::t_5b6cae59dd2420 1340-1367,1369-1399,1401-1430,1434-1437
+  s_1bde54f3848399::t_dddb6faebd06b5 656-657,1368,1400
+  s_1bde54f3848399::t_1c13f91efb7861 1431-1433
+templates/project/plane.sh
+  s_1bde54f3848399::t_442319af10968d 81
+  s_1bde54f3848399::t_a7730f217e9a01 3
+  s_1bde54f3848399::t_bcdafef7a1c246 53-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "eb4f50f0f00cc51da813b2d72e01faaf86e41706",
+  "prompts": {},
+  "sessions": {
+    "s_1bde54f3848399": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa57f6da-c6ab-4f76-98a5-11f63f16a0d7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
