@@ -84,6 +84,56 @@ def test_symlinked_skills_directory_is_refused(tmp_path):
     assert sorted(p.name for p in target.rglob("*")) == target_before
 
 
+@pytest.mark.parametrize("dangling", [False, True])
+def test_claude_skills_linked_to_agents_skills_shares_one_copy(tmp_path, dangling):
+    if not dangling:
+        (tmp_path / ".agents/skills/other").mkdir(parents=True)
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/skills").symlink_to("../.agents/skills")
+    apply(tmp_path)
+    receipt = json.loads((tmp_path / ".plane/install.json").read_text())
+    assert PATHS[0] not in receipt["entries"]
+    assert receipt["entries"][PATHS[1]] == {"kind": "skill", "created": True}
+    assert not [d for d in receipt["directories"] if d.startswith(".claude/skills")]
+    assert (tmp_path / PATHS[0]).read_text() == TEMPLATE.read_text()
+    revert(tmp_path)
+    assert (tmp_path / ".claude/skills").is_symlink()
+    assert not list(tmp_path.rglob("SKILL.md"))
+    assert (tmp_path / ".agents").exists() is not dangling
+
+
+def test_claude_skills_link_is_shared_for_a_relative_target(tmp_path, monkeypatch):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/skills").symlink_to("../.agents/skills")
+    monkeypatch.chdir(tmp_path)
+    apply(Path("."))
+    receipt = json.loads((tmp_path / ".plane/install.json").read_text())
+    assert PATHS[0] not in receipt["entries"]
+    assert (tmp_path / PATHS[1]).read_text() == TEMPLATE.read_text()
+
+
+def test_claude_skills_linked_outside_the_target_is_refused(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    target = tmp_path / "target"
+    (target / ".claude").mkdir(parents=True)
+    (target / ".claude/skills").symlink_to(elsewhere)
+    with pytest.raises(ValueError, match="symlink"):
+        apply(target)
+    assert not list(elsewhere.iterdir())
+    assert not (target / ".plane").exists()
+
+
+def test_skills_directories_linked_to_each_other_are_refused(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".agents").mkdir()
+    (tmp_path / ".claude/skills").symlink_to("../.agents/skills")
+    (tmp_path / ".agents/skills").symlink_to("../.claude/skills")
+    with pytest.raises(ValueError, match="symlink"):
+        apply(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".agents", ".claude"]
+
+
 def test_interrupted_apply_is_reverted_with_the_skill(tmp_path, monkeypatch):
     scope = installer["apply"].__globals__
     real = scope["write"]

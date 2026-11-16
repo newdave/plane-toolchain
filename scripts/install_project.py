@@ -401,6 +401,31 @@ def settings_kind(target, preapprove=True):
         return "settings-json"
 
 
+def linked(target, rel):
+    """True when the path, or a directory between it and the target, is a symlink."""
+    path = target / rel
+    return any(part.is_symlink() for part in (path, *path.parents) if part.is_relative_to(target))
+
+
+def skill_paths(target):
+    """Skill copies to write. A client skills directory that is a symlink to the other
+    client's real skills directory shares that copy; any other symlink is refused by guard."""
+    paths = list(SKILL_PATHS)
+    root = target.resolve()
+    for rel in SKILL_PATHS:
+        skills = Path(rel).parents[1]
+        others = [Path(other).parents[1] for other in SKILL_PATHS if other != rel]
+        if not (target / skills).is_symlink() or linked(target, skills.parent):
+            continue
+        try:
+            real = (target / skills).resolve()
+        except (OSError, RuntimeError):  # a symlink loop; guard refuses it
+            continue
+        if any(real == root / o and not linked(target, o) for o in others):
+            paths.remove(rel)
+    return paths
+
+
 def plan(target, preapprove=True):
     """Return (relative path, kind) pairs for this target's current layout."""
     claude = read(guard(target, "CLAUDE.md"))
@@ -418,7 +443,7 @@ def plan(target, preapprove=True):
         (".claude/settings.json", settings_kind(target, preapprove)),
         (".codex/config.toml", "codex-toml"),
         (".codex/hooks.json", "hooks-json"),
-        *((rel, "skill") for rel in SKILL_PATHS),
+        *((rel, "skill") for rel in skill_paths(target)),
     ]
 
 
@@ -523,7 +548,11 @@ def apply(target, values=None, toolchain=SOURCE, preapprove=True):
                     if not preapprove
                     else "listed"
                 )
-        created = [name for name in DIRECTORIES if not (target / name).exists()]
+        created = [
+            name
+            for name in DIRECTORIES
+            if not (target / name).exists() and not linked(target, name)
+        ]
     else:
         # Files marked done must be intact. Others get their change now, also when the user
         # edited or created them since; then the installer did not create them.
