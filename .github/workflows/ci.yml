@@ -34,9 +34,9 @@ jobs:
           printf '%s\n\n%s\n' "$PR_TITLE" "$PR_BODY" > "$msg"
           python3 scripts/check-commit-msg.py "$msg" || { echo "Bad PR title or body" >&2; exit 1; }
       - name: Install pinned tools
-        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
         with:
-          version: 2026.11.5
+          version: 2026.11.8
           install_args: python node uv actionlint shellcheck aqua:zizmorcore/zizmor
           cache: false
       - name: Install zsh for syntax check
