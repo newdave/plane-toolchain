@@ -1,0 +1,19 @@
+.github/actionlint.yaml
+  s_29e8abddbba298::t_15d621ae75c323 1-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "dc34073f72a048dedaf7b29d331d209a7ec2445e",
+  "prompts": {},
+  "sessions": {
+    "s_29e8abddbba298": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc74c799-2c7d-4b06-b4b8-09e197ee66f1",
+        "model": "unknown"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
