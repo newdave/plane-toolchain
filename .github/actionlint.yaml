@@ -1,0 +1,5 @@
+# actionlint 1.7.12 predates GitHub's ubuntu-26.04 hosted runner and rejects the label.
+# Remove this entry once an actionlint release lists ubuntu-26.04.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
