@@ -1,0 +1,23 @@
+tests/test_github_evidence_cli.py
+  s_57852bb0c563ca::t_058c79610846a7 259-351
+CHANGELOG.md
+  s_57852bb0c563ca::t_058c79610846a7 11
+src/plane_toolchain/github_evidence_cli.py
+  s_57852bb0c563ca::t_058c79610846a7 256-260,262-264,282-284,302-305,342-343,377-378,380-395
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "f34ed205c406a0465e5c933f95b00251d3789263",
+  "prompts": {},
+  "sessions": {
+    "s_57852bb0c563ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0c1ef82-6a92-4ae1-ace5-4df36c971718",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
