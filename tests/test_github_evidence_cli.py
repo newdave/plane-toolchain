@@ -256,6 +256,99 @@ def test_retrying_backoff_retry_after_and_limits():
     assert sleeps == []
 
 
+@pytest.mark.parametrize("error", [httpx2.ConnectError, httpx2.ConnectTimeout])
+def test_retrying_connection_errors_on_reads(error):
+    sleeps = []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    async def down(name, arguments):
+        raise error("https://host/secret")
+
+    with pytest.raises(error) as caught:
+        run(cli.retrying(down, sleep=sleep)("workitem", {"action": "list"}))
+    assert sleeps == [2, 4, 8]
+    assert cli.classify(caught.value) == "Plane workitem list failed (connection error)"
+
+    sleeps.clear()
+    results = [error("x"), {"ok": True}]
+
+    async def flaky(name, arguments):
+        item = results.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    assert run(cli.retrying(flaky, sleep=sleep)("project", {"action": "retrieve"})) == {"ok": True}
+    assert sleeps == [2]
+
+
+def test_retrying_connection_error_on_create_is_single_shot():
+    sleeps = []
+    calls = []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    async def create(name, arguments):
+        calls.append(name)
+        raise httpx2.ConnectError("x")
+
+    with pytest.raises(httpx2.ConnectError):
+        run(cli.retrying(create, sleep=sleep)("workitem_comment", {"action": "create"}))
+    assert (calls, sleeps) == (["workitem_comment"], [])
+
+
+def test_preflight_connection_error_named():
+    async def down(name, arguments):
+        raise httpx2.ConnectError("x")
+
+    with pytest.raises(cli.Failure, match=r"cannot read the project \(connection error\)"):
+        run(cli.preflight(down, "p"))
+
+
+def test_connected_retries_connection_errors():
+    sleeps = []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    class Session:
+        def __init__(self, fail):
+            self.fail = fail
+
+        async def __aenter__(self):
+            if self.fail:
+                raise ExceptionGroup("g", [httpx2.ConnectTimeout("x")])
+            return "raw"
+
+        async def __aexit__(self, *exc):
+            return False
+
+    plan = [True, True, False]
+    opened = []
+
+    async def use(connect):
+        async with cli._connected(connect, sleep=sleep) as raw:
+            opened.append(raw)
+
+    run(use(lambda: Session(plan.pop(0))))
+    assert (opened, sleeps) == (["raw"], [2, 4])
+
+    sleeps.clear()
+    attempts = []
+
+    def always():
+        attempts.append(1)
+        return Session(True)
+
+    with pytest.raises(cli.Failure) as caught:
+        run(use(always))
+    assert str(caught.value) == "Plane connection failed (connection error)"
+    assert (len(attempts), sleeps) == (4, [2, 4, 8])
+
+
 def test_github_transport_error_named():
     def boom(request):
         raise httpx2.ConnectError("https://host/secret")
