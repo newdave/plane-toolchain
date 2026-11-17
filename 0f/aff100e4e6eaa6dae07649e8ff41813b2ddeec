@@ -1,0 +1,80 @@
+tests/fixtures/plane.sh.shfmt-i4
+  s_57852bb0c563ca::t_3346d40351f1fe 8-9,14,18,20-27,42
+tests/fixtures/plane.sh.shfmt
+  s_57852bb0c563ca::t_22d663700fcc76 8-9,14,18,20-27,42
+templates/project/plane.sh.pre-config
+  s_57852bb0c563ca::t_1a78395854b6a3 1-76
+scripts/install_project.py
+  s_57852bb0c563ca::t_22c2724c7670ae 31-33
+  s_57852bb0c563ca::t_797d73ec9a6752 649-650,652
+  s_57852bb0c563ca::t_0fbbe961195f70 334-336,343
+  s_57852bb0c563ca::t_5bb5be1a3a6b27 222
+  s_57852bb0c563ca::t_3346d40351f1fe 880-882
+  s_57852bb0c563ca::t_92481890928cc2 862-866
+  s_57852bb0c563ca::t_6ae15c225bb228 643
+  s_57852bb0c563ca::t_43e280653b5212 824-829
+  s_57852bb0c563ca::t_ac83e12422e069 667,670
+  s_57852bb0c563ca::t_c9c16012d95cf0 780-783
+  s_57852bb0c563ca::t_d5630d875b4367 823,830-832
+  s_57852bb0c563ca::t_54acdda65c9738 415
+  s_57852bb0c563ca::t_ede34a77390345 471
+  s_57852bb0c563ca::t_c3c308c4588c4f 97-99,101,103,105-110
+  s_57852bb0c563ca::t_20dcaef68506e6 536-542
+  s_57852bb0c563ca::t_c7314016e30d87 333,337-342,347
+  s_57852bb0c563ca::t_f96ee66b3f345e 621-622
+  s_57852bb0c563ca::t_b20b2bb95698a1 154
+  s_57852bb0c563ca::t_691affdf4daebe 872-873
+  s_57852bb0c563ca::t_eb3fefb32d6969 113,118-126
+  s_57852bb0c563ca::t_7d335807835280 344-345,784
+tests/fixtures/plane.sh.pre-config.shfmt-i4
+  s_57852bb0c563ca::t_1a78395854b6a3 1-76
+tests/fixtures/plane.sh.shfmt-i2ci
+  s_57852bb0c563ca::t_3346d40351f1fe 8-9,14,18,20-27,42
+templates/project/AGENTS.md
+  s_57852bb0c563ca::t_60d36b39fa0daa 14
+tests/fixtures/plane.sh.shfmt-i0
+  s_57852bb0c563ca::t_507d18e7d6fc5a 8-9,14,18,20-27,42
+templates/project/AGENTS.md.pre-config
+  s_57852bb0c563ca::t_6d545f504ae8e9 1-16
+tests/fixtures/plane.sh.pre-config.shfmt-i0
+  s_57852bb0c563ca::t_1a78395854b6a3 1-76
+tests/test_project_install.py
+  s_57852bb0c563ca::t_0c777893bbf68d 54,236-237,239,312,361,371,374,383-384,399,401,435,874,880,892,894,899,903,963
+  s_57852bb0c563ca::t_eb1311f39efcce 29-36,964,990,1049,1068
+  s_57852bb0c563ca::t_eadf7139e2a19c 209-213,216,891,898
+  s_57852bb0c563ca::t_0fbbe961195f70 632
+  s_57852bb0c563ca::t_ee601c6a9e5c36 25-26
+  s_57852bb0c563ca::t_c44cf1b9eef886 244-275,278,281
+  s_57852bb0c563ca::t_729c969f63e71f 24,27-28
+  s_57852bb0c563ca::t_df698f51c2b583 276-277,279
+  s_57852bb0c563ca::t_9e2ec8c5b680a0 96,105,522,545,577,594,699,714,725,797
+  s_57852bb0c563ca::t_fbb6e2165622e9 58-59,63-64
+  s_57852bb0c563ca::t_08217ed78443f8 280
+templates/project/plane.sh
+  s_57852bb0c563ca::t_f72232ce3f8632 8-9,14,18,20-27
+  s_57852bb0c563ca::t_ad7f4e294ec1a3 42
+tests/fixtures/plane.sh.pre-config.shfmt
+  s_57852bb0c563ca::t_1a78395854b6a3 1-76
+tests/fixtures/plane.sh.pre-config.shfmt-i2ci
+  s_57852bb0c563ca::t_1a78395854b6a3 1-76
+tests/test_project_skill.py
+  s_57852bb0c563ca::t_729c969f63e71f 19,22-23
+  s_57852bb0c563ca::t_ee601c6a9e5c36 20-21
+  s_57852bb0c563ca::t_9e2ec8c5b680a0 35,211,229
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "0faff100e4e6eaa6dae07649e8ff41813b2ddeec",
+  "prompts": {},
+  "sessions": {
+    "s_57852bb0c563ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0c1ef82-6a92-4ae1-ace5-4df36c971718",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
