@@ -76,6 +76,26 @@ def local_layers(root: Path) -> list[Path]:
     return [legacy]
 
 
+def installed_layers(root: Path) -> list[Path]:
+    """Return an installed project's local settings files, lowest precedence first.
+
+    The ignored config/local.env is the home. A project not yet migrated keeps its values in
+    .plane/local.env, which is read only while no config/local.env exists, never merged.
+    """
+    main = main_checkout(root)
+    current = [*shared_file(main, "config/local.env"), root / "config/local.env"]
+    if any(path.is_file() for path in current):
+        return current
+    return [*shared_file(main, ".plane/local.env"), root / ".plane/local.env"]
+
+
+def legacy_layout(root: Path) -> bool:
+    """True for an installed project that still keeps its values under .plane/."""
+    return (root / ".plane/plane.sh").is_file() and installed_layers(root)[
+        -1
+    ].parent.name == ".plane"
+
+
 def tracked(path: Path) -> bool:
     """Return True when git tracks the file; False outside git or without git."""
     try:
@@ -96,9 +116,10 @@ def literal(root: Path, names: tuple[str, ...]) -> dict[str, str]:
     """
     values = {}
     paths = (root / "config/defaults.env", root / ".env", *local_layers(root))
-    # A project set up by scripts/install_project.py keeps its values only under .plane/.
+    # A project set up by scripts/install_project.py reads only its own local.env, not the
+    # project's other config files.
     if (root / ".plane/plane.sh").is_file():
-        paths = (*shared_file(main_checkout(root), ".plane/local.env"), root / ".plane/local.env")
+        paths = tuple(installed_layers(root))
     for path in paths:
         if path.is_file():
             found = assignments(path.read_text(), names)
@@ -141,6 +162,11 @@ def main() -> None:
         print(switch(ROOT, os.environ))
         return
     if sys.argv[1:] == ["connection"]:
+        if legacy_layout(ROOT):
+            print(
+                "plane: .plane/local.env is deprecated; move it to config/local.env",
+                file=sys.stderr,
+            )
         # NUL-separated so the bridge can export values without evaluating them.
         for name, value in connection(ROOT, os.environ).items():
             sys.stdout.write(f"{name}={value}\0")

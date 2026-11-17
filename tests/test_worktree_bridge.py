@@ -287,28 +287,42 @@ def test_session_symlinked_main_file_and_odd_common_dir_get_no_fallback(tmp_path
     assert plane_session.main_checkout(tmp_path / "bwt") is None
 
 
-def test_script_installed_worktree_reads_key_file_in_place(tmp_path, bridge):
+@pytest.mark.parametrize("rel", ["config/plane.enc.env", ".plane/plane.enc.env"])
+def test_script_installed_worktree_reads_key_file_in_place(tmp_path, bridge, rel):
     install, run, stub = bridge
     toolchain = make_repo(tmp_path / "toolchain")
     install(toolchain)
     stub(toolchain, "tool-bin")
     project = make_repo(tmp_path / "proj")
-    write(project, ".plane/plane.enc.env", "fixture-key-file")
+    write(project, rel, "fixture-key-file")
     wt = worktree(project)
     result = run(toolchain, PLANE_CONFIG_ROOT=str(wt))
     assert result.returncode == 0, result.stderr
     assert "main checkout" in result.stderr
+    # The older .plane/ home still works, with a pointer to the new one.
+    assert ("deprecated" in result.stderr) == rel.startswith(".plane")
     used = [x for x in result.stderr.splitlines() if x.startswith("SOPS_FILE=")][0]
-    assert (
-        Path(used.removeprefix("SOPS_FILE=")).resolve()
-        == (project / ".plane/plane.enc.env").resolve()
-    )
-    assert not (wt / ".plane/plane.enc.env").exists()
+    assert Path(used.removeprefix("SOPS_FILE=")).resolve() == (project / rel).resolve()
+    assert not (wt / rel).exists()
     assert "fixture" not in result.stdout + result.stderr.replace("fixture-key-file", "")
     # A symlinked key file in the main checkout is not followed.
-    (project / ".plane/plane.enc.env").unlink()
-    (project / ".plane/plane.enc.env").symlink_to(tmp_path / "stubs/sops")
+    (project / rel).unlink()
+    (project / rel).symlink_to(tmp_path / "stubs/sops")
     assert "SOPS_FILE" not in run(toolchain, PLANE_CONFIG_ROOT=str(wt)).stderr
+
+
+def test_script_installed_project_prefers_config_key_file(tmp_path, bridge):
+    install, run, stub = bridge
+    toolchain = make_repo(tmp_path / "toolchain")
+    install(toolchain)
+    stub(toolchain, "tool-bin")
+    project = make_repo(tmp_path / "proj")
+    write(project, ".plane/plane.enc.env", "old")
+    write(project, "config/plane.enc.env", "new")
+    result = run(toolchain, PLANE_CONFIG_ROOT=str(project))
+    assert result.returncode == 0, result.stderr
+    assert "SOPS_FILE=" + str(project / "config/plane.enc.env") in result.stderr
+    assert "deprecated" not in result.stderr
 
 
 def test_script_never_feeds_decrypted_output_through_a_here_string():

@@ -63,11 +63,19 @@ def set_enabled(path: Path, enabled: bool, *, restore: bool = True, backup: Path
 if __name__ == "__main__":
     if len(sys.argv) != 2 or sys.argv[1] not in {"apply", "revert", "enable", "disable"}:
         sys.exit("Expected apply, revert, enable or disable")
-    # Installed projects keep the switch and its baseline in their ignored .plane/ directory.
+    # Installed projects keep the switch and its baseline in their ignored config/ directory.
+    # One not yet migrated keeps both under .plane/ until config/local.env exists.
     root = os.environ.get("PLANE_CONFIG_ROOT")
+    home = "config"
+    if (
+        root
+        and Path(root, ".plane/local.env").exists()
+        and not Path(root, "config/local.env").exists()
+    ):
+        home = ".plane"
     set_enabled(
-        Path(root, ".plane/local.env") if root else Path("config/local.env"),
+        Path(root, home, "local.env") if root else Path("config/local.env"),
         sys.argv[1] in {"apply", "enable"},
         restore=sys.argv[1] != "disable",
-        backup=Path(root, ".plane/enable-backup.json") if root else None,
+        backup=Path(root, home, "enable-backup.json") if root else None,
     )
