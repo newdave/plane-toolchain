@@ -1,0 +1,28 @@
+tests/test_worktree_bridge.py
+  s_57852bb0c563ca::t_c44cf1b9eef886 290-291,297,302-303,305-306,309-310,314-325
+  s_57852bb0c563ca::t_d8cfbc2a4e67b5 326-327
+scripts/plane-mcp.sh
+  s_57852bb0c563ca::t_e7e2b431c96f6f 52-53,56,58-66,68-69,71-73
+src/plane_toolchain/session.py
+  s_57852bb0c563ca::t_e7e2b431c96f6f 79-98,119-120,122,165-167
+  s_57852bb0c563ca::t_899791ca8b8a87 168-169
+src/plane_toolchain/config.py
+  s_57852bb0c563ca::t_e7e2b431c96f6f 66-67,69-73
+  s_57852bb0c563ca::t_b4e8bead1df829 74-75,77,80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "35727223d64aee65e42360521363b48f6fe3cf81",
+  "prompts": {},
+  "sessions": {
+    "s_57852bb0c563ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0c1ef82-6a92-4ae1-ace5-4df36c971718",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
