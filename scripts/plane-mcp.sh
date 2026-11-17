@@ -49,17 +49,28 @@ while IFS= read -r entry; do
   [[ -z "$entry" ]] || export "${entry%%=*}=${entry#*=}"
 done < <(printf '%s\n' "$entries")
 # Optional SOPS-encrypted key file (ignored by *.enc.env). Only PLANE_API_KEY is exported.
-# Installed projects (PLANE_CONFIG_ROOT, set by .plane/plane.sh) keep theirs under .plane/.
+# Installed projects (PLANE_CONFIG_ROOT, set by .plane/plane.sh) use their own config/plane.enc.env,
+# falling back to the older .plane/plane.enc.env until it is moved.
 secrets="$(pick config/plane.enc.env)"
 if [[ -n "${PLANE_CONFIG_ROOT:-}" ]]; then
-  secrets="$PLANE_CONFIG_ROOT/.plane/plane.enc.env"
+  secrets="$PLANE_CONFIG_ROOT/config/plane.enc.env"
   # An installed project used from its own linked worktree falls back to its main checkout.
-  if [[ ! -e "$secrets" ]] && pmain="$(python3 src/plane_toolchain/session.py main "$PLANE_CONFIG_ROOT")"; then
-    alt="$pmain/.plane/plane.enc.env"
-    if [[ -f "$alt" && ! -L "$alt" ]] && inside "$alt" "$pmain"; then
-      secrets="$alt"
-      echo "plane: using the main checkout's .plane/plane.enc.env ($pmain)" >&2
+  pmain=""
+  pmain="$(python3 src/plane_toolchain/session.py main "$PLANE_CONFIG_ROOT")" || pmain=""
+  for rel in config/plane.enc.env .plane/plane.enc.env; do
+    if [[ -e "$PLANE_CONFIG_ROOT/$rel" ]]; then
+      secrets="$PLANE_CONFIG_ROOT/$rel"
+      break
     fi
+    alt="$pmain/$rel"
+    if [[ -n "$pmain" && -f "$alt" && ! -L "$alt" ]] && inside "$alt" "$pmain"; then
+      secrets="$alt"
+      echo "plane: using the main checkout's $rel ($pmain)" >&2
+      break
+    fi
+  done
+  if [[ "$secrets" == */.plane/plane.enc.env ]]; then
+    echo "plane: .plane/plane.enc.env is deprecated; move it to config/plane.enc.env" >&2
   fi
 fi
 if [[ -z "${PLANE_API_KEY:-}" && -L "$secrets" ]]; then

@@ -9,7 +9,7 @@ The paths depend on where the toolchain runs.
 | Context | Non-secret values | Encrypted key |
 | --- | --- | --- |
 | This repository's checkout | `config/local.env` (also `config/defaults.env`, `.env`) | `config/plane.enc.env` |
-| A project installed with `scripts/install_project.py` (has `.plane/plane.sh`) | `.plane/local.env` only | `.plane/plane.enc.env` |
+| A project installed with `scripts/install_project.py` (has `.plane/plane.sh`) | `config/local.env` only (`.plane/local.env` until moved) | `config/plane.enc.env` (`.plane/plane.enc.env` until moved) |
 
 In a linked worktree of either, the main checkout's git-ignored file is the fallback, found through the git common dir. The worktree's own `local.env` overrides the main one per key. A worktree's own `plane.enc.env` wins when present.
 
