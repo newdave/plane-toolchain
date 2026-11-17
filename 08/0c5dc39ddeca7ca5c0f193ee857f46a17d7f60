@@ -1,0 +1,24 @@
+tests/test_session.py
+  s_57852bb0c563ca::t_7c24c851966991 67
+  s_57852bb0c563ca::t_91b174068d6832 54-66,68-93
+src/plane_toolchain/session.py
+  s_57852bb0c563ca::t_910c2dfbf1d6d1 99-103,105-111,119-122,124
+CHANGELOG.md
+  s_57852bb0c563ca::t_d3d4313521acdb 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "080c5dc39ddeca7ca5c0f193ee857f46a17d7f60",
+  "prompts": {},
+  "sessions": {
+    "s_57852bb0c563ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0c1ef82-6a92-4ae1-ace5-4df36c971718",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
