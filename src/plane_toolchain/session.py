@@ -96,8 +96,19 @@ def legacy_layout(root: Path) -> bool:
     ].parent.name == ".plane"
 
 
+def in_checkout(path: Path) -> bool:
+    """True when the file sits in a git checkout: a .git entry in its directory or an ancestor."""
+    return any((d / ".git").exists() for d in (path.parent, *path.parent.parents))
+
+
 def tracked(path: Path) -> bool:
-    """Return True when git tracks the file; False outside git or without git."""
+    """Return True unless the file is known to be uncommitted.
+
+    False when git exits 1 (not tracked), or when the file is outside any git checkout (a .git
+    entry in its directory or an ancestor), where it cannot be committed. Any other git failure
+    (exit 128 for dubious ownership or a corrupt repo) and a missing git inside a checkout count
+    as tracked, so the URL guard fails closed.
+    """
     try:
         result = subprocess.run(  # noqa: S603 - fixed argv
             ["git", "ls-files", "--error-unmatch", "--", path.name],  # noqa: S607
@@ -105,8 +116,12 @@ def tracked(path: Path) -> bool:
             capture_output=True,
         )
     except OSError:
+        return in_checkout(path)
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
         return False
-    return result.returncode == 0
+    return in_checkout(path)
 
 
 def literal(root: Path, names: tuple[str, ...]) -> dict[str, str]:

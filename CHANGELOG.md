@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Session URL guard (PTC-129): `tracked()` now returns False only when `git ls-files` exits 1 (not tracked). Any other git failure (such as exit 128 for dubious ownership or a corrupt repository) and a missing `git` inside a checkout (a `.git` entry in the file's directory or an ancestor) count as tracked, so `.env` and `config/local.env` no longer supply `PLANE_MCP_URL`, which receives the API key, when git cannot answer. Outside a checkout the file still counts as untracked.
 - Project installer (PTC-145): a target whose `.claude/skills` is a symlink to its own `.agents/skills` (or the reverse) no longer fails with `refusing symlinked installation path`. Apply writes one `plane-tasks` skill copy at the real path and records only that path; a dangling link is followed. Directories under a symlink are never recorded as created, so revert never removes through a link. A skills link outside the target is still refused.
 
 ## [0.5.1] - 2026-11-14

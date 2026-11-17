@@ -51,6 +51,46 @@ def test_connection_values_read_literally_with_environment_precedence(tmp_path):
     assert not (tmp_path / "should-not-exist").exists()
 
 
+URL_LINE = "PLANE_MCP_URL=https://mcp.example.org/http/api-key/mcp\n"
+
+
+def _url_from_env_file(tmp_path, monkeypatch, run, checkout=True):
+    if checkout:
+        (tmp_path / ".git").mkdir()
+    (tmp_path / ".env").write_text(URL_LINE)
+    monkeypatch.setattr(plane_session.subprocess, "run", run)
+    return plane_session.literal(tmp_path, ("PLANE_MCP_URL",))
+
+
+def _exit(code):
+    def run(*args, **kwargs):
+        return plane_session.subprocess.CompletedProcess(args, code, stdout="")
+
+    return run
+
+
+def test_git_error_exit_treats_file_as_tracked(tmp_path, monkeypatch):
+    assert _url_from_env_file(tmp_path, monkeypatch, _exit(128)) == {}
+
+
+def test_missing_git_inside_checkout_treats_file_as_tracked(tmp_path, monkeypatch):
+    def run(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    assert _url_from_env_file(tmp_path, monkeypatch, run) == {}
+
+
+def test_untracked_file_exit_1_still_supplies_url(tmp_path, monkeypatch):
+    assert "PLANE_MCP_URL" in _url_from_env_file(tmp_path, monkeypatch, _exit(1))
+
+
+def test_missing_git_outside_checkout_still_supplies_url(tmp_path, monkeypatch):
+    def run(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    assert "PLANE_MCP_URL" in _url_from_env_file(tmp_path, monkeypatch, run, checkout=False)
+
+
 def test_both_clients_register_same_startup_hook():
     root = Path(__file__).resolve().parents[1]
     for path in (root / ".codex/hooks.json", root / ".claude/settings.json"):
