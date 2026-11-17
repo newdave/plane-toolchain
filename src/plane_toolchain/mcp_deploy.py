@@ -245,15 +245,20 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         if sha256(backup.read_bytes()) != recorded["original"]:
             raise ValueError("Backup does not match the recorded original; reconcile")
     if operation == "apply":
-        if current == desired:
-            # Repair a missing, stale or pending receipt (e.g. after a killed deploy).
+        repairing = current == desired and bool(recorded.get("pending")) and backup.exists()
+        if repairing:
+            # Killed after the rewrite and before the restart: the container may still run the
+            # old code. Restart and health-check like a normal apply; a failure restores the backup.
+            current = backup.read_bytes()
+        elif current == desired:
+            # Repair a missing or stale receipt (no restart: nothing pending).
             final = {"installed": sha256(desired)}
             if backup.exists():
                 final["original"] = sha256(backup.read_bytes())
                 if recorded != final or not receipt.exists():
                     write_atomic(receipt, json.dumps(final))
             return "MCP compatibility entry point already applied"
-        if backup.exists():
+        elif backup.exists():
             saved = backup.read_bytes()
             if current != saved and not overwritable(current, recorded):
                 if not interrupted_write(current, desired, recorded, saved):
@@ -324,7 +329,7 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
         # revert and apply accept either the new or the previous digest while it is pending.
         pending = {
             "installed": sha256(content),
-            "previous": recorded.get("installed"),
+            "previous": recorded.get("previous") if repairing else recorded.get("installed"),
             "original": sha256(backup.read_bytes()),
             "pending": True,
         }
