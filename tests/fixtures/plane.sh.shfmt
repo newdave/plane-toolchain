@@ -5,23 +5,26 @@ set +x
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PLANE_CONFIG_ROOT="$root"
-# Exported PLANE_TOOLCHAIN wins; otherwise read the literal line from ignored .plane/local.env.
+# Exported PLANE_TOOLCHAIN wins; otherwise read the literal line from ignored config/local.env
+# (or, until it is moved, .plane/local.env, read first so config/local.env overrides it).
 toolchain="${PLANE_TOOLCHAIN:-}"
 # In a linked worktree the main checkout's file is read first (in place, never copied);
 # the worktree's own file overrides it. Symlinks and a non-".git" common dir get no fallback.
 files=()
+main=""
 if dirs="$(git -C "$root" rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)"; then
   gitdir="${dirs%%$'\n'*}"
   common="${dirs#*$'\n'}"
-  if [[ "$gitdir" != "$common" && "$(basename "$common")" == .git ]]; then
-    shared="$(dirname "$common")/.plane/local.env"
-    if [[ -f "$shared" && ! -L "$shared" ]]; then
-      real="$(cd -P "$(dirname "$shared")" && pwd)"
-      [[ "$real" == "$(cd -P "$(dirname "$common")" && pwd)/.plane" ]] && files+=("$shared")
-    fi
-  fi
+  [[ "$gitdir" != "$common" && "$(basename "$common")" == .git ]] && main="$(dirname "$common")"
 fi
-[[ -f "$root/.plane/local.env" ]] && files+=("$root/.plane/local.env")
+for rel in .plane/local.env config/local.env; do
+  shared="$main/$rel"
+  if [[ -n "$main" && -f "$shared" && ! -L "$shared" ]]; then
+    real="$(cd -P "$(dirname "$shared")" && pwd)"
+    [[ "$real" == "$(cd -P "$main" && pwd)/$(dirname "$rel")" ]] && files+=("$shared")
+  fi
+  [[ -f "$root/$rel" ]] && files+=("$root/$rel")
+done
 if [[ -z "$toolchain" ]]; then
   for file in ${files[@]+"${files[@]}"}; do
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -36,7 +39,7 @@ case "$toolchain" in
 \'*\') toolchain="${toolchain#\'}" toolchain="${toolchain%\'}" ;;
 esac
 session="$toolchain/src/plane_toolchain/session.py"
-missing="plane-toolchain not found; set PLANE_TOOLCHAIN in .plane/local.env"
+missing="plane-toolchain not found; set PLANE_TOOLCHAIN in config/local.env"
 case "${1:-}" in
 session)
   # Startup hooks report problems but never block the client.

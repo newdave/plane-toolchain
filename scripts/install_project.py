@@ -28,6 +28,9 @@ TEMPLATES = SOURCE / "templates/project"
 RECEIPT = ".plane/install.json"
 MARKER = "<!-- plane-toolchain:begin"
 BLOCK = (TEMPLATES / "AGENTS.md").read_text()
+# Block as installed before the values moved from .plane/ to config/. Revert accepts it, and
+# apply reports it as outdated without rewriting it.
+PRE_CONFIG_BLOCK = (TEMPLATES / "AGENTS.md.pre-config").read_text()
 # Plane block as installed by PTC-48, before the awaiting-decision rule. Installs made then
 # still carry it: revert accepts it, and apply reports it as outdated without rewriting it.
 LEGACY_BLOCK = (
@@ -91,18 +94,36 @@ KNOWN_SHIM_SHA256 = {
     "3d333a638bc32443f40203e6d3e035de8aebc2205136890ee46dd030d2ceaf60",
     # plane.sh.pre-quotes, shfmt -i 4.
     "bf5d23d0062e49a0c79b817fa8f42d5a5ae8cb550f0b0ef62f87986badbdd598",
-    # plane.sh (current template), shfmt -i 0. Its raw and -i 2 form is SHIM itself.
+    # plane.sh.pre-config (shim before values moved to config/), raw and -i 2.
+    "e7fddf862bbafa97c0290096710f0d7c85e47e3843e0ee50a3ecef2a46656fe5",
+    # plane.sh.pre-config, shfmt -i 0.
     "0c646a2bfdad71a388b36cdc0717eababe6c318d523d536ad30d533a636c1541",
-    # plane.sh (current template), shfmt -i 2 -ci.
+    # plane.sh.pre-config, shfmt -i 2 -ci.
     "c72cf940db29097839da6d0e56653d2f8031f24dea5eef1c7c3ebafa6224b847",
-    # plane.sh (current template), shfmt -i 4.
+    # plane.sh.pre-config, shfmt -i 4.
     "b3946f6369659da6f3c9581654758b5f0e580b8ed0bb2747ca4b53258b6d0bdc",
+    # plane.sh (current template), shfmt -i 0. Its raw and -i 2 form is SHIM itself.
+    "bbc3fbc5402dc2d86088ea62b46ca0838662eb106fdbd32620e4c6efa7edbd2a",
+    # plane.sh (current template), shfmt -i 2 -ci.
+    "a66d9be9a937ff8756b93816010646370c0c93d95299122608bb7d8c446fff17",
+    # plane.sh (current template), shfmt -i 4.
+    "1e3cc1091d67ba051acdc11e6dfbac5709b302baa79073ab0f999dd294260dbe",
 }
 SETTING_NAMES = ("PLANE_MCP_URL", "PLANE_WORKSPACE", "PLANE_PROJECT")
+# Installs before the move kept the values in .plane/ behind this file; revert still removes it.
 GITIGNORE = (
     "# Local Plane values, secrets and switch state; never commit them.\n"
     "local.env\n*.enc.env\nenable-backup.json\n.plane-*\n.backup-*\n"
 )
+# Appended to config/.gitignore, where the values, the encrypted key and the switch baseline live.
+CONFIG_IGNORE = (
+    "# plane-toolchain:begin\n"
+    "# Local Plane values, secrets and switch state; never commit them.\n"
+    "local.env\n*.enc.env\nenable-backup.json\n.plane-*\n.backup-*\n"
+    "# plane-toolchain:end\n"
+)
+# Ignored files the installer never creates but leaves behind on revert.
+LOCAL_FILES = ("local.env", "plane.enc.env", "enable-backup.json")
 MCP_ENTRY = {"command": "bash", "args": [".plane/plane.sh", "mcp"]}
 HOOK_GROUP = {
     "hooks": [
@@ -130,6 +151,7 @@ LABEL = {
 # Directories the installer may create and, once empty, remove again (children before parents).
 DIRECTORIES = (
     ".plane",
+    "config",
     ".claude",
     ".codex",
     ".agents",
@@ -197,7 +219,7 @@ def strip(text, block, created):
 
 
 def remove_block(text, created):
-    for block in (BLOCK, LEGACY_BLOCK):
+    for block in (BLOCK, PRE_CONFIG_BLOCK, LEGACY_BLOCK):
         if any(found in text for found in variants(block)):
             return strip(text, block, created)
     raise Changed("Plane block changed since installation")
@@ -308,7 +330,21 @@ def remove_codex(text, created):
     return strip(text, CODEX_BLOCK, created)
 
 
+def insert_ignore(old):
+    # Revert keeps the block while ignored local files remain, so an intact one is reused.
+    if old is not None and any(found in old for found in variants(CONFIG_IGNORE)):
+        return old
+    return separate(old) + CONFIG_IGNORE.replace("\n", eol(old))
+
+
+def remove_ignore(text, created):
+    if not any(found in text for found in variants(CONFIG_IGNORE)):
+        raise Changed("Plane ignore block changed since installation")
+    return strip(text, CONFIG_IGNORE, created or not text.replace(CONFIG_IGNORE, "").strip())
+
+
 KINDS = {
+    "ignore": (insert_ignore, remove_ignore),
     "shim": insert_file(SHIM, also=(LEGACY_SHIM,), digests=KNOWN_SHIM_SHA256),
     "gitignore": insert_file(GITIGNORE, reuse=True),
     "include": insert_file("@AGENTS.md\n"),
@@ -376,6 +412,7 @@ def guard(target, rel):
 PLANNED = {
     ".plane/plane.sh",
     ".plane/.gitignore",
+    "config/.gitignore",
     "AGENTS.md",
     "CLAUDE.md",
     ".mcp.json",
@@ -431,7 +468,7 @@ def plan(target, preapprove=True):
     claude = read(guard(target, "CLAUDE.md"))
     steps = [
         (".plane/plane.sh", "shim"),
-        (".plane/.gitignore", "gitignore"),
+        ("config/.gitignore", "ignore"),
         ("AGENTS.md", "block"),
     ]
     if claude is None:
@@ -494,6 +531,13 @@ def local_env(toolchain, values):
     return (
         "# Non-secret local Plane values. Never put PLANE_API_KEY here.\n" + "\n".join(lines) + "\n"
     )
+
+
+def local_path(target):
+    """config/local.env; .plane/local.env only for an install not yet moved (never both)."""
+    config = guard(target, "config/local.env")
+    legacy = guard(target, ".plane/local.env")
+    return legacy if legacy.exists() and not config.exists() else config
 
 
 def missing_values(text):
@@ -574,7 +618,8 @@ def apply(target, values=None, toolchain=SOURCE, preapprove=True):
         done = {k: v for k, v in entries.items() if v.get("done") is True}
         if done:
             reverted(target, {**resumed, "entries": done, "pending": False})
-    local = guard(target, ".plane/local.env")
+    local = local_path(target)
+    shown = local.relative_to(target).as_posix()
     seeded = None if local.exists() else local_env(toolchain, values or {})
     # The pending receipt goes first, so a crash or OSError midway leaves something revert
     # (or a repeat apply) can finish from; the final receipt replaces it last.
@@ -595,15 +640,16 @@ def apply(target, values=None, toolchain=SOURCE, preapprove=True):
     missing = missing_values(seeded if seeded is not None else local.read_text())
     if missing:
         names = ", ".join(missing[:-1]) + (" and " if len(missing) > 1 else "") + missing[-1]
-        print(f"Set {names} in .plane/local.env.")
+        print(f"Set {names} in {shown}.")
     print("Then run '.plane/plane.sh enable' and restart Codex or Claude sessions.")
 
 
 def settings(target, env):
     """Return (api base, workspace, project, key); refuse before any network call."""
-    local = guard(target, ".plane/local.env")
+    local = local_path(target)
+    shown = local.relative_to(target).as_posix()
     if not local.is_file():
-        raise ValueError(".plane/local.env not found; run apply first")
+        raise ValueError(f"{shown} not found; run apply first")
     values = {}
     for line in local.read_text().splitlines():
         match = re.fullmatch(r"\s*(?:export\s+)?(PLANE_[A-Z_]+)=(.*?)\s*", line)
@@ -618,10 +664,10 @@ def settings(target, env):
     try:
         project = str(UUID(values.get("PLANE_PROJECT", "")))
     except ValueError:
-        raise ValueError("PLANE_PROJECT must be set to a UUID in .plane/local.env") from None
+        raise ValueError(f"PLANE_PROJECT must be set to a UUID in {shown}") from None
     workspace = values.get("PLANE_WORKSPACE", "")
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", workspace):
-        raise ValueError("PLANE_WORKSPACE must be set in .plane/local.env")
+        raise ValueError(f"PLANE_WORKSPACE must be set in {shown}")
     base = values.get("PLANE_API_URL", "")
     parts = urlsplit(base)
     local_host = parts.hostname in {"localhost", "127.0.0.1", "::1"}
@@ -731,6 +777,11 @@ def outdated(target, receipt):
                 f"{rel}: Plane block predates the awaiting-decision rule. Revert, then apply "
                 "again to get the current block."
             )
+        elif entry["kind"] == "block" and BLOCK not in text and PRE_CONFIG_BLOCK in text:
+            print(
+                f"{rel}: Plane block still names .plane/ for local values (now config/). "
+                "Revert, then apply again to get the current block."
+            )
         if entry["kind"] == "shim" and text != SHIM:
             digest = hashlib.sha256(text.encode()).hexdigest()
             if text == LEGACY_SHIM or digest in KNOWN_SHIM_SHA256:
@@ -769,6 +820,16 @@ def revert(target):
     kept = sorted(p.name for p in plane.iterdir() if p.name not in ours)
     if kept:
         changes.pop(".plane/.gitignore", None)
+    config = target / "config"
+    kept_config = (
+        sorted(
+            p.name for p in config.iterdir() if p.name in LOCAL_FILES or p.name.endswith(".enc.env")
+        )
+        if config.is_dir() and not config.is_symlink()
+        else []
+    )
+    if kept_config:
+        changes.pop("config/.gitignore", None)
     # As in apply, the receipt records progress: the text each entry will be left with goes
     # in first, then each entry is marked once restored. A rerun finishes from there.
     entries = receipt["entries"]
@@ -798,20 +859,27 @@ def revert(target):
     receipt_path.unlink()
     if plane.is_dir() and not plane.is_symlink() and not any(plane.iterdir()):
         plane.rmdir()
+    # An install that reused the ignore rules revert kept finds config/ already there; it goes
+    # once the last of those files has, like .plane/.
+    if "config/.gitignore" in entries and config.is_dir() and not config.is_symlink():
+        if not any(config.iterdir()):
+            config.rmdir()
     print("Removed unchanged Plane integration")
     if left:
         print("Left in place (could not remove): " + ", ".join(left))
     if kept:
         print("Kept ignored local files in .plane/: " + ", ".join(kept))
+    if kept_config:
+        print("Kept ignored local files in config/: " + ", ".join(kept_config))
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("operation", choices=["apply", "revert", "label"])
     parser.add_argument("target", type=Path, help="target project checkout")
-    parser.add_argument("--url", help="hosted MCP endpoint written to .plane/local.env")
-    parser.add_argument("--workspace", help="workspace slug written to .plane/local.env")
-    parser.add_argument("--project", help="project UUID written to .plane/local.env")
+    parser.add_argument("--url", help="hosted MCP endpoint written to config/local.env")
+    parser.add_argument("--workspace", help="workspace slug written to config/local.env")
+    parser.add_argument("--project", help="project UUID written to config/local.env")
     parser.add_argument(
         "--no-preapprove",
         action="store_true",

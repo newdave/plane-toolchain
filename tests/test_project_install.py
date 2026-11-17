@@ -21,6 +21,19 @@ installer = runpy.run_path(str(ROOT / "scripts/install_project.py"))
 apply, revert = installer["apply"], installer["revert"]
 
 
+def drop_local(path):
+    """Delete the ignored values file, so revert may also remove the ignore rules."""
+    (path / "config/local.env").unlink()
+
+
+def drop_kept(path):
+    """Delete what revert leaves in config/ while the values file exists: it and its ignore rules."""
+    (path / "config/local.env").unlink()
+    (path / "config/.gitignore").unlink(missing_ok=True)
+    if not any((path / "config").iterdir()):
+        (path / "config").rmdir()
+
+
 def snapshot(path):
     return {str(p.relative_to(path)): p.read_text() for p in sorted(path.rglob("*")) if p.is_file()}
 
@@ -38,16 +51,17 @@ def test_fresh_install_idempotent_and_clean_revert(tmp_path):
     assert "authoritative" in (tmp_path / "AGENTS.md").read_text()
     assert (tmp_path / "CLAUDE.md").read_text() == "@AGENTS.md\n"
     assert os.access(tmp_path / ".plane/plane.sh", os.X_OK)
-    local = tmp_path / ".plane/local.env"
+    local = tmp_path / "config/local.env"
     assert local.stat().st_mode & 0o777 == 0o600
     assert f"PLANE_TOOLCHAIN={ROOT}" in local.read_text()
     assert "PLANE_WORKSPACE=demo" in local.read_text()
-    assert "local.env" in (tmp_path / ".plane/.gitignore").read_text()
+    assert "local.env" in (tmp_path / "config/.gitignore").read_text()
+    assert not (tmp_path / ".plane/local.env").exists()
 
     revert(tmp_path)
     # Ignored local values stay, with the .gitignore that keeps them out of commits.
-    assert sorted(p.name for p in (tmp_path / ".plane").iterdir()) == [".gitignore", "local.env"]
-    assert sorted(p.name for p in tmp_path.iterdir()) == [".plane"]
+    assert sorted(p.name for p in (tmp_path / "config").iterdir()) == [".gitignore", "local.env"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["config"]
     local.unlink()
     apply(tmp_path)
     local.unlink()
@@ -79,7 +93,7 @@ def test_existing_project_files_preserved_and_restored(tmp_path):
         "plane",
     }
     assert tomllib.loads((tmp_path / ".codex/config.toml").read_text())["model"] == "m"
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     revert(tmp_path)
     assert snapshot(tmp_path) == files
 
@@ -88,7 +102,7 @@ def test_claude_md_without_include_gets_block(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("# Claude\n")
     apply(tmp_path)
     assert "plane-toolchain:begin" in (tmp_path / "CLAUDE.md").read_text()
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     revert(tmp_path)
     assert snapshot(tmp_path) == {"CLAUDE.md": "# Claude\n"}
 
@@ -192,9 +206,14 @@ def test_v040_receipt_still_reverts(tmp_path):
     shutil.rmtree(tmp_path / ".claude/skills")
     shutil.rmtree(tmp_path / ".agents")
     (tmp_path / ".plane/install.json").write_text(json.dumps(V040_RECEIPT, indent=2) + "\n")
+    # That install kept its values, and the ignore rules for them, in .plane/.
+    (tmp_path / "config/local.env").rename(tmp_path / ".plane/local.env")
+    (tmp_path / "config/.gitignore").unlink()
+    (tmp_path / "config").rmdir()
+    (tmp_path / ".plane/.gitignore").write_text(installer["GITIGNORE"])
     revert(tmp_path)
     (tmp_path / ".plane/local.env").unlink()
-    (tmp_path / ".plane/.gitignore").unlink(missing_ok=True)
+    (tmp_path / ".plane/.gitignore").unlink()
     assert snapshot(tmp_path) == EXISTING
 
 
@@ -214,12 +233,50 @@ def test_installed_project_reads_only_its_plane_directory(tmp_path):
     apply(tmp_path, {"PLANE_WORKSPACE": "demo"})
     assert plane_session.switch(tmp_path, {}) == "disabled"
     assert plane_session.connection(tmp_path, {}) == {"PLANE_WORKSPACE": "demo"}
-    local = tmp_path / ".plane/local.env"
-    set_enabled(local, True, backup=tmp_path / ".plane/enable-backup.json")
+    local = tmp_path / "config/local.env"
+    set_enabled(local, True, backup=tmp_path / "config/enable-backup.json")
     assert plane_session.switch(tmp_path, {}) == "enabled"
-    assert (tmp_path / ".plane/enable-backup.json").exists()
+    assert (tmp_path / "config/enable-backup.json").exists()
     assert not (tmp_path / ".agent-state").exists()
     assert "PLANE_TOOLCHAIN=" in local.read_text()
+
+
+def test_installed_project_without_config_still_reads_and_switches_plane_directory(tmp_path):
+    apply(tmp_path, {"PLANE_WORKSPACE": "demo"})
+    (tmp_path / ".plane").mkdir(exist_ok=True)
+    (tmp_path / "config/local.env").rename(tmp_path / ".plane/local.env")
+    (tmp_path / "config").rmdir() if not list((tmp_path / "config").iterdir()) else None
+    assert plane_session.legacy_layout(tmp_path)
+    assert plane_session.connection(tmp_path, {}) == {"PLANE_WORKSPACE": "demo"}
+    env = {**os.environ, "PLANE_CONFIG_ROOT": str(tmp_path)}
+    run = [shutil.which("python3") or "python3", "-m", "plane_toolchain.config", "enable"]
+    subprocess.run(run, env=env, cwd=ROOT, check=True)  # noqa: S603
+    assert "PLANE_ENABLED=true" in (tmp_path / ".plane/local.env").read_text()
+    assert not (tmp_path / "config/local.env").exists()
+
+
+def test_installed_project_config_wins_over_plane_directory_and_is_not_merged(tmp_path):
+    apply(tmp_path, {"PLANE_WORKSPACE": "demo"})
+    (tmp_path / ".plane/local.env").write_text("PLANE_WORKSPACE=old\nPLANE_PROJECT=old-project\n")
+    assert plane_session.connection(tmp_path, {}) == {"PLANE_WORKSPACE": "demo"}
+    assert not plane_session.legacy_layout(tmp_path)
+
+
+def test_apply_keeps_existing_config_files_and_revert_restores_them(tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/local.env").write_text("FEATURE=on\nPLANE_PROJECT=\n")
+    (tmp_path / "config/.gitignore").write_text("secrets/\n")
+    apply(tmp_path)
+    assert (tmp_path / "config/local.env").read_text() == "FEATURE=on\nPLANE_PROJECT=\n"
+    assert (
+        (tmp_path / "config/.gitignore")
+        .read_text()
+        .startswith("secrets/\n\n# plane-toolchain:begin")
+    )
+    # With the values file gone nothing needs ignoring, so revert restores the file exactly.
+    (tmp_path / "config/local.env").unlink()
+    revert(tmp_path)
+    assert (tmp_path / "config/.gitignore").read_text() == "secrets/\n"
 
 
 def test_shim_reports_status_and_tolerates_missing_toolchain(tmp_path):
@@ -252,7 +309,7 @@ def test_shim_strips_quotes_around_plane_toolchain_like_the_bridge(tmp_path, quo
     shutil.copy(
         ROOT / "src/plane_toolchain/session.py", toolchain / "src/plane_toolchain/session.py"
     )
-    local = tmp_path / ".plane/local.env"
+    local = tmp_path / "config/local.env"
     local.write_text(f"PLANE_TOOLCHAIN={quote}{toolchain}{quote}\nPLANE_ENABLED=false\n")
     env = {k: v for k, v in os.environ.items() if not k.startswith("PLANE_")}
     result = subprocess.run(  # noqa: S603 - fixed local shim
@@ -301,7 +358,7 @@ def installed_worktree(tmp_path):
     main.mkdir()
     subprocess.run([*GIT, "init", "-q", "-b", "main"], cwd=main, check=True, capture_output=True)  # noqa: S603
     apply(main, {"PLANE_WORKSPACE": "shared"})
-    (main / ".plane/plane.enc.env").write_text(KEY)
+    (main / "config/plane.enc.env").write_text(KEY)
     subprocess.run([*GIT, "add", "."], cwd=main, check=True, capture_output=True)  # noqa: S603
     subprocess.run([*GIT, "commit", "-qm", "i"], cwd=main, check=True, capture_output=True)  # noqa: S603
     wt = tmp_path / "wt"
@@ -311,10 +368,10 @@ def installed_worktree(tmp_path):
 
 def test_installed_worktree_resolves_plane_files_from_main(tmp_path):
     main, wt = installed_worktree(tmp_path)
-    assert not (wt / ".plane/local.env").exists()
+    assert not (wt / "config/local.env").exists()
     assert plane_session.connection(wt, {}) == {"PLANE_WORKSPACE": "shared"}
     (wt / ".plane").mkdir(exist_ok=True)
-    (wt / ".plane/local.env").write_text("PLANE_WORKSPACE=mine\n")
+    (wt / "config/local.env").write_text("PLANE_WORKSPACE=mine\n")
     assert plane_session.connection(wt, {}) == {"PLANE_WORKSPACE": "mine"}
     assert plane_session.main_checkout(wt).resolve() == main.resolve()
 
@@ -323,8 +380,8 @@ def test_installed_worktree_symlinked_main_local_env_gets_no_fallback(tmp_path):
     main, wt = installed_worktree(tmp_path)
     real = tmp_path / "real.env"
     real.write_text("PLANE_WORKSPACE=linked\n")
-    (main / ".plane/local.env").unlink()
-    (main / ".plane/local.env").symlink_to(real)
+    (main / "config/local.env").unlink()
+    (main / "config/local.env").symlink_to(real)
     assert plane_session.connection(wt, {}) == {}
 
 
@@ -339,9 +396,9 @@ def test_installed_worktree_shim_reads_toolchain_from_main(tmp_path):
         [bash, shim, "status"], env=env, capture_output=True, text=True, check=False
     )
     assert result.stdout.strip() == "disabled", result.stderr
-    assert not (wt / ".plane/local.env").exists()
+    assert not (wt / "config/local.env").exists()
     # Without a main checkout value the shim cannot find the toolchain.
-    (main / ".plane/local.env").write_text("PLANE_WORKSPACE=x\n")
+    (main / "config/local.env").write_text("PLANE_WORKSPACE=x\n")
     result = subprocess.run(  # noqa: S603 - fixed local shim
         [bash, shim, "status"], env=env, capture_output=True, text=True, check=False
     )
@@ -375,7 +432,7 @@ class FakePlane:
 def labelled(tmp_path, enabled="true", **values):
     values = {"PLANE_WORKSPACE": "demo", "PLANE_PROJECT": PROJECT, **values}
     apply(tmp_path, {k: v for k, v in values.items() if v is not None})
-    local = tmp_path / ".plane/local.env"
+    local = tmp_path / "config/local.env"
     local.write_text(local.read_text().replace("PLANE_ENABLED=false", f"PLANE_ENABLED={enabled}"))
     return tmp_path
 
@@ -462,7 +519,7 @@ def test_revert_keeps_label_and_drops_receipt(tmp_path):
     labelled(tmp_path)
     plane = FakePlane()
     installer["label"](tmp_path, ENV, plane)
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     revert(tmp_path)
     assert not list(tmp_path.iterdir())
     assert [c for c in plane.calls if c[0] == "DELETE"] == []
@@ -485,7 +542,7 @@ def test_legacy_block_lacks_rule_and_current_has_it():
 
 def test_revert_restores_legacy_install_exactly(tmp_path):
     legacy_install(tmp_path, {"AGENTS.md": "# Rules\n\nKeep tests green.\n"})
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     revert(tmp_path)
     assert snapshot(tmp_path) == {"AGENTS.md": "# Rules\n\nKeep tests green.\n"}
 
@@ -517,7 +574,7 @@ def test_edited_legacy_block_still_refused(tmp_path):
     legacy_install(tmp_path)
     agents = tmp_path / "AGENTS.md"
     agents.write_text(agents.read_text().replace("authoritative", "advisory"))
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     with pytest.raises(ValueError, match="changed"):
         revert(tmp_path)
     with pytest.raises(ValueError, match="changed"):
@@ -534,7 +591,7 @@ def legacy_shim_install(path):
 
 def test_revert_restores_install_with_pre_worktree_shim(tmp_path):
     legacy_shim_install(tmp_path)
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     revert(tmp_path)
     assert not list(tmp_path.iterdir())
 
@@ -572,6 +629,7 @@ def test_revert_survives_prettier_style_json_and_shfmt_stable_shell(tmp_path, st
 SHFMT_STYLES = ("i0", "i2ci", "i4")
 SHIM_SOURCES = (
     "plane.sh",
+    "plane.sh.pre-config",
     "plane.sh.pre-quotes",
     "plane.sh.pre-venv",
     "plane.sh.pre-shfmt",
@@ -638,7 +696,7 @@ def enabled(target):
 def test_fresh_install_preapproves_plane_and_revert_removes_file_and_dir(tmp_path):
     apply(tmp_path)
     assert enabled(tmp_path) == ["plane"]
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     revert(tmp_path)
     assert not list(tmp_path.iterdir())
 
@@ -653,7 +711,7 @@ def test_existing_settings_keep_other_keys_and_revert_restores_them(tmp_path):
     apply(tmp_path)
     assert enabled(tmp_path) == ["other", "plane"]
     assert json.loads((tmp_path / ".claude/settings.json").read_text())["model"] == "m"
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     revert(tmp_path)
     assert (tmp_path / ".claude/settings.json").read_text() == original
 
@@ -664,7 +722,7 @@ def test_plane_already_listed_is_kept_by_revert(tmp_path):
     (tmp_path / ".claude/settings.json").write_text(original)
     apply(tmp_path)
     assert enabled(tmp_path) == ["plane", "other"]
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     revert(tmp_path)
     assert (tmp_path / ".claude/settings.json").read_text() == original
 
@@ -736,7 +794,7 @@ def test_receipt_without_server_record_still_reverts(tmp_path):
     old = json.loads(path.read_text())
     del old["enabledMcpjsonServers"]
     path.write_text(json.dumps(old))
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     revert(tmp_path)
     assert not list(tmp_path.iterdir())
 
@@ -813,13 +871,13 @@ def next_step(tmp_path, capsys, values):
 
 def test_hint_names_only_missing_values(tmp_path, capsys):
     out = next_step(tmp_path, capsys, {"PLANE_WORKSPACE": "demo"})
-    assert "Set PLANE_MCP_URL and PLANE_PROJECT in .plane/local.env" in out
+    assert "Set PLANE_MCP_URL and PLANE_PROJECT in config/local.env" in out
     assert "PLANE_WORKSPACE" not in out
 
 
 def test_hint_lists_all_when_nothing_seeded(tmp_path, capsys):
     out = next_step(tmp_path, capsys, None)
-    assert "Set PLANE_MCP_URL, PLANE_WORKSPACE and PLANE_PROJECT in .plane/local.env" in out
+    assert "Set PLANE_MCP_URL, PLANE_WORKSPACE and PLANE_PROJECT in config/local.env" in out
 
 
 def test_no_set_hint_when_all_seeded(tmp_path, capsys):
@@ -830,19 +888,19 @@ def test_no_set_hint_when_all_seeded(tmp_path, capsys):
 
 
 def test_hint_when_local_env_preexists(tmp_path, capsys):
-    (tmp_path / ".plane").mkdir()
-    (tmp_path / ".plane/local.env").write_text("PLANE_WORKSPACE=w\nPLANE_PROJECT=\n")
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/local.env").write_text("PLANE_WORKSPACE=w\nPLANE_PROJECT=\n")
     out = next_step(tmp_path, capsys, None)
-    assert "Set PLANE_MCP_URL and PLANE_PROJECT in .plane/local.env" in out
+    assert "Set PLANE_MCP_URL and PLANE_PROJECT in config/local.env" in out
 
 
 def test_hint_accepts_export_prefix_and_whitespace(tmp_path, capsys):
-    (tmp_path / ".plane").mkdir()
-    (tmp_path / ".plane/local.env").write_text(
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/local.env").write_text(
         "  export PLANE_MCP_URL=https://x.example  \n\texport PLANE_WORKSPACE=w\nPLANE_PROJECT=\n"
     )
     out = next_step(tmp_path, capsys, None)
-    assert "Set PLANE_PROJECT in .plane/local.env" in out
+    assert "Set PLANE_PROJECT in config/local.env" in out
 
 
 EXISTING = {
@@ -902,8 +960,8 @@ def test_revert_after_failed_apply_restores_the_project(tmp_path, monkeypatch, n
             apply(tmp_path)
     revert(tmp_path)
     after = snapshot(tmp_path)
-    after.pop(".plane/local.env", None)  # ignored local values stay, by design
-    after.pop(".plane/.gitignore", None)
+    after.pop("config/local.env", None)  # ignored local values stay, by design
+    after.pop("config/.gitignore", None)
     assert after == before
 
 
@@ -929,8 +987,7 @@ def test_repeat_apply_after_failed_apply_finishes_and_reverts_cleanly(
     )
     assert done == fresh
     revert(tmp_path)
-    (tmp_path / ".plane/local.env").unlink()
-    (tmp_path / ".plane/.gitignore").unlink(missing_ok=True)
+    drop_kept(tmp_path)
     assert snapshot(tmp_path) == EXISTING
 
 
@@ -989,8 +1046,7 @@ def test_revert_crashed_midway_can_be_rerun(tmp_path, monkeypatch, nth):
     if crashed:
         assert (tmp_path / ".plane/install.json").exists()
         revert(tmp_path)
-    (tmp_path / ".plane/local.env").unlink()
-    (tmp_path / ".plane/.gitignore").unlink(missing_ok=True)
+    drop_kept(tmp_path)
     assert snapshot(tmp_path) == EXISTING
 
 
@@ -1009,8 +1065,7 @@ def test_revert_crashed_after_an_unlink_can_be_rerun(tmp_path, monkeypatch):
         with pytest.raises(OSError, match="injected"):
             revert(tmp_path)
     revert(tmp_path)
-    (tmp_path / ".plane/local.env").unlink()
-    (tmp_path / ".plane/.gitignore").unlink(missing_ok=True)
+    drop_kept(tmp_path)
     assert not list(path for path in tmp_path.rglob("*") if path.is_file())
 
 

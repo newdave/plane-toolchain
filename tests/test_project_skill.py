@@ -16,6 +16,11 @@ PATHS = (".claude/skills/plane-tasks/SKILL.md", ".agents/skills/plane-tasks/SKIL
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
 
+def drop_local(path):
+    """Delete the ignored values file, so revert may also remove the ignore rules."""
+    (path / "config/local.env").unlink()
+
+
 def test_apply_installs_skill_for_both_clients_and_records_it(tmp_path):
     apply(tmp_path)
     receipt = json.loads((tmp_path / ".plane/install.json").read_text())
@@ -27,7 +32,7 @@ def test_apply_installs_skill_for_both_clients_and_records_it(tmp_path):
 
 def test_revert_removes_skill_and_the_directories_apply_created(tmp_path):
     apply(tmp_path)
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     revert(tmp_path)
     assert not list(tmp_path.rglob("SKILL.md"))
     assert not list(tmp_path.iterdir())
@@ -203,7 +208,7 @@ def test_skill_is_formatter_stable_markdown():
 
 def test_revert_survives_a_directory_that_cannot_be_removed(tmp_path, monkeypatch, capsys):
     apply(tmp_path)
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     real = Path.rmdir
 
     def failing(self):
@@ -221,7 +226,7 @@ def test_revert_survives_a_directory_that_cannot_be_removed(tmp_path, monkeypatc
 
 def test_revert_leaves_a_directory_swapped_for_a_symlink(tmp_path):
     apply(tmp_path)
-    (tmp_path / ".plane/local.env").unlink()
+    drop_local(tmp_path)
     receipt = json.loads((tmp_path / ".plane/install.json").read_text())
     assert ".codex" in receipt["directories"]
     (tmp_path / ".codex/config.toml").unlink()
