@@ -1,0 +1,24 @@
+docs/configuration.md
+  s_57852bb0c563ca::t_3346d40351f1fe 12
+docs/cli.md
+  s_57852bb0c563ca::t_3346d40351f1fe 33
+docs/project-install.md
+  s_57852bb0c563ca::t_dfa584dfe95e59 74-83
+  s_57852bb0c563ca::t_74e3924afd66a7 12,19-20,59,67,69,73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "124f61b08a81e8d91bf4faacf4edb5d61555ce70",
+  "prompts": {},
+  "sessions": {
+    "s_57852bb0c563ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0c1ef82-6a92-4ae1-ace5-4df36c971718",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
