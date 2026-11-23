@@ -1,0 +1,21 @@
+CHANGELOG.md
+  s_57852bb0c563ca::t_9546b6459fc0c7 9-12
+.pre-commit-config.yaml
+  s_57852bb0c563ca::t_4f150f9d7037d4 32-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "47d9de7721797735d4eb9e48118705ce49d5c6e2",
+  "prompts": {},
+  "sessions": {
+    "s_57852bb0c563ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0c1ef82-6a92-4ae1-ace5-4df36c971718",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
