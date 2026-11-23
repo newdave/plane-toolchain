@@ -1,0 +1,24 @@
+tests/test_workspace_rename_deploy_revert.py
+  s_57852bb0c563ca::t_d5b118ab7ff676 149,154-155,158
+  s_57852bb0c563ca::t_2b96e3ffd86f98 60,67-69,142-148,150-153,156-157,159-163,274
+src/plane_toolchain/workspace_rename_revert.py
+  s_57852bb0c563ca::t_45a6a04e8840d0 171
+  s_57852bb0c563ca::t_2b96e3ffd86f98 168
+  s_57852bb0c563ca::t_d5b118ab7ff676 169-170
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "78c652a1e040d90a75ed20d42d430562d11dde0b",
+  "prompts": {},
+  "sessions": {
+    "s_57852bb0c563ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0c1ef82-6a92-4ae1-ace5-4df36c971718",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
