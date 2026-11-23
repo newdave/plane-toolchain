@@ -9,15 +9,15 @@ mise run owner:project:label -- /path/to/project      # optional, needs PLANE_AP
 mise run owner:project:revert -- /path/to/project
 ```
 
-Without mise, run `python3 /path/to/plane-toolchain/scripts/install_project.py apply /path/to/project`. Apply also accepts `--url`, `--workspace` and `--project` to seed the non-secret values. It never accepts the API key. When apply finishes it lists only the `PLANE_MCP_URL`, `PLANE_WORKSPACE` and `PLANE_PROJECT` values still missing from `.plane/local.env`, then points at `.plane/plane.sh enable`. The shim, the bridge and the owner tasks run `uv` with `VIRTUAL_ENV` cleared, so an active unrelated virtualenv gives no uv warning.
+Without mise, run `python3 /path/to/plane-toolchain/scripts/install_project.py apply /path/to/project`. Apply also accepts `--url`, `--workspace` and `--project` to seed the non-secret values. It never accepts the API key. When apply finishes it lists only the `PLANE_MCP_URL`, `PLANE_WORKSPACE` and `PLANE_PROJECT` values still missing from `config/local.env`, then points at `.plane/plane.sh enable`. The shim, the bridge and the owner tasks run `uv` with `VIRTUAL_ENV` cleared, so an active unrelated virtualenv gives no uv warning.
 
 ## What apply changes
 
 | Path | Change |
 | --- | --- |
 | `.plane/plane.sh` | Shim with `mcp`, `session`, `status`, `enable` and `disable` commands |
-| `.plane/.gitignore` | Ignores local values, encrypted keys and switch state |
-| `.plane/local.env` | Created if absent: toolchain path, `PLANE_ENABLED=false` and seeded values; mode 0600; ignored |
+| `config/.gitignore` | Appends a marked block that ignores local values, encrypted keys and switch state; created if absent |
+| `config/local.env` | Created if absent: toolchain path, `PLANE_ENABLED=false` and seeded values; mode 0600; ignored. An existing file is left as it is |
 | `.plane/install.json` | Receipt used by revert; commit it with the rest |
 | `AGENTS.md` | Appends a marked block making Plane authoritative for tasks, status and planning Pages |
 | `CLAUDE.md` | Created as `@AGENTS.md` if absent; gets the same block if it exists without that include |
@@ -28,7 +28,7 @@ Without mise, run `python3 /path/to/plane-toolchain/scripts/install_project.py a
 
 Apply writes a pending receipt first, then each file, then the final receipt. If a write fails midway (disk full, permissions, a crash), `revert` undoes exactly what was written: files still as they were are skipped, and a file edited since is refused, as for any revert. Repeating apply finishes the installation instead. `label` refuses until it is finished. Text files are read and written as UTF-8 with their line endings untouched: a CRLF `AGENTS.md`, `CLAUDE.md` or Codex config gets its block appended in CRLF, and revert restores it byte for byte (JSON files are rewritten with LF and two-space indentation, and keep non-ASCII characters unescaped) (a missing final newline is the one exception: revert leaves it added). A file that is not valid UTF-8, or a JSON file whose `mcpServers`, `hooks` or `SessionStart` value has the wrong type, is refused with a message. A symlinked `CLAUDE.md` or `AGENTS.md` is refused too: replace the link with a plain file (for `CLAUDE.md`, one containing `@AGENTS.md`) and apply again.
 
-The skill is installed byte for byte, with no placeholders, so revert can verify it; revert also accepts it with CRLF line endings. A project records its own naming and organisation choices in its `AGENTS.md`, which the skill tells the agent to follow. Installs made before the skill existed do not get it from a repeat apply: revert, then apply again. Apply refuses to overwrite an existing `plane-tasks` skill at either path.
+The skill is installed byte for byte, with no placeholders, so revert can verify it; revert also accepts it with CRLF line endings. A project records its own naming and organisation choices in its `AGENTS.md`, which the skill tells the agent to follow. Installs made before the skill existed do not get it from a repeat apply: revert, then apply again. Apply refuses to overwrite an existing `plane-tasks` skill at either path. When `.claude/skills` is a symlink to the target's own real `.agents/skills` directory (or the reverse), apply writes and records one copy at the real path, which both clients read; the link may dangle, as in a fresh clone where the linked directory is git-ignored. A skills link to anywhere else is refused.
 
 Apply refuses, without writing anything, when a target already has a `plane` MCP server, a Plane block, a `.plane/plane.sh`, a symlinked path or a file it cannot parse. JSON files it edits are rewritten with two-space indentation. Repeating apply on an intact installation does nothing, except that it names an outdated shim or a missing `plane` pre-approval (receipts from before PTC-55) and changes no files. To upgrade an existing installation, revert, then apply again. It also refuses when `.claude/settings.json` is not valid JSON or its `enabledMcpjsonServers` is not a list.
 
@@ -56,7 +56,7 @@ export PLANE_API_KEY=...                              # environment only; never 
 mise run owner:project:label -- /path/to/project
 ```
 
-It reads `PLANE_ENABLED`, `PLANE_WORKSPACE`, `PLANE_PROJECT` and `PLANE_API_URL` (the Plane REST base, for example `https://plane.example.com`) from the target's `.plane/local.env`; exported values take precedence. It refuses, before any network call, when the installation receipt is missing, Plane is disabled, a value is missing or invalid, or `PLANE_API_KEY` is not exported. The key is sent only as the `X-API-Key` header and is never printed or written. The step refuses HTTP redirects, so the key is never sent to another host or over plain http; set `PLANE_API_URL` to the final URL.
+It reads `PLANE_ENABLED`, `PLANE_WORKSPACE`, `PLANE_PROJECT` and `PLANE_API_URL` (the Plane REST base, for example `https://plane.example.com`) from the target's `config/local.env`; exported values take precedence. It refuses, before any network call, when the installation receipt is missing, Plane is disabled, a value is missing or invalid, or `PLANE_API_KEY` is not exported. The key is sent only as the `X-API-Key` header and is never printed or written. The step refuses HTTP redirects, so the key is never sent to another host or over plain http; set `PLANE_API_URL` to the final URL.
 
 The step lists the project's labels over `/api/v1/workspaces/<workspace>/projects/<project>/labels/` and creates `awaiting-decision` (colour `#EF4444`) only if no label of that name exists, then rereads the list to verify it and records the label id under `label` in `.plane/install.json`. Repeating it creates nothing. A same-named label with a different colour or description is reported and left unchanged, with nothing recorded.
 
@@ -64,10 +64,20 @@ Revert never deletes the label, because work items may still use it. It drops th
 
 ## Connection values
 
-The shim sets `PLANE_CONFIG_ROOT` to the target project. The bridge then reads `PLANE_ENABLED`, `PLANE_MCP_URL`, `PLANE_WORKSPACE` and `PLANE_PROJECT` only from the target's `.plane/local.env`; exported values still take precedence. It does not read the target's `.env` or `config/` files. `PLANE_API_KEY` comes from the environment or SOPS-encrypted `.plane/plane.enc.env`, as described in [configuration](configuration.md).
+The shim sets `PLANE_CONFIG_ROOT` to the target project. The bridge then reads `PLANE_ENABLED`, `PLANE_MCP_URL`, `PLANE_WORKSPACE` and `PLANE_PROJECT` only from the target's `config/local.env`; exported values still take precedence. It does not read the target's `.env` or its other `config/` files. `PLANE_API_KEY` comes from the environment or SOPS-encrypted `config/plane.enc.env`, as described in [configuration](configuration.md).
 
-`PLANE_TOOLCHAIN` in `.plane/local.env`, or exported, locates this checkout. The shim drops a trailing ` # comment` and one pair of single or double quotes around it. Unlike the session reader, it does not trim spaces around the value. Each developer's machine sets its own path, so committed files contain no absolute paths. When mise is installed, the shim runs the bridge through `mise -C <toolchain> exec` to use the pinned Node.
+`PLANE_TOOLCHAIN` in `config/local.env`, or exported, locates this checkout. The shim drops a trailing ` # comment` and one pair of single or double quotes around it. Unlike the session reader, it does not trim spaces around the value. Each developer's machine sets its own path, so committed files contain no absolute paths. When mise is installed, the shim runs the bridge through `mise -C <toolchain> exec` to use the pinned Node.
 
 After apply, set the connection values, run `.plane/plane.sh enable` and restart Codex or Claude sessions. `.plane/plane.sh status` reports the local switch offline; it does not contact Plane.
 
-In a linked git worktree of the project, `.plane/plane.sh`, the session hook and the bridge fall back to the main checkout's git-ignored `.plane/local.env` and `.plane/plane.enc.env`, found through `git rev-parse --git-common-dir`. The worktree's own `.plane/local.env` overrides the main one per key, and a worktree `.plane/plane.enc.env` wins when present. Files are read in place and never copied; symlinks and a common dir not named `.git` get no fallback.
+In a linked git worktree of the project, `.plane/plane.sh`, the session hook and the bridge fall back to the main checkout's git-ignored `config/local.env` and `config/plane.enc.env`, found through `git rev-parse --git-common-dir`. The worktree's own `config/local.env` overrides the main one per key, and a worktree `config/plane.enc.env` wins when present. Files are read in place and never copied; symlinks and a common dir not named `.git` get no fallback.
+
+## Moving values from `.plane/` to `config/`
+
+Installs made before this layout kept `.plane/local.env`, `.plane/plane.enc.env` and `.plane/enable-backup.json`. They still work: the session reader, the bridge and `enable`/`disable` use the `.plane/` files while no `config/local.env` (or `config/plane.enc.env`) exists, and say so on stderr. Once a `config/local.env` exists, `.plane/local.env` is ignored, not merged.
+
+To move one project:
+
+1. Move the three files into `config/`; if `config/local.env` already holds the project's own settings, append the `PLANE_*` lines to it instead.
+2. Add the ignore rules from the `config/.gitignore` block in this guide's table, then delete `.plane/.gitignore` if it is no longer needed.
+3. Revert and apply again, so the shim, the `AGENTS.md` block and the receipt are current. Apply reports an install that predates the layout.
