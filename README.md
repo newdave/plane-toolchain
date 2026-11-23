@@ -3,14 +3,14 @@
 Plane CE MCP extensions, project integration controls and GitHub Actions examples.
 No running services are changed by installing this repository.
 
-- **CE tools:** additive work-item dependencies and project Pages (list, read, create).
+- **CE tools:** additive work-item dependencies and project Pages (list, read, create, update).
 - **Project controls:** `mise run plane:enable`, `plane:disable` and offline `plane:status`.
 - **Agent integration:** a zsh prompt badge and shared SessionStart status for Codex and Claude.
 - **Deployment helpers:** explicit owner apply, revert and check tasks for existing Docker services.
 - **Project installer:** connects another checkout to the MCP bridge and makes Plane its authoritative task system.
 - **Automation:** authenticated MCP transport and example workflows with explicit task IDs.
 
-A general-purpose command-line interface is planned; it is not implemented yet. The CE tools remain necessary for capabilities missing from the evaluated third-party CLIs.
+The `plane` command-line interface is implemented; run it with `mise run plane:cli -- <command>`. See [Plane CLI](docs/cli.md). The CE tools remain necessary for capabilities missing from the evaluated third-party CLIs.
 
 ## Get started
 
