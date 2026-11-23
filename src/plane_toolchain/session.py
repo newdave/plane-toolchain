@@ -96,17 +96,44 @@ def legacy_layout(root: Path) -> bool:
     ].parent.name == ".plane"
 
 
+def in_checkout(path: Path) -> bool:
+    """True when the (resolved) file sits in a git checkout.
+
+    A checkout is a .git entry, a directory or the file of a linked worktree, in the file's
+    directory or an ancestor.
+    """
+    return any((d / ".git").exists() for d in (path.parent, *path.parent.parents))
+
+
 def tracked(path: Path) -> bool:
-    """Return True when git tracks the file; False outside git or without git."""
+    """Return True unless the file is known to be uncommitted; the URL guard fails closed.
+
+    A symlink is tracked: the link name may be untracked while its target is committed. The path
+    is resolved first, so a relative or symlinked directory still finds its checkout. The name
+    is matched case-insensitively (icase), so on a case-insensitive filesystem a committed
+    `.Env` still counts for `.env`.
+
+    Outside a git checkout every outcome is False, because the file cannot be committed. Inside
+    one, False only when git exits 1 (not tracked); exit 0, any other exit (such as 128 for
+    dubious ownership or a corrupt repo) and a missing git (OSError) are tracked.
+    """
+    if path.is_symlink():
+        return True
+    path = path.resolve()
+    spec = f":(icase,literal){path.name}"
     try:
         result = subprocess.run(  # noqa: S603 - fixed argv
-            ["git", "ls-files", "--error-unmatch", "--", path.name],  # noqa: S607
+            ["git", "ls-files", "--error-unmatch", "--", spec],  # noqa: S607
             cwd=path.parent,
             capture_output=True,
         )
     except OSError:
+        return in_checkout(path)
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
         return False
-    return result.returncode == 0
+    return in_checkout(path)
 
 
 def literal(root: Path, names: tuple[str, ...]) -> dict[str, str]:
