@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- MCP deploy (PTC-130): `apply` run again after a kill between the rewrite and `docker restart` (new `server.py`, pending receipt, container still on old code) no longer reports "already applied" without restarting. It now restarts the container and waits for health before writing the final receipt, and a failed health wait restores the backup and restarts, as a normal apply does. An already-final receipt stays side-effect free. The shipped remote program text changed, so the owner should redeploy with the new release.
 - Project installer (PTC-145): a target whose `.claude/skills` is a symlink to its own `.agents/skills` (or the reverse) no longer fails with `refusing symlinked installation path`. Apply writes one `plane-tasks` skill copy at the real path and records only that path; a dangling link is followed. Directories under a symlink are never recorded as created, so revert never removes through a link. A skills link outside the target is still refused.
 
 ## [0.5.1] - 2026-11-14

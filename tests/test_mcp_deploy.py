@@ -566,7 +566,8 @@ def test_stopped_first_apply_can_apply_again_and_repairs_receipt(root):
     stop_first_apply(root)
     fake = mcp_host()
     message = deploy("apply", root, fake, source=V1)
-    assert message == "MCP compatibility entry point already applied"
+    assert message.startswith("MCP entry point apply verified")
+    assert fake.calls.count(RESTART) == 1
     assert json.loads((root / "plane-toolchain-ce-receipt.json").read_text()) == {
         "installed": sha(V1.encode()),
         "original": sha(ORIGINAL),
@@ -1259,3 +1260,64 @@ def test_rollback_restart_failure_is_never_reported_as_restored_even_when_health
     with pytest.raises(subprocess.CalledProcessError):
         deploy("apply", root, fake)
     assert "MCP still unhealthy after rollback" in capsys.readouterr().err
+
+
+def test_repair_of_pending_receipt_restarts_and_health_checks_once(root):
+    # Killed after the rewrite and before the restart: new bytes, pending receipt, old container.
+    stop_first_apply(root)
+    fake = mcp_host()
+    message = deploy("apply", root, fake, source=V1)
+    assert message.startswith("MCP entry point apply verified")
+    assert fake.calls.count(RESTART) == 1
+    assert fake.calls.count(INSPECT) >= 1
+    assert fake.calls.index(RESTART) < fake.calls.index(INSPECT)
+    assert json.loads((root / "plane-toolchain-ce-receipt.json").read_text()) == {
+        "installed": sha(V1.encode()),
+        "original": sha(ORIGINAL),
+    }
+    assert (root / "server.py").read_text() == V1
+
+
+def test_already_final_receipt_does_not_restart(root):
+    fake = mcp_host()
+    deploy("apply", root, fake, source=V1)
+    fake.calls.clear()
+    assert deploy("apply", root, fake, source=V1) == "MCP compatibility entry point already applied"
+    assert RESTART not in fake.calls and INSPECT not in fake.calls
+
+
+def test_pending_receipt_without_backup_is_not_finalised(root):
+    stop_first_apply(root)
+    (root / "server.py.before-plane-toolchain-ce").unlink()
+    fake = mcp_host()
+    with pytest.raises(ValueError, match="Pending receipt without backup; reconcile"):
+        deploy("apply", root, fake, source=V1)
+    assert RESTART not in fake.calls
+    assert json.loads((root / "plane-toolchain-ce-receipt.json").read_text())["pending"] is True
+
+
+def assert_repair_rolled_back(root, fake):
+    assert (root / "server.py").read_bytes() == ORIGINAL
+    assert fake.calls.count(RESTART) == 2
+    # restore_receipt writes back the pre-attempt receipt: still pending for V1, while the disk
+    # holds ORIGINAL. Intended: pending receipts accept the backup as a safe state, so apply and
+    # revert still recover. A revert there sees current == backup and reports already restored.
+    assert (root / "plane-toolchain-ce-receipt.json").read_text() == pending(V1.encode(), None)
+
+
+def test_unhealthy_repair_of_pending_receipt_rolls_back(root):
+    stop_first_apply(root)
+    fake = mcp_host()
+    fake.containers["plane-mcp"]["restarting"] = True
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        deploy("apply", root, fake, source=V1)
+    assert_repair_rolled_back(root, fake)
+
+
+def test_failed_restart_during_repair_rolls_back(root):
+    stop_first_apply(root)
+    fake = mcp_host()
+    fake.fail.append("restart")
+    with pytest.raises(subprocess.CalledProcessError):
+        deploy("apply", root, fake, source=V1)
+    assert_repair_rolled_back(root, fake)
