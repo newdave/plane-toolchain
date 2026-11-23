@@ -221,10 +221,13 @@ def test_revert_skips_restore_when_nothing_was_journalled(host, capsys):
     host.fake.crash_at("after_stopped")
     with pytest.raises(Killed):
         host.deploy()
+    mark, ops = len(host.fake.calls), len(host.ops())
     revert(host)
     out = capsys.readouterr().out
     assert "Nothing was journalled" in out
     assert "restore" not in host.ops()
+    assert "flush_cache" not in host.ops()[ops:]
+    assert not [c for c in host.fake.calls[mark:] if c[0] == "stop"]
     assert host.request("check")[-1] == {"old": OLD, "new": NEW}  # verified with no id
     assert snapshot(host.orm) == original and all(host.running().values())
 
@@ -235,10 +238,13 @@ def test_revert_skips_restore_when_the_slug_change_never_committed(host, capsys)
     with pytest.raises(Killed):
         host.deploy()
     wr.append_journal(host.directory, {"kind": "workspace", "id": "w1", "slug": OLD})
+    mark, ops = len(host.fake.calls), len(host.ops())
     revert(host)
     out = capsys.readouterr().out
     assert "never committed" in out
     assert "restore" not in host.ops()
+    assert "flush_cache" not in host.ops()[ops:]
+    assert not [c for c in host.fake.calls[mark:] if c[0] == "stop"]
     health = host.request("health")[-1]
     assert (health["old"], health["new"], health["workspace_id"]) == (NEW, OLD, "w1")
     assert snapshot(host.orm) == original
