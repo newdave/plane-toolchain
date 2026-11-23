@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 
 - Project installer (PTC-145): a target whose `.claude/skills` is a symlink to its own `.agents/skills` (or the reverse) no longer fails with `refusing symlinked installation path`. Apply writes one `plane-tasks` skill copy at the real path and records only that path; a dangling link is followed. Directories under a symlink are never recorded as created, so revert never removes through a link. A skills link outside the target is still refused.
+- Docs (PTC-135): the README says the `plane` CLI is implemented (see `docs/cli.md`) and lists `ce_page` update with list, read and create.
 
 ## [0.5.1] - 2026-11-14
 
