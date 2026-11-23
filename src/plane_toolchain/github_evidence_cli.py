@@ -234,6 +234,8 @@ def _leaf(error: BaseException) -> BaseException:
 def _status(error: BaseException) -> int | None:
     """HTTP status carried by an error, from its response or its text."""
     error = _leaf(error)
+    if _is_connection_error(error):
+        return None  # its text may carry an address or port, never a status
     code = getattr(getattr(error, "response", None), "status_code", None)
     if isinstance(code, int) and 400 <= code <= 599:
         return code
@@ -299,9 +301,13 @@ async def preflight(call, project: str) -> None:
             return await call(name, arguments)
         except Exception as error:
             code = _status(error)
-            detail = f" (HTTP {code})" if code else " (connection error)"
-            if not code and not _is_connection_error(error):
-                detail = ""
+            detail = (
+                f" (HTTP {code})"
+                if code
+                else " (connection error)"
+                if _is_connection_error(error)
+                else ""
+            )
             raise Failure(f"Plane bot cannot {what}{detail}") from None
 
     await step("read the project", "project", {"action": "retrieve", "project_id": project})
