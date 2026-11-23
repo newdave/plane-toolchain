@@ -23,12 +23,15 @@ IDS = {f"ABC-{n}": f"00000000-0000-0000-0000-0000000001{n:02d}" for n in range(1
 class World:
     """Fake MCP: identifiers, per-item blocked_by sets, call log, optional misbehaviour."""
 
-    def __init__(self, edges=(), foreign=(), unknown=(), drop_writes=False, fail_list=None):
+    def __init__(
+        self, edges=(), foreign=(), unknown=(), drop_writes=False, fail_list=None, elsewhere=()
+    ):
         self.blocked_by = {i: set() for i in IDS.values()}
         for blocked, blocker in edges:
             self.blocked_by[IDS[blocked]].add(IDS[blocker])
         self.foreign, self.unknown = set(foreign), set(unknown)
         self.drop_writes, self.fail_list = drop_writes, fail_list
+        self.elsewhere = {IDS[i] for i in elsewhere}  # related items in another project
         self.calls = []
 
     async def call(self, name, args):
@@ -44,11 +47,17 @@ class World:
         if args["action"] == "list":
             if self.fail_list == item:
                 raise RuntimeError("boom")
+            if item in self.elsewhere:  # ce_tools' project-scoped retrieve fails
+                raise RuntimeError("not in project")
+
+            def row(i):
+                return {"id": i, "project_id": OTHER if i in self.elsewhere else PROJECT}
+
             blocking = [other for other in IDS.values() if item in self.blocked_by[other]]
             return {
                 "dependencies": {
-                    "blocked_by": [{"id": i} for i in sorted(self.blocked_by[item])],
-                    "blocking": [{"id": i} for i in blocking],
+                    "blocked_by": [row(i) for i in sorted(self.blocked_by[item])],
+                    "blocking": [row(i) for i in blocking],
                 }
             }
         assert args["action"] == "create" and args["relation_type"] == "blocked_by"
@@ -231,3 +240,46 @@ def test_cli_partial_failure_reports_links_already_written(tmp_path, capsys):
     seen = capsys.readouterr().err
     assert "written: ABC-1 blocked_by ABC-2" in seen
     assert "failed at ABC-3" in seen
+
+
+def test_remote_skips_cross_project_related_items():
+    world = World(edges=[("ABC-1", "ABC-7"), ("ABC-6", "ABC-1")], elsewhere=["ABC-7", "ABC-6"])
+    plan = rp.validate(pairs(("ABC-1", "ABC-2")))
+    missing = asyncio.run(rp.validate_remote(world.call, PROJECT, plan))
+    assert missing == {IDS["ABC-1"]: [IDS["ABC-2"]]}
+    listed = [c[1]["workitem_id"] for c in world.calls if c[1].get("action") == "list"]
+    assert IDS["ABC-7"] not in listed and IDS["ABC-6"] not in listed
+
+
+def test_cli_apply_succeeds_with_cross_project_relation(tmp_path):
+    world = World(edges=[("ABC-1", "ABC-7")], elsewhere=["ABC-7"])
+    code, out, _ = cli(["--apply", "--pause", "0"], world, tmp_path, pairs(("ABC-1", "ABC-2")))
+    assert code == 0 and json.loads(out)["applied"] is True
+    assert len(world.writes()) == 1
+    code, out, _ = cli(
+        [],
+        World(edges=[("ABC-1", "ABC-7")], elsewhere=["ABC-7"]),
+        tmp_path,
+        pairs(("ABC-1", "ABC-2")),
+    )
+    assert code == 0
+
+
+def test_remote_cycle_through_cross_project_item_is_refused():
+    # Plan: ABC-1 blocked_by ABC-2. ABC-2 blocked_by foreign ABC-7; ABC-7 blocked_by ABC-1 is
+    # only visible from the foreign side, so the cycle needs both edges seen from plan items.
+    world = World(edges=[("ABC-2", "ABC-7"), ("ABC-7", "ABC-1")], elsewhere=["ABC-7"])
+    plan = rp.validate(pairs(("ABC-1", "ABC-2")))
+    with pytest.raises(UsageError, match="cycle"):
+        asyncio.run(rp.validate_remote(world.call, PROJECT, plan))
+    assert world.writes() == []
+
+
+def test_remote_foreign_items_do_not_count_toward_max_items(monkeypatch):
+    monkeypatch.setattr(rp, "MAX_ITEMS", 2)
+    world = World(
+        edges=[("ABC-1", "ABC-5"), ("ABC-1", "ABC-6"), ("ABC-1", "ABC-7")],
+        elsewhere=["ABC-5", "ABC-6", "ABC-7"],
+    )
+    plan = rp.validate(pairs(("ABC-1", "ABC-2")))
+    asyncio.run(rp.validate_remote(world.call, PROJECT, plan))

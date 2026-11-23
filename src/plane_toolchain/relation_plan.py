@@ -93,12 +93,14 @@ def validate(raw: list[dict], known: set[str] | None = None) -> Plan:
     return plan
 
 
-def rows(listing: Any, kind: str) -> list[str]:
-    found = []
+def rows(listing: Any, kind: str) -> list[tuple[str, str | None]]:
+    """Return (item id, project id) for each related item; the project id is None if absent."""
+    found: list[tuple[str, str | None]] = []
     if isinstance(listing, dict):
         for row in (listing.get("dependencies") or {}).get(kind) or []:
             if isinstance(row, dict) and row.get("id"):
-                found.append(canonical(row["id"]))
+                project = row.get("project_id")
+                found.append((canonical(row["id"]), canonical(project) if project else None))
     return found
 
 
@@ -110,7 +112,9 @@ async def inspect_remote(
     Every item must exist and sit in `project`. Existing relations among plan items
     are read and combined with the plan for a cycle check. Any failed read propagates,
     so the run stops before the first write. The walk follows existing relations
-    transitively from the plan items, fetching at most MAX_ITEMS items.
+    transitively from the plan items, fetching at most MAX_ITEMS items. Related items
+    in another project stay as edges in the cycle check but are never fetched: CE
+    relations are workspace-wide, and the relation tool only reads items in `project`.
     """
     names: dict[str, str] = {}
     for ident in dict.fromkeys(i for pair in plan for i in pair):
@@ -138,12 +142,17 @@ async def inspect_remote(
             "ce_workitem_relation",
             {"action": "list", "project_id": canonical(project), "workitem_id": uuid},
         )
-        blockers = rows(listing, "blocked_by")
+        blocker_rows = rows(listing, "blocked_by")
+        blockers = [i for i, _ in blocker_rows]
         existing[uuid] = set(blockers)
         edges |= {(uuid, blocker) for blocker in blockers}
-        blocked_items = rows(listing, "blocking")
-        edges |= {(blocked, uuid) for blocked in blocked_items}
-        queue.extend(i for i in [*blockers, *blocked_items] if i not in fetched)
+        blocked_rows = rows(listing, "blocking")
+        edges |= {(blocked, uuid) for blocked, _ in blocked_rows}
+        queue.extend(
+            i
+            for i, item_project in [*blocker_rows, *blocked_rows]
+            if i not in fetched and item_project in (None, canonical(project))
+        )
     edges |= {(ids[blocked], ids[blocker]) for blocked, blocker in plan}
     refuse_cycle(edges)
     missing: dict[str, list[str]] = {}
@@ -184,7 +193,7 @@ async def apply(
             {"action": "create", **ids, "workitem_ids": blockers, "relation_type": "blocked_by"},
         )
         listing = await call("ce_workitem_relation", {"action": "list", **ids})
-        if not set(blockers) <= set(rows(listing, "blocked_by")):
+        if not set(blockers) <= {i for i, _ in rows(listing, "blocked_by")}:
             raise ReadbackError
         added += len(blockers)
         if written is not None:
