@@ -79,10 +79,11 @@ def revert_verify(run):
 
 
 def revert_restore(run):
+    if not run["restore_needed"]:  # no outage and no logout when nothing is restored
+        return
     say("Stopping services for the restore")
     run_stop(run)
-    if run["restore_needed"]:
-        revert_restore_rows(run)
+    revert_restore_rows(run)
     run_call(run, "flush_cache", {})
 
 
@@ -164,10 +165,10 @@ def run_revert(data, seams):
     swapped and the journalled `workspace_id`). Every refusal comes before the first stop, and
     the restore runs only with services stopped. The restore is skipped when nothing was
     journalled, or when slug_state shows the slug change never committed and no restore was
-    started. A partial restore restarts services but leaves the receipt at reverting, so a
-    rerun stops services and restores again; it is never reported as complete. The backup and
-    the journal are never deleted, and the pg_dump backup is never restored here: that is a
-    manual last resort.
+    started; then services are not stopped and the cache is not flushed. A partial restore
+    restarts services but leaves the receipt at reverting, so a rerun stops services and
+    restores again; it is never reported as complete. The backup and the journal are never
+    deleted, and the pg_dump backup is never restored here: that is a manual last resort.
     """
     run = run_context(data, seams)
     old, new, directory = run["old"], run["new"], run["directory"]

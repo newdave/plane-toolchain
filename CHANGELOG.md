@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Workspace rename revert (PTC-132): when preflight finds no restore is needed (the slug change never committed, or nothing was journalled), revert no longer stops the services or flushes the cache, so there is no needless outage and no forced logout of every user. A revert that restores still stops services, restores, flushes, starts and checks health as before, and the receipt steps are unchanged. The shipped remote program text changes (`revert_restore` and its docstring), so the host program digest differs; no redeploy is needed beyond the normal copy at the next run.
 - Project installer (PTC-145): a target whose `.claude/skills` is a symlink to its own `.agents/skills` (or the reverse) no longer fails with `refusing symlinked installation path`. Apply writes one `plane-tasks` skill copy at the real path and records only that path; a dangling link is followed. Directories under a symlink are never recorded as created, so revert never removes through a link. A skills link outside the target is still refused.
 
 ## [0.5.1] - 2026-11-14

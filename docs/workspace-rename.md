@@ -198,7 +198,7 @@ Use revert to return to the old slug from any partial or complete apply. It rest
 mise run owner:plane-workspace-rename:revert
 ```
 
-Steps: `reverting`, `restored` (services stop, the journal is restored in one transaction, the cache is cleared), `started`, `reverted` (health with the slugs swapped). A kill at any point is resumable: rerun revert (`Resuming the revert from step <step>`). A `Revert stopped at <step>: ...` message says whether services are stopped. Fix the cause and rerun.
+Steps: `reverting`, `restored` (only when a restore is needed: services stop, the journal is restored in one transaction, the cache is cleared; when the slug change never committed or nothing was journalled, the step does nothing and services keep running), `started`, `reverted` (health with the slugs swapped). A kill at any point is resumable: rerun revert (`Resuming the revert from step <step>`). A `Revert stopped at <step>: ...` message says whether services are stopped. Fix the cause and rerun.
 
 Refusals come before the first stop: no receipt, a receipt for another rename, an unknown receipt state, a journal without a workspace record, an empty journal past the slug change (restore `backup.dump` by hand), or an unclear slug state. If the slug change never committed, or nothing was journalled, revert says no restore is needed and only checks health.
 
