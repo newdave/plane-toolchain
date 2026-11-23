@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Evidence action (PTC-125): list and retrieve calls, the preflight reads and the opening of the MCP session now retry connection errors (`ConnectError`, `ConnectTimeout`) with the same 2, 4 and 8 s backoff as 429 and 5xx, so one dropped connection no longer fails the run with `Unexpected ConnectError`. A read that keeps failing reports the tool and action with `(connection error)`; a session that cannot open reports `Plane connection failed (connection error)`. Creates are still single-shot.
 - Project installer (PTC-145): a target whose `.claude/skills` is a symlink to its own `.agents/skills` (or the reverse) no longer fails with `refusing symlinked installation path`. Apply writes one `plane-tasks` skill copy at the real path and records only that path; a dangling link is followed. Directories under a symlink are never recorded as created, so revert never removes through a link. A skills link outside the target is still refused.
 
 ## [0.5.1] - 2026-11-14

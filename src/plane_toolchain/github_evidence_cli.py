@@ -234,6 +234,8 @@ def _leaf(error: BaseException) -> BaseException:
 def _status(error: BaseException) -> int | None:
     """HTTP status carried by an error, from its response or its text."""
     error = _leaf(error)
+    if _is_connection_error(error):
+        return None  # its text may carry an address or port, never a status
     code = getattr(getattr(error, "response", None), "status_code", None)
     if isinstance(code, int) and 400 <= code <= 599:
         return code
@@ -253,8 +255,15 @@ def _retry_after(error: BaseException) -> float | None:
         return None
 
 
+def _is_connection_error(error: BaseException) -> bool:
+    """A connection-level failure: no HTTP status, so nothing reached the server."""
+    return isinstance(_leaf(error), (httpx2.ConnectError, httpx2.ConnectTimeout))
+
+
 def retrying(call, *, sleep=asyncio.sleep, attempts: int = 3):
-    """Wrap an MCP call: reads (list, retrieve) retry 429 and 5xx; creates run once.
+    """Wrap an MCP call: reads (list, retrieve) retry 429, 5xx and connection errors.
+
+    Creates run once, since a failed write may or may not have landed.
 
     Waits are 2, 4 and 8 s, or Retry-After when present, capped at 30 s. Failures
     carry the tool and action so ``classify`` can name them.
@@ -272,7 +281,9 @@ def retrying(call, *, sleep=asyncio.sleep, attempts: int = 3):
                 except AttributeError:
                     pass
                 code = _status(error)
-                transient = code == 429 or (code is not None and code >= 500)
+                transient = (
+                    code == 429 or (code is not None and code >= 500) or _is_connection_error(error)
+                )
                 if action not in {"list", "retrieve"} or not transient or retries >= attempts:
                     raise
                 wait = _retry_after(error)
@@ -290,9 +301,14 @@ async def preflight(call, project: str) -> None:
             return await call(name, arguments)
         except Exception as error:
             code = _status(error)
-            raise Failure(
-                f"Plane bot cannot {what}" + (f" (HTTP {code})" if code else "")
-            ) from None
+            detail = (
+                f" (HTTP {code})"
+                if code
+                else " (connection error)"
+                if _is_connection_error(error)
+                else ""
+            )
+            raise Failure(f"Plane bot cannot {what}{detail}") from None
 
     await step("read the project", "project", {"action": "retrieve", "project_id": project})
     data = await step(
@@ -329,6 +345,8 @@ def classify(error: BaseException) -> str:
     operation = getattr(error, "plane_operation", None)
     if code and operation:
         return f"Plane {operation} failed (HTTP {code})"
+    if operation and _is_connection_error(error):
+        return f"Plane {operation} failed (connection error)"
     return "Unexpected " + type(error).__name__
 
 
@@ -362,16 +380,25 @@ def _event(config: Inputs) -> dict:
 
 
 @contextlib.asynccontextmanager
-async def _connected(connect):
-    """Open the MCP session, naming an HTTP failure while connecting."""
+async def _connected(connect, *, sleep=asyncio.sleep, attempts: int = 3):
+    """Open the MCP session, retrying connection errors, naming a failure."""
     async with contextlib.AsyncExitStack() as stack:
-        try:
-            raw = await stack.enter_async_context(connect())
-        except Exception as error:
-            code = _status(error)
-            if code is None:
-                raise
-            raise Failure(f"Plane connection failed (HTTP {code})") from None
+        retries = 0
+        while True:
+            try:
+                raw = await stack.enter_async_context(connect())
+                break
+            except Exception as error:
+                if _is_connection_error(error):
+                    if retries >= attempts:
+                        raise Failure("Plane connection failed (connection error)") from None
+                    await sleep(2 * 2**retries)
+                    retries += 1
+                    continue
+                code = _status(error)
+                if code is None:
+                    raise
+                raise Failure(f"Plane connection failed (HTTP {code})") from None
         yield raw
 
 
