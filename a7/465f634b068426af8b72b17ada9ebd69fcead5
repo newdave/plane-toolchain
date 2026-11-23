@@ -1,0 +1,25 @@
+tests/test_relation_plan.py
+  s_57852bb0c563ca::t_26d774eb01d394 34,50-55,59-60,243-258,265-279,284-285
+  s_57852bb0c563ca::t_34086b066a48df 26-28,259-264,280-283
+CHANGELOG.md
+  s_57852bb0c563ca::t_c1e9b368551f95 11
+src/plane_toolchain/relation_plan.py
+  s_57852bb0c563ca::t_c1e9b368551f95 96-98,102-103,115-117,145-146,149-155
+  s_57852bb0c563ca::t_e5ce7747be5b01 196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "a7465f634b068426af8b72b17ada9ebd69fcead5",
+  "prompts": {},
+  "sessions": {
+    "s_57852bb0c563ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0c1ef82-6a92-4ae1-ace5-4df36c971718",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
