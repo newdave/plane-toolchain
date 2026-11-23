@@ -1,0 +1,22 @@
+README.md
+  s_57852bb0c563ca::t_83f777669090f8 6
+  s_57852bb0c563ca::t_f2a33173e2f4bf 13
+CHANGELOG.md
+  s_57852bb0c563ca::t_e4c9e766add828 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "5dbfe51e95730cdd5a7f28c7a7159da97d9c1ffc",
+  "prompts": {},
+  "sessions": {
+    "s_57852bb0c563ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0c1ef82-6a92-4ae1-ace5-4df36c971718",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
