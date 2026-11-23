@@ -57,12 +57,16 @@ def test_revert_from_partial_state_each_step(host, step):
         with pytest.raises(Killed):
             host.deploy()
     assert host.receipt()["step"] == step
+    mark, ops = len(host.fake.calls), len(host.ops())
     revert(host)
     assert snapshot(host.orm) == original
     assert all(host.running().values())
     assert host.receipt()["reverted_from"] == step
     restored = bool(host.request("restore"))
     assert restored == (order.index(step) >= order.index("slug_done"))
+    if not restored:  # no restore: no outage and no forced logout
+        assert not [c for c in host.fake.calls[mark:] if c[0] == "stop"]
+        assert "flush_cache" not in host.ops()[ops:]
 
 
 def test_revert_reuses_stop_flush_start_health(host):
@@ -133,6 +137,28 @@ def test_revert_kill_matrix_then_rerun_revert_converges(host, label, apply_label
     assert files(host) == kept  # backup and journal untouched
     for states in seen:  # every restore ran with the services stopped
         assert not any(states[name] for name in SERVICES)
+
+
+@pytest.mark.parametrize("apply_label", ["before_slug_done", "after_stopped", "after_backed_up"])
+@pytest.mark.parametrize("label", REVERT_KILL_LABELS)
+def test_revert_kill_matrix_without_a_restore_never_stops_or_flushes(host, label, apply_label):
+    original = snapshot(host.orm)
+    host.fake.crash_at(apply_label)
+    with pytest.raises(Killed):
+        host.deploy()
+    mark, ops = len(host.fake.calls), len(host.ops())  # covers the killed run and the rerun
+    host.fake.crash_at(label)
+    try:
+        host.deploy("revert")
+    except Killed:
+        revert(host)
+    # else: a label this path never reaches does not fire, and the first run finished
+    assert snapshot(host.orm) == original
+    assert all(host.running().values())
+    assert host.receipt()["step"] == "reverted"
+    assert "restore" not in host.ops()
+    assert not [c for c in host.fake.calls[mark:] if c[0] == "stop"]
+    assert "flush_cache" not in host.ops()[ops:]
 
 
 def test_revert_kill_and_rerun_through_the_assembled_program(host, monkeypatch, capsys):
@@ -245,6 +271,7 @@ def test_revert_skips_restore_when_the_slug_change_never_committed(host, capsys)
     assert "restore" not in host.ops()
     assert "flush_cache" not in host.ops()[ops:]
     assert not [c for c in host.fake.calls[mark:] if c[0] == "stop"]
+    assert all(host.running().values())
     health = host.request("health")[-1]
     assert (health["old"], health["new"], health["workspace_id"]) == (NEW, OLD, "w1")
     assert snapshot(host.orm) == original
