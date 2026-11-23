@@ -91,6 +91,127 @@ def test_missing_git_outside_checkout_still_supplies_url(tmp_path, monkeypatch):
     assert "PLANE_MCP_URL" in _url_from_env_file(tmp_path, monkeypatch, run, checkout=False)
 
 
+def test_git_exit_0_treats_file_as_tracked(tmp_path, monkeypatch):
+    assert _url_from_env_file(tmp_path, monkeypatch, _exit(0)) == {}
+
+
+def test_git_file_marks_a_linked_worktree_checkout(tmp_path, monkeypatch):
+    (tmp_path / ".git").write_text("gitdir: /elsewhere/worktrees/x\n")
+    (tmp_path / ".env").write_text(URL_LINE)
+    monkeypatch.setattr(plane_session.subprocess, "run", _exit(128))
+    assert plane_session.literal(tmp_path, ("PLANE_MCP_URL",)) == {}
+
+
+def test_ancestor_only_git_marks_config_local_env_tracked(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    root = tmp_path / "sub/proj"
+    (root / "config").mkdir(parents=True)
+    (root / "config/local.env").write_text(URL_LINE)
+    monkeypatch.setattr(plane_session.subprocess, "run", _exit(128))
+    assert plane_session.literal(root, ("PLANE_MCP_URL",)) == {}
+
+
+def test_relative_root_finds_a_checkout_above_cwd(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    root = tmp_path / "sub/proj"
+    root.mkdir(parents=True)
+    (root / ".env").write_text(URL_LINE)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(plane_session.subprocess, "run", _exit(128))
+    assert plane_session.literal(Path("."), ("PLANE_MCP_URL",)) == {}
+
+
+def test_symlinked_directory_is_resolved_to_its_checkout(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".env").write_text(URL_LINE)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "link").symlink_to(repo)
+    monkeypatch.setattr(plane_session.subprocess, "run", _exit(128))
+    assert plane_session.literal(outside / "link", ("PLANE_MCP_URL",)) == {}
+
+
+def test_symlinked_file_is_tracked_without_asking_git(tmp_path, monkeypatch):
+    (tmp_path / "committed.env").write_text(URL_LINE)
+    (tmp_path / ".env").symlink_to(tmp_path / "committed.env")
+
+    def run(*args, **kwargs):
+        raise AssertionError("git must not be asked about a symlink")
+
+    monkeypatch.setattr(plane_session.subprocess, "run", run)
+    assert plane_session.tracked(tmp_path / ".env") is True
+
+
+def test_git_is_run_in_the_file_directory_with_error_unmatch(tmp_path, monkeypatch):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return plane_session.subprocess.CompletedProcess(argv, 1, stdout="")
+
+    (tmp_path / ".env").write_text(URL_LINE)
+    monkeypatch.setattr(plane_session.subprocess, "run", run)
+    assert plane_session.tracked(tmp_path / ".env") is False
+    argv, kwargs = calls[0]
+    assert "--error-unmatch" in argv
+    assert kwargs["cwd"] == (tmp_path / ".env").resolve().parent
+
+
+def _real_git(repo, *args):
+    import subprocess
+
+    return subprocess.run(  # noqa: S603 - fixed local git fixture
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],  # noqa: S607
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull},
+    )
+
+
+@pytest.fixture
+def real_repo(tmp_path):
+    import shutil
+
+    if not shutil.which("git"):
+        pytest.skip("git unavailable")
+    _real_git(tmp_path, "init", "-q", ".")
+    return tmp_path
+
+
+def test_real_git_committed_env_does_not_supply_url(real_repo):
+    (real_repo / ".gitignore").write_text(".env\n")
+    (real_repo / ".env").write_text(URL_LINE)
+    _real_git(real_repo, "add", "-f", ".env")
+    _real_git(real_repo, "commit", "-q", "-m", "x")
+    assert plane_session.literal(real_repo, ("PLANE_MCP_URL",)) == {}
+
+
+def test_real_git_ignored_env_supplies_url(real_repo):
+    (real_repo / ".gitignore").write_text(".env\n")
+    (real_repo / ".env").write_text(URL_LINE)
+    assert "PLANE_MCP_URL" in plane_session.literal(real_repo, ("PLANE_MCP_URL",))
+
+
+def test_real_git_symlink_to_committed_file_does_not_supply_url(real_repo):
+    (real_repo / "committed.env").write_text(URL_LINE)
+    _real_git(real_repo, "add", "committed.env")
+    _real_git(real_repo, "commit", "-q", "-m", "x")
+    (real_repo / ".env").symlink_to(real_repo / "committed.env")
+    assert plane_session.literal(real_repo, ("PLANE_MCP_URL",)) == {}
+
+
+def test_real_git_case_variant_of_a_committed_file_does_not_supply_url(real_repo):
+    (real_repo / ".Env").write_text(URL_LINE)
+    if not (real_repo / ".env").exists():
+        pytest.skip("case-sensitive filesystem")
+    _real_git(real_repo, "add", "-f", ".Env")
+    _real_git(real_repo, "commit", "-q", "-m", "x")
+    assert plane_session.literal(real_repo, ("PLANE_MCP_URL",)) == {}
+
+
 def test_both_clients_register_same_startup_hook():
     root = Path(__file__).resolve().parents[1]
     for path in (root / ".codex/hooks.json", root / ".claude/settings.json"):

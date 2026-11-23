@@ -97,21 +97,33 @@ def legacy_layout(root: Path) -> bool:
 
 
 def in_checkout(path: Path) -> bool:
-    """True when the file sits in a git checkout: a .git entry in its directory or an ancestor."""
+    """True when the (resolved) file sits in a git checkout.
+
+    A checkout is a .git entry, a directory or the file of a linked worktree, in the file's
+    directory or an ancestor.
+    """
     return any((d / ".git").exists() for d in (path.parent, *path.parent.parents))
 
 
 def tracked(path: Path) -> bool:
-    """Return True unless the file is known to be uncommitted.
+    """Return True unless the file is known to be uncommitted; the URL guard fails closed.
 
-    False when git exits 1 (not tracked), or when the file is outside any git checkout (a .git
-    entry in its directory or an ancestor), where it cannot be committed. Any other git failure
-    (exit 128 for dubious ownership or a corrupt repo) and a missing git inside a checkout count
-    as tracked, so the URL guard fails closed.
+    A symlink is tracked: the link name may be untracked while its target is committed. The path
+    is resolved first, so a relative or symlinked directory still finds its checkout. The name
+    is matched case-insensitively (icase), so on a case-insensitive filesystem a committed
+    `.Env` still counts for `.env`.
+
+    Outside a git checkout every outcome is False, because the file cannot be committed. Inside
+    one, False only when git exits 1 (not tracked); exit 0, any other exit (such as 128 for
+    dubious ownership or a corrupt repo) and a missing git (OSError) are tracked.
     """
+    if path.is_symlink():
+        return True
+    path = path.resolve()
+    spec = f":(icase,literal){path.name}"
     try:
         result = subprocess.run(  # noqa: S603 - fixed argv
-            ["git", "ls-files", "--error-unmatch", "--", path.name],  # noqa: S607
+            ["git", "ls-files", "--error-unmatch", "--", spec],  # noqa: S607
             cwd=path.parent,
             capture_output=True,
         )
