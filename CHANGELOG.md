@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- CI (PTC-136): the `check` job keeps the mise tool cache (`cache: false` removed) and caches the uv download cache keyed on `uv.lock` and the npm cache keyed on `tools/mcp-remote/package-lock.json`, with SHA-pinned `actions/cache` v6.1.0. `release.yml` does not use these caches.
+
 ### Fixed
 
 - Project installer (PTC-145): a target whose `.claude/skills` is a symlink to its own `.agents/skills` (or the reverse) no longer fails with `refusing symlinked installation path`. Apply writes one `plane-tasks` skill copy at the real path and records only that path; a dangling link is followed. Directories under a symlink are never recorded as created, so revert never removes through a link. A skills link outside the target is still refused.
