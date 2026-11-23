@@ -32,7 +32,7 @@ jobs:
         run: |
           [[ "$PLANE_ENABLED" == 'true' ]] || { echo '::error::PLANE_ENABLED is not true'; exit 1; }
           case "$EVENT_NAME" in
-            workflow_dispatch|push|release|schedule) ;;
+            workflow_dispatch|push|schedule) ;;
             *) echo "::error::Untrusted event $EVENT_NAME; Plane writes refused"; exit 1 ;;
           esac
           [[ "$REF" == "$DEFAULT_REF" ]] || { echo '::error::Not the default branch'; exit 1; }
