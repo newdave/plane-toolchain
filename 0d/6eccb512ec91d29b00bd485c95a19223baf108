@@ -1,0 +1,33 @@
+examples/github/plane_event.py
+  s_57852bb0c563ca::t_833b82c23a6339 16
+  s_57852bb0c563ca::t_597d90d564cf5a 29
+examples/github/plane-complete.yml
+  s_57852bb0c563ca::t_653ef0fe44d308 35
+docs/github-actions.md
+  s_57852bb0c563ca::t_d396d321a04f68 40
+examples/github/plane-comment.yml
+  s_57852bb0c563ca::t_b96e429de08ba9 28
+tests/test_github_examples.py
+  s_57852bb0c563ca::t_597291a0c21cfb 50
+  s_57852bb0c563ca::t_e803b1ac262178 37
+  s_57852bb0c563ca::t_09cd2e232d98ba 61
+  s_57852bb0c563ca::t_f96dd0d537fd93 79
+CHANGELOG.md
+  s_57852bb0c563ca::t_78c4fbfd63f3db 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "0d6eccb512ec91d29b00bd485c95a19223baf108",
+  "prompts": {},
+  "sessions": {
+    "s_57852bb0c563ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0c1ef82-6a92-4ae1-ace5-4df36c971718",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
