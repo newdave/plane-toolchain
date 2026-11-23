@@ -283,3 +283,15 @@ def test_remote_foreign_items_do_not_count_toward_max_items(monkeypatch):
     )
     plan = rp.validate(pairs(("ABC-1", "ABC-2")))
     asyncio.run(rp.validate_remote(world.call, PROJECT, plan))
+
+
+def test_remote_cycle_through_two_foreign_items_is_not_detected():
+    # Known limit: foreign items are never fetched, so the edge between two of them is unread.
+    # Plan ABC-1 -> ABC-2 -> F1 -> F2 -> ABC-1 (blocked_by); F1 is ABC-6, F2 is ABC-7.
+    world = World(
+        edges=[("ABC-2", "ABC-6"), ("ABC-6", "ABC-7"), ("ABC-7", "ABC-1")],
+        elsewhere=["ABC-6", "ABC-7"],
+    )
+    plan = rp.validate(pairs(("ABC-1", "ABC-2")))
+    missing = asyncio.run(rp.validate_remote(world.call, PROJECT, plan))
+    assert missing == {IDS["ABC-1"]: [IDS["ABC-2"]]}

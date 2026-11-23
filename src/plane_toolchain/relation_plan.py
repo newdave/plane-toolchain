@@ -115,6 +115,9 @@ async def inspect_remote(
     transitively from the plan items, fetching at most MAX_ITEMS items. Related items
     in another project stay as edges in the cycle check but are never fetched: CE
     relations are workspace-wide, and the relation tool only reads items in `project`.
+    Limit: a cycle through a single foreign item is still refused, but edges between
+    two foreign items are never read, so longer foreign paths are not detected. A row
+    without a project id is treated as same-project and fetched.
     """
     names: dict[str, str] = {}
     for ident in dict.fromkeys(i for pair in plan for i in pair):
