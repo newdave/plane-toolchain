@@ -250,6 +250,9 @@ def deploy(data, docker, tracked, probe=None, sleep=time.sleep):
             # Killed after the rewrite and before the restart: the container may still run the
             # old code. Restart and health-check like a normal apply; a failure restores the backup.
             current = backup.read_bytes()
+        elif current == desired and recorded.get("pending"):
+            # New bytes but no backup to roll back to: restarting could not be undone.
+            raise ValueError("Pending receipt without backup; reconcile")
         elif current == desired:
             # Repair a missing or stale receipt (no restart: nothing pending).
             final = {"installed": sha256(desired)}
