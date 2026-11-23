@@ -1,0 +1,23 @@
+tests/test_relation_plan.py
+  s_57852bb0c563ca::t_64716a8403759c 286-297
+CHANGELOG.md
+  s_57852bb0c563ca::t_64716a8403759c 11
+src/plane_toolchain/relation_plan.py
+  s_57852bb0c563ca::t_64716a8403759c 118-120
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6",
+  "base_commit_sha": "378525ab7798495ec35d0ed865d702a7399f99bb",
+  "prompts": {},
+  "sessions": {
+    "s_57852bb0c563ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0c1ef82-6a92-4ae1-ace5-4df36c971718",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "David Hill <me@newdave.com>"
+    }
+  }
+}
