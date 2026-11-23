@@ -34,6 +34,7 @@ ENV = {
         {"GITHUB_EVENT_NAME": "issue_comment"},
         {"GITHUB_EVENT_NAME": "workflow_run"},
         {"GITHUB_EVENT_NAME": "pull_request_review"},
+        {"GITHUB_EVENT_NAME": "release"},
         {"GITHUB_EVENT_NAME": ""},
         {"GITHUB_REF": "refs/heads/feature"},
         {"PLANE_DEPLOYMENT_VERIFIED": "false"},
@@ -46,7 +47,7 @@ def test_untrusted_or_unverified_write_rejected(change):
         inputs(dict(ENV, **change))
 
 
-@pytest.mark.parametrize("event", ["workflow_dispatch", "push", "release", "schedule"])
+@pytest.mark.parametrize("event", ["workflow_dispatch", "push", "schedule"])
 def test_allow_listed_events_accepted(event):
     assert inputs(dict(ENV, GITHUB_EVENT_NAME=event))[0] == "complete"
 
@@ -57,7 +58,7 @@ def test_missing_event_rejected():
         inputs(env)
 
 
-ALLOWED = ("workflow_dispatch", "push", "release", "schedule")
+ALLOWED = ("workflow_dispatch", "push", "schedule")
 WRITE_FILES = ["plane-complete.yml", "plane-comment.yml"]
 
 
@@ -75,7 +76,7 @@ def test_workflow_allow_lists_events_and_gates_write_job(name):
     assert "::error::" in script
     for event in ALLOWED:
         assert event in script
-    for bad in ("issue_comment", "workflow_run", "pull_request"):
+    for bad in ("issue_comment", "workflow_run", "pull_request", "release"):
         assert bad not in script
     write = next(j for k, j in doc["jobs"].items() if k != "preconditions")
     assert write["needs"] == "preconditions"

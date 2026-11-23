@@ -13,7 +13,7 @@ from uuid import UUID
 from plane_toolchain.connection import connection
 
 MAX_PAGES = 50
-TRUSTED_EVENTS = {"workflow_dispatch", "push", "release", "schedule"}
+TRUSTED_EVENTS = {"workflow_dispatch", "push", "schedule"}
 
 
 def inputs(env):
@@ -26,7 +26,7 @@ def inputs(env):
     # Never use task names or PR text to select a task.
     item = str(UUID(env["PLANE_WORKITEM_ID"]))
     if env.get("GITHUB_EVENT_NAME") not in TRUSTED_EVENTS:
-        raise ValueError("Write examples require a trusted dispatch, push, release or schedule")
+        raise ValueError("Write examples require a trusted dispatch, push or schedule")
     if env.get("GITHUB_REF") != "refs/heads/" + env["PLANE_DEFAULT_BRANCH"]:
         raise ValueError("Write examples require the default branch")
     repo = env["GITHUB_REPOSITORY"]

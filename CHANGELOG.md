@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Write examples (PTC-133): `release` is no longer a trusted event in `plane_event.py` or in the `plane-complete.yml` and `plane-comment.yml` precondition steps. A release run uses a `refs/tags/` ref, so the default-branch check refused it anyway. The error text and `docs/github-actions.md` now list only `workflow_dispatch`, `push` and `schedule`, and a test asserts a `release` event is refused.
 - Project installer (PTC-145): a target whose `.claude/skills` is a symlink to its own `.agents/skills` (or the reverse) no longer fails with `refusing symlinked installation path`. Apply writes one `plane-tasks` skill copy at the real path and records only that path; a dangling link is followed. Directories under a symlink are never recorded as created, so revert never removes through a link. A skills link outside the target is still refused.
 
 ## [0.5.1] - 2026-11-14
