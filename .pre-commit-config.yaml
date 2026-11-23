@@ -29,7 +29,17 @@ repos:
         name: shellcheck
         entry: mise exec -- shellcheck
         language: system
-        files: ^scripts/.*\.sh$
+        files: ^(scripts|templates/project)/.*\.sh$
+      - id: zizmor
+        name: zizmor
+        entry: mise exec -- zizmor --offline
+        language: system
+        files: ^(\.github/workflows|\.github/actions|examples/github)/.*\.ya?ml$
+      - id: zsh-syntax
+        name: zsh -n
+        entry: zsh -n
+        language: system
+        files: ^scripts/plane-prompt\.zsh$
       - id: no-ai-attribution
         name: reject AI attribution trailers
         entry: python3 scripts/check-commit-msg.py
